@@ -36,6 +36,24 @@ class RestUsageRow:
 
 
 @dataclass(frozen=True, slots=True)
+class TableSizeRow:
+    schema_name: str
+    table_name: str
+    is_hypertable: bool
+    estimated_rows: int
+    table_bytes: int
+    index_bytes: int
+    toast_bytes: int
+    total_bytes: int
+    chunk_count: int | None = None
+    compression_enabled: bool | None = None
+    columnstore_chunks: int = 0
+    columnstore_before_bytes: int = 0
+    columnstore_after_bytes: int = 0
+    columnstore_policy_enabled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class DatabaseSnapshot:
     active_symbols: int
     coverage: tuple[CoverageRow, ...]
@@ -43,6 +61,8 @@ class DatabaseSnapshot:
     rest_usage: RestUsageRow
     database_size_bytes: int
     database_size_display: str
+    cache_hit_percent: float | None = None
+    largest_tables: tuple[TableSizeRow, ...] = ()
 
 
 class MonitoringRepository:
@@ -88,6 +108,119 @@ class MonitoringRepository:
                     )
                 )
             ).mappings().one()
+            cache_row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT 100.0 * blks_hit /
+                                   NULLIF(blks_hit + blks_read, 0)
+                                   AS cache_hit_percent
+                        FROM pg_stat_database
+                        WHERE datname = current_database()
+                        """
+                    )
+                )
+            ).mappings().one()
+            table_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        WITH columnstore_policies AS (
+                            SELECT
+                                hypertable_schema AS schema_name,
+                                hypertable_name AS table_name,
+                                bool_or(scheduled) AS policy_enabled
+                            FROM timescaledb_information.jobs
+                            WHERE proc_name = 'policy_compression'
+                            GROUP BY 1, 2
+                        ), hypertable_sizes AS (
+                            SELECT
+                                h.hypertable_schema AS schema_name,
+                                h.hypertable_name AS table_name,
+                                true AS is_hypertable,
+                                approximate_row_count(
+                                    format(
+                                        '%I.%I',
+                                        h.hypertable_schema,
+                                        h.hypertable_name
+                                    )::regclass
+                                ) AS estimated_rows,
+                                sizes.table_bytes,
+                                sizes.index_bytes,
+                                sizes.toast_bytes,
+                                sizes.total_bytes,
+                                h.num_chunks AS chunk_count,
+                                h.compression_enabled,
+                                coalesce(
+                                    columnstore.number_compressed_chunks, 0
+                                ) AS columnstore_chunks,
+                                coalesce(
+                                    columnstore.before_compression_total_bytes, 0
+                                ) AS columnstore_before_bytes,
+                                coalesce(
+                                    columnstore.after_compression_total_bytes, 0
+                                ) AS columnstore_after_bytes,
+                                coalesce(policy.policy_enabled, false)
+                                    AS columnstore_policy_enabled
+                            FROM timescaledb_information.hypertables h
+                            CROSS JOIN LATERAL hypertable_detailed_size(
+                                format(
+                                    '%I.%I',
+                                    h.hypertable_schema,
+                                    h.hypertable_name
+                                )::regclass
+                            ) sizes
+                            LEFT JOIN LATERAL hypertable_columnstore_stats(
+                                format(
+                                    '%I.%I',
+                                    h.hypertable_schema,
+                                    h.hypertable_name
+                                )::regclass
+                            ) columnstore ON true
+                            LEFT JOIN columnstore_policies policy
+                              ON policy.schema_name = h.hypertable_schema
+                             AND policy.table_name = h.hypertable_name
+                        ), regular_sizes AS (
+                            SELECT
+                                stats.schemaname AS schema_name,
+                                stats.relname AS table_name,
+                                false AS is_hypertable,
+                                stats.n_live_tup::bigint AS estimated_rows,
+                                pg_relation_size(stats.relid) AS table_bytes,
+                                pg_indexes_size(stats.relid) AS index_bytes,
+                                greatest(
+                                    pg_total_relation_size(stats.relid)
+                                    - pg_relation_size(stats.relid)
+                                    - pg_indexes_size(stats.relid),
+                                    0
+                                ) AS toast_bytes,
+                                pg_total_relation_size(stats.relid) AS total_bytes,
+                                NULL::integer AS chunk_count,
+                                NULL::boolean AS compression_enabled,
+                                0::bigint AS columnstore_chunks,
+                                0::bigint AS columnstore_before_bytes,
+                                0::bigint AS columnstore_after_bytes,
+                                false AS columnstore_policy_enabled
+                            FROM pg_stat_user_tables stats
+                            WHERE stats.schemaname !~ '^_timescaledb_'
+                              AND NOT EXISTS (
+                                SELECT 1
+                                FROM timescaledb_information.hypertables h
+                                WHERE h.hypertable_schema = stats.schemaname
+                                  AND h.hypertable_name = stats.relname
+                            )
+                        )
+                        SELECT * FROM (
+                            SELECT * FROM hypertable_sizes
+                            UNION ALL
+                            SELECT * FROM regular_sizes
+                        ) relation_sizes
+                        ORDER BY total_bytes DESC
+                        LIMIT 12
+                        """
+                    )
+                )
+            ).mappings().all()
 
         return DatabaseSnapshot(
             active_symbols=active_symbols,
@@ -96,6 +229,40 @@ class MonitoringRepository:
             rest_usage=rest_usage,
             database_size_bytes=cast(int, database_row["size_bytes"]),
             database_size_display=cast(str, database_row["size_display"]),
+            cache_hit_percent=(
+                float(cache_row["cache_hit_percent"])
+                if cache_row["cache_hit_percent"] is not None
+                else None
+            ),
+            largest_tables=tuple(
+                TableSizeRow(
+                    schema_name=cast(str, row["schema_name"]),
+                    table_name=cast(str, row["table_name"]),
+                    is_hypertable=cast(bool, row["is_hypertable"]),
+                    estimated_rows=cast(int, row["estimated_rows"] or 0),
+                    table_bytes=cast(int, row["table_bytes"] or 0),
+                    index_bytes=cast(int, row["index_bytes"] or 0),
+                    toast_bytes=cast(int, row["toast_bytes"] or 0),
+                    total_bytes=cast(int, row["total_bytes"] or 0),
+                    chunk_count=cast(int | None, row["chunk_count"]),
+                    compression_enabled=cast(
+                        bool | None, row["compression_enabled"]
+                    ),
+                    columnstore_chunks=cast(
+                        int, row["columnstore_chunks"] or 0
+                    ),
+                    columnstore_before_bytes=cast(
+                        int, row["columnstore_before_bytes"] or 0
+                    ),
+                    columnstore_after_bytes=cast(
+                        int, row["columnstore_after_bytes"] or 0
+                    ),
+                    columnstore_policy_enabled=cast(
+                        bool, row["columnstore_policy_enabled"]
+                    ),
+                )
+                for row in table_rows
+            ),
         )
 
     async def _kline_coverage(

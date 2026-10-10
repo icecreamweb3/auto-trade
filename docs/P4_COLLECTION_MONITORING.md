@@ -18,7 +18,9 @@
 - 回补任务当前状态、历史成功/失败、开放缺口及最老PENDING任务年龄。
 - 最近一小时新增、完成、队列净变化、实际吞吐和预计清空时间。
 - 最近10分钟Binance REST请求速率、使用权重和2400权重上限占比。
-- PostgreSQL数据库空间。
+- PostgreSQL数据库总空间、缓存命中率及占用最大的12个关系。
+- 大表列表显示TimescaleDB Hypertable、分块数、Columnstore策略、已转换分块、实际节省比例、估算行数、数据、索引、TOAST和总占用；不执行高成本逐表精确计数。
+- TimescaleDB内部chunk不重复展示，容量统一归入对应Hypertable。
 - NATS JetStream连接、消息量和消费者数量。
 - `HEALTHY`、`WARNING`、`CRITICAL`、`UNKNOWN`统一健康等级。
 

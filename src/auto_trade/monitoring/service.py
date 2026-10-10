@@ -8,6 +8,7 @@ from auto_trade.monitoring.models import (
     BackfillMetric,
     CoverageMetric,
     DatabaseMetric,
+    DatabaseTableMetric,
     HealthStatus,
     MonitoringSnapshot,
     NatsMetric,
@@ -165,6 +166,61 @@ def rest_usage_metric(snapshot: DatabaseSnapshot) -> RestUsageMetric:
     )
 
 
+def database_metric(snapshot: DatabaseSnapshot) -> DatabaseMetric:
+    cache_hit = snapshot.cache_hit_percent
+    if cache_hit is None:
+        status = HealthStatus.UNKNOWN
+        message = "缓存命中率尚无统计"
+    elif cache_hit < 95:
+        status = HealthStatus.CRITICAL
+        message = "数据库缓存命中率低于95%"
+    elif cache_hit < 99:
+        status = HealthStatus.WARNING
+        message = "数据库缓存命中率低于99%"
+    else:
+        status = HealthStatus.HEALTHY
+        message = "数据库连接与缓存命中率正常"
+    return DatabaseMetric(
+        status=status,
+        size_bytes=snapshot.database_size_bytes,
+        size_display=snapshot.database_size_display,
+        cache_hit_percent=round(cache_hit, 2) if cache_hit is not None else None,
+        largest_tables=tuple(
+            DatabaseTableMetric(
+                schema_name=row.schema_name,
+                table_name=row.table_name,
+                is_hypertable=row.is_hypertable,
+                estimated_rows=row.estimated_rows,
+                table_bytes=row.table_bytes,
+                index_bytes=row.index_bytes,
+                toast_bytes=row.toast_bytes,
+                total_bytes=row.total_bytes,
+                chunk_count=row.chunk_count,
+                compression_enabled=row.compression_enabled,
+                columnstore_chunks=row.columnstore_chunks,
+                columnstore_before_bytes=row.columnstore_before_bytes,
+                columnstore_after_bytes=row.columnstore_after_bytes,
+                columnstore_saved_percent=(
+                    round(
+                        100
+                        * (
+                            row.columnstore_before_bytes
+                            - row.columnstore_after_bytes
+                        )
+                        / row.columnstore_before_bytes,
+                        2,
+                    )
+                    if row.columnstore_before_bytes > 0
+                    else None
+                ),
+                columnstore_policy_enabled=row.columnstore_policy_enabled,
+            )
+            for row in snapshot.largest_tables
+        ),
+        message=message,
+    )
+
+
 class MonitoringService:
     def __init__(
         self,
@@ -186,12 +242,7 @@ class MonitoringService:
         )
         backfill = backfill_metric(database)
         rest_usage = rest_usage_metric(database)
-        db_metric = DatabaseMetric(
-            status=HealthStatus.HEALTHY,
-            size_bytes=database.database_size_bytes,
-            size_display=database.database_size_display,
-            message="数据库连接正常",
-        )
+        db_metric = database_metric(database)
         statuses = [
             *(item.status for item in coverage),
             backfill.status,

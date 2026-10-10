@@ -62,7 +62,7 @@ services:
     volumes:
       - ./database:/migrations:ro
     entrypoint: ["/bin/sh", "-ec"]
-    command: ["psql --set=ON_ERROR_STOP=1 --file=/migrations/001_initial_schema.sql"]
+    command: ["/migrations/apply_migrations.sh"]
     depends_on:
       database:
         condition: service_healthy

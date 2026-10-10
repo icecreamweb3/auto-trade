@@ -85,12 +85,34 @@ class NatsMetric(BaseModel):
     message: str
 
 
+class DatabaseTableMetric(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    schema_name: str
+    table_name: str
+    is_hypertable: bool
+    estimated_rows: int
+    table_bytes: int
+    index_bytes: int
+    toast_bytes: int
+    total_bytes: int
+    chunk_count: int | None = None
+    compression_enabled: bool | None = None
+    columnstore_chunks: int = 0
+    columnstore_before_bytes: int = 0
+    columnstore_after_bytes: int = 0
+    columnstore_saved_percent: float | None = None
+    columnstore_policy_enabled: bool = False
+
+
 class DatabaseMetric(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     status: HealthStatus
     size_bytes: int
     size_display: str
+    cache_hit_percent: float | None = None
+    largest_tables: tuple[DatabaseTableMetric, ...] = ()
     message: str
 
 

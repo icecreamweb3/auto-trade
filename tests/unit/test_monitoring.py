@@ -6,11 +6,13 @@ from auto_trade.monitoring.repository import (
     CoverageRow,
     DatabaseSnapshot,
     RestUsageRow,
+    TableSizeRow,
 )
 from auto_trade.monitoring.service import (
     STATUS_PRIORITY,
     backfill_metric,
     coverage_metric,
+    database_metric,
     rest_usage_metric,
 )
 
@@ -135,3 +137,58 @@ def test_rest_usage_uses_2400_weight_limit() -> None:
     assert healthy.status is HealthStatus.HEALTHY
     assert healthy.utilization_percent == 25
     assert critical.status is HealthStatus.CRITICAL
+
+
+def test_database_metric_reports_cache_and_largest_tables() -> None:
+    snapshot = database_snapshot()
+    snapshot = DatabaseSnapshot(
+        active_symbols=snapshot.active_symbols,
+        coverage=snapshot.coverage,
+        backfill=snapshot.backfill,
+        rest_usage=snapshot.rest_usage,
+        database_size_bytes=2048,
+        database_size_display="2048 bytes",
+        cache_hit_percent=99.995,
+        largest_tables=(
+            TableSizeRow(
+                "market",
+                "klines",
+                True,
+                1000,
+                1024,
+                512,
+                0,
+                1536,
+                chunk_count=4,
+                compression_enabled=True,
+                columnstore_chunks=3,
+                columnstore_before_bytes=1000,
+                columnstore_after_bytes=200,
+                columnstore_policy_enabled=True,
+            ),
+        ),
+    )
+
+    metric = database_metric(snapshot)
+
+    assert metric.status is HealthStatus.HEALTHY
+    assert metric.cache_hit_percent == 100.0
+    assert metric.largest_tables[0].table_name == "klines"
+    assert metric.largest_tables[0].compression_enabled is True
+    assert metric.largest_tables[0].columnstore_saved_percent == 80.0
+    assert metric.largest_tables[0].columnstore_policy_enabled is True
+
+
+def test_database_metric_warns_on_low_cache_hit_rate() -> None:
+    snapshot = database_snapshot()
+    snapshot = DatabaseSnapshot(
+        active_symbols=snapshot.active_symbols,
+        coverage=snapshot.coverage,
+        backfill=snapshot.backfill,
+        rest_usage=snapshot.rest_usage,
+        database_size_bytes=snapshot.database_size_bytes,
+        database_size_display=snapshot.database_size_display,
+        cache_hit_percent=98.5,
+    )
+
+    assert database_metric(snapshot).status is HealthStatus.WARNING

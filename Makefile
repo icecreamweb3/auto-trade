@@ -1,5 +1,5 @@
 .PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs monitor-up monitor-logs repair-once test lint typecheck \
-	db-up db-down db-status db-logs db-migrate db-shell db-verify db-poc db-poc-clean \
+	db-up db-down db-status db-logs db-migrate db-shell db-verify db-storage-verify db-columnstore-poc db-poc db-poc-clean \
 	nats-up nats-logs nats-init nats-verify nats-smoke collector-smoke writer-drain
 
 infra-up:
@@ -65,6 +65,12 @@ db-shell:
 
 db-verify:
 	docker compose exec -T database sh -ec 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" --set=ON_ERROR_STOP=1 -c "SELECT extversion FROM pg_extension WHERE extname = '\''timescaledb'\'';" -c "SELECT count(*) AS v2_table_count FROM information_schema.tables WHERE table_schema IN ('\''core'\'','\''config'\'','\''market'\'','\''trade'\'','\''analysis'\'','\''audit'\'');" -c "SELECT version, success, applied_at FROM core.schema_migrations ORDER BY applied_at;"'
+
+db-storage-verify:
+	docker compose exec -T database sh -ec 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" --set=ON_ERROR_STOP=1 --file=/dev/stdin' < database/storage_optimization_status.sql
+
+db-columnstore-poc:
+	docker compose exec -T database sh -ec 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" --set=ON_ERROR_STOP=1 --file=/dev/stdin' < database/p0_columnstore_benchmark.sql
 
 db-poc:
 	./scripts/run_database_poc.sh

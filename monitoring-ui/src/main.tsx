@@ -56,6 +56,24 @@ interface MonitoringSnapshot {
     status: HealthStatus;
     size_bytes: number;
     size_display: string;
+    cache_hit_percent: number | null;
+    largest_tables: Array<{
+      schema_name: string;
+      table_name: string;
+      is_hypertable: boolean;
+      estimated_rows: number;
+      table_bytes: number;
+      index_bytes: number;
+      toast_bytes: number;
+      total_bytes: number;
+      chunk_count: number | null;
+      compression_enabled: boolean | null;
+      columnstore_chunks: number;
+      columnstore_before_bytes: number;
+      columnstore_after_bytes: number;
+      columnstore_saved_percent: number | null;
+      columnstore_policy_enabled: boolean;
+    }>;
     message: string;
   };
   notices: string[];
@@ -86,6 +104,19 @@ function formatAge(seconds: number | null): string {
 
 function formatDelta(value: number): string {
   return value > 0 ? `+${value}` : value.toString();
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (const candidate of units) {
+    unit = candidate;
+    if (value < 1024 || candidate === units[units.length - 1]) break;
+    value /= 1024;
+  }
+  return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${unit}`;
 }
 
 function CoverageCard({ metric }: { metric: CoverageMetric }) {
@@ -215,6 +246,42 @@ function App() {
                 ))}
               </div>
               <p className="message">{data.nats.message}</p>
+            </article>
+          </section>
+
+          <section className="database-section">
+            <article className="panel">
+              <div className="panel-heading">
+                <div><p className="eyebrow">存储与查询效率</p><h3>数据库容量明细</h3></div>
+                <StatusPill status={data.database.status} />
+              </div>
+              <div className="database-summary">
+                <div><span>数据库总容量</span><strong>{data.database.size_display}</strong></div>
+                <div><span>缓存命中率</span><strong>{data.database.cache_hit_percent === null ? "—" : `${data.database.cache_hit_percent.toFixed(2)}%`}</strong></div>
+                <div><span>展示关系</span><strong>Top {data.database.largest_tables.length}</strong></div>
+              </div>
+              <div className="table-scroll">
+                <table className="storage-table">
+                  <thead><tr><th>表</th><th>类型</th><th>分块</th><th>Columnstore</th><th>节省</th><th>估算行数</th><th>数据</th><th>索引</th><th>辅助/TOAST</th><th>合计</th></tr></thead>
+                  <tbody>
+                    {data.database.largest_tables.map((table) => (
+                      <tr key={`${table.schema_name}.${table.table_name}`}>
+                        <td><strong>{table.schema_name}.{table.table_name}</strong></td>
+                        <td>{table.is_hypertable ? "Hypertable" : "Table"}</td>
+                        <td>{table.chunk_count ?? "—"}</td>
+                        <td>{table.compression_enabled === null ? "—" : !table.compression_enabled ? "未配置" : table.columnstore_chunks > 0 ? `${table.columnstore_chunks}/${table.chunk_count ?? "—"} 分块` : table.columnstore_policy_enabled ? "等待72h冷却" : "已配置/无策略"}</td>
+                        <td>{table.columnstore_saved_percent === null ? "—" : `${table.columnstore_saved_percent.toFixed(1)}%`}</td>
+                        <td>{table.estimated_rows.toLocaleString()}</td>
+                        <td>{formatBytes(table.table_bytes)}</td>
+                        <td>{formatBytes(table.index_bytes)}</td>
+                        <td>{formatBytes(table.toast_bytes)}</td>
+                        <td><strong>{formatBytes(table.total_bytes)}</strong></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="message">行数为PostgreSQL统计估算值；Columnstore只转换超过72小时的完整分块，不会触碰实时写入和24小时回补窗口。</p>
             </article>
           </section>
         </>
