@@ -45,7 +45,12 @@ Collector ──► NATS JetStream ──► Market Writer ──► PostgreSQL/
 
 ## 3. 测试机准备
 
-建议使用长期在线的 Linux 主机、SSD以及有线网络。仅 `ticker_minutes` 按约500个标的一年估算已约49GB，完整数据还包括K线、OI、原始事件、索引、WAL、备份及10GB的NATS上限，因此应持续监控磁盘并预留明显余量。
+测试环境支持以下两类主机：
+
+- Mac mini：适合短期验证和开发测试，使用Docker Desktop。
+- Ubuntu：更接近未来云服务器生产环境，使用Docker Engine和Compose v2插件。
+
+建议使用长期在线的主机、SSD以及有线网络。仅 `ticker_minutes` 按约500个标的一年估算已约49GB，完整数据还包括K线、OI、原始事件、索引、WAL、备份及10GB的NATS上限，因此应持续监控磁盘并预留明显余量。
 
 需要安装：
 
@@ -55,6 +60,49 @@ Collector ──► NATS JetStream ──► Market Writer ──► PostgreSQL/
 - GNU Make
 - OpenSSL
 - SSH Server（推荐用于数据库隧道）
+
+### 3.1 Mac mini / macOS自动准备
+
+macOS脚本使用Homebrew安装或检查Git、GNU Make、OpenSSL 3和Docker Desktop。macOS已经内置OpenSSH Server，只有显式传入 `--enable-ssh` 时脚本才会开启Remote Login。
+
+首次运行前需要安装Apple Command Line Tools和Homebrew。脚本检测到缺失时会给出提示并安全退出，不会自动执行远程安装脚本。
+
+```bash
+chmod +x scripts/setup_test_host_macos.sh
+./scripts/setup_test_host_macos.sh --enable-ssh
+```
+
+不希望脚本开启SSH时去掉参数：
+
+```bash
+./scripts/setup_test_host_macos.sh
+```
+
+脚本执行后仍需在Docker Desktop中手动完成：
+
+1. `Settings > General`：开启登录时启动Docker Desktop。
+2. `Settings > Resources > Network`：开启Host Networking。
+3. `Settings > Resources > Advanced`：为Docker分配足够的内存和磁盘。
+
+macOS还需要在系统能源设置中禁止显示器关闭后自动睡眠，并配置断电恢复自动启动。Docker Desktop的许可确认和系统安全提示必须由机器所有者亲自完成，脚本不会绕过。
+
+### 3.2 Ubuntu自动准备
+
+Ubuntu脚本使用Docker官方APT仓库安装Docker Engine、Compose v2、Buildx、Git、GNU Make、OpenSSL和OpenSSH Server，并启用Docker、SSH、NTP与UTC时区：
+
+```bash
+chmod +x scripts/setup_test_host_ubuntu.sh
+./scripts/setup_test_host_ubuntu.sh
+```
+
+脚本不会自动删除已有Docker、Podman、containerd或runc包。检测到与Docker CE冲突的包时会列出包名并退出，避免破坏机器上已有容器。安装完成后，如果当前用户刚加入 `docker` 用户组，需要注销并重新登录。
+
+两个脚本都支持查看说明：
+
+```bash
+./scripts/setup_test_host_macos.sh --help
+./scripts/setup_test_host_ubuntu.sh --help
+```
 
 检查：
 
