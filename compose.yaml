@@ -14,7 +14,7 @@ services:
       TZ: UTC
       PGTZ: UTC
     ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - auto_trade_postgres_data:/var/lib/postgresql/data
       - ./database/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
@@ -25,6 +25,26 @@ services:
       retries: 20
       start_period: 20s
     shm_size: 1gb
+    networks:
+      - backend
+
+  nats:
+    image: ${NATS_IMAGE:-nats:2.15.0-alpine}
+    container_name: auto-trade-nats
+    restart: unless-stopped
+    command: ["--config", "/etc/nats/nats-server.conf"]
+    ports:
+      - "127.0.0.1:${NATS_CLIENT_PORT:-4222}:4222"
+      - "127.0.0.1:${NATS_MONITOR_PORT:-8222}:8222"
+    volumes:
+      - auto_trade_nats_data:/data
+      - ./config/nats-server.conf:/etc/nats/nats-server.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8222/healthz | grep -q '\"status\":\"ok\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     networks:
       - backend
 
@@ -49,12 +69,79 @@ services:
     networks:
       - backend
 
+  market-writer:
+    profiles: ["runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    container_name: auto-trade-market-writer
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      NATS_URL: nats://nats:4222
+      TZ: UTC
+    command: ["python", "-m", "auto_trade.writers.market_consumer", "run"]
+    depends_on:
+      database:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - backend
+
+  collector:
+    profiles: ["runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    container_name: auto-trade-collector
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_PASSWORD: unused
+      NATS_URL: nats://127.0.0.1:4222
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost}
+      TZ: UTC
+    command: ["python", "-m", "auto_trade.collectors.scheduler"]
+    network_mode: host
+    depends_on:
+      nats:
+        condition: service_healthy
+
+  data-repair:
+    profiles: ["runtime"]
+    image: auto-trade:local
+    container_name: auto-trade-data-repair
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: 127.0.0.1
+      NATS_URL: nats://127.0.0.1:4222
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost}
+      TZ: UTC
+    command: ["python", "-m", "auto_trade.collectors.data_repair", "run"]
+    network_mode: host
+    depends_on:
+      database:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
 volumes:
   auto_trade_postgres_data:
     name: auto-trade-postgres-data
+  auto_trade_nats_data:
+    name: auto-trade-nats-data
 
 networks:
   backend:
     name: auto-trade-backend
-    internal: true
-
+    driver: bridge
