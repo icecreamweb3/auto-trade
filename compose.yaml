@@ -135,6 +135,61 @@ services:
       nats:
         condition: service_healthy
 
+  monitor-api:
+    profiles: ["runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    container_name: auto-trade-monitor-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: collection-monitor
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      NATS_URL: nats://nats:4222
+      TZ: UTC
+    command:
+      - uvicorn
+      - auto_trade.monitoring.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      database:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - backend
+
+  monitor-ui:
+    profiles: ["runtime"]
+    build:
+      context: ./monitoring-ui
+    image: auto-trade-monitor-ui:local
+    container_name: auto-trade-monitor-ui
+    restart: unless-stopped
+    ports:
+      - "${MONITOR_BIND_IP:-127.0.0.1}:${MONITOR_PORT:-8080}:80"
+    depends_on:
+      monitor-api:
+        condition: service_healthy
+    networks:
+      - backend
+
 volumes:
   auto_trade_postgres_data:
     name: auto-trade-postgres-data

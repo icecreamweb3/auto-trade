@@ -86,6 +86,14 @@ chmod +x scripts/setup_test_host_macos.sh
 
 macOS还需要在系统能源设置中禁止显示器关闭后自动睡眠，并配置断电恢复自动启动。Docker Desktop的许可确认和系统安全提示必须由机器所有者亲自完成，脚本不会绕过。
 
+如果出现 `docker: unknown command: docker compose`，说明当前Docker CLI没有发现Docker Desktop自带的Compose插件。重新执行Mac脚本即可为当前用户建立Compose和Buildx插件链接：
+
+```bash
+./scripts/setup_test_host_macos.sh
+docker compose version
+docker buildx version
+```
+
 ### 3.2 Ubuntu自动准备
 
 Ubuntu脚本使用Docker官方APT仓库安装Docker Engine、Compose v2、Buildx、Git、GNU Make、OpenSSL和OpenSSH Server，并启用Docker、SSH、NTP与UTC时区：
@@ -104,27 +112,48 @@ chmod +x scripts/setup_test_host_ubuntu.sh
 ./scripts/setup_test_host_ubuntu.sh --help
 ```
 
-检查：
+通用检查：
 
 ```bash
 docker --version
 docker compose version
 git --version
 make --version
-timedatectl status
+docker ps
 ```
+
+macOS时间同步检查：
+
+```bash
+date
+date -u
+sudo /usr/sbin/systemsetup -getusingnetworktime
+sudo /usr/sbin/systemsetup -getnetworktimeserver
+sudo /usr/sbin/systemsetup -gettimezone
+```
+
+macOS开启网络自动校时：
+
+```bash
+sudo /usr/sbin/systemsetup -setusingnetworktime on
+```
+
+Mac主机可以继续显示北京时间；采集容器已经显式使用UTC，不需要为了容器修改macOS显示时区。
+
+Ubuntu时间同步检查和设置：
+
+```bash
+timedatectl status
+sudo timedatectl set-ntp true
+sudo timedatectl set-timezone UTC
+```
+
+`timedatectl` 是Linux systemd命令，macOS不存在该命令。
 
 确认当前用户可以执行 `docker ps`。如果需要把项目放在 `/opt`，先在测试机创建可写目录：
 
 ```bash
 sudo install -d -o "$(id -un)" -g "$(id -gn)" /opt/auto-trade
-```
-
-建议主机开启NTP。容器已显式使用UTC，主机也使用UTC可以减少排障歧义：
-
-```bash
-sudo timedatectl set-ntp true
-sudo timedatectl set-timezone UTC
 ```
 
 ## 4. 交付项目代码
@@ -532,6 +561,19 @@ docker compose exec -T database pg_restore --list \
 - NATS中的事件是传输状态，长期历史数据以PostgreSQL为准。
 
 ## 14. 故障排查
+
+### Mac提示unknown command: docker compose
+
+Docker Desktop本身包含Compose；该错误通常表示终端选择了旧Docker CLI，或用户级插件链接没有正确建立。先运行：
+
+```bash
+type -a docker
+ls -l /Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose
+./scripts/setup_test_host_macos.sh
+docker compose version
+```
+
+修复脚本会把Docker Desktop内置的Compose和Buildx注册到 `${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins`，不会下载来源不明的独立Compose文件。如果Docker Desktop内置插件本身缺失，脚本会停止并提示使用Docker Desktop的Repair功能或重新安装。
 
 ### 服务没有启动
 

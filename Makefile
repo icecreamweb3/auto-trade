@@ -1,4 +1,4 @@
-.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs repair-once test lint typecheck \
+.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs monitor-up monitor-logs repair-once test lint typecheck \
 	db-up db-down db-status db-logs db-migrate db-shell db-verify db-poc db-poc-clean \
 	nats-up nats-logs nats-init nats-verify nats-smoke collector-smoke writer-drain
 
@@ -12,13 +12,19 @@ infra-status:
 	docker compose ps
 
 runtime-up:
-	docker compose --profile runtime up -d --build market-writer collector data-repair
+	docker compose --profile runtime up -d --build market-writer collector data-repair monitor-api monitor-ui
 
 runtime-down:
-	docker compose --profile runtime stop market-writer collector data-repair
+	docker compose --profile runtime stop market-writer collector data-repair monitor-api monitor-ui
 
 runtime-logs:
-	docker compose --profile runtime logs --tail=200 -f market-writer collector data-repair
+	docker compose --profile runtime logs --tail=200 -f market-writer collector data-repair monitor-api monitor-ui
+
+monitor-up:
+	docker compose --profile runtime up -d --build monitor-api monitor-ui
+
+monitor-logs:
+	docker compose --profile runtime logs --tail=200 -f monitor-api monitor-ui
 
 repair-once:
 	docker run --rm --network host --env-file .env \

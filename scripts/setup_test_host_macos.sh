@@ -70,6 +70,28 @@ else
   printf '%s\n' 'Docker Desktop is already installed.'
 fi
 
+printf '%s\n' '==> Registering Docker Desktop CLI plugins'
+docker_resources='/Applications/Docker.app/Contents/Resources'
+docker_config_dir="${DOCKER_CONFIG:-${HOME}/.docker}"
+plugin_dir="${docker_config_dir}/cli-plugins"
+mkdir -p "$plugin_dir"
+
+link_desktop_plugin() {
+  local plugin_name="$1"
+  local plugin_source="${docker_resources}/cli-plugins/docker-${plugin_name}"
+  if [[ ! -x "$plugin_source" ]]; then
+    printf 'Docker Desktop plugin is missing: %s\n' "$plugin_source" >&2
+    printf '%s\n' \
+      'Open Docker Desktop > Troubleshoot and use Repair,' \
+      'or reinstall Docker Desktop, then rerun this script.' >&2
+    return 1
+  fi
+  ln -sfn "$plugin_source" "${plugin_dir}/docker-${plugin_name}"
+}
+
+link_desktop_plugin compose
+link_desktop_plugin buildx
+
 if [[ "$ENABLE_SSH" == true ]]; then
   printf '%s\n' '==> Enabling macOS Remote Login (SSH)'
   sudo systemsetup -setremotelogin on
@@ -101,8 +123,17 @@ if [[ "$docker_ready" != true ]]; then
 fi
 
 printf '%s\n' '==> Installed versions'
+printf 'Docker CLI selected by the shell: %s\n' "$(command -v docker)"
 docker --version
-docker compose version
+if ! docker compose version; then
+  printf '%s\n' \
+    'Docker CLI still cannot discover the Compose plugin.' \
+    "DOCKER_CONFIG=${docker_config_dir}" \
+    "Compose plugin=${plugin_dir}/docker-compose" \
+    'Close this terminal, open a new terminal, and rerun this script.' >&2
+  exit 4
+fi
+docker buildx version
 git --version
 "$(brew --prefix make)/libexec/gnubin/make" --version | head -n 1
 "$(brew --prefix openssl@3)/bin/openssl" version

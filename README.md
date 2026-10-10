@@ -4,6 +4,8 @@ Binance USDⓈ-M USDT永续合约的数据采集、实时决策、交易执行�
 
 当前开发阶段：P3分钟K线采集。已具备全合约目录、分钟Ticker、资金费率、1分钟Trade/Mark K线、5分钟Trade K线、5分钟OI、滚动涨幅榜、JetStream幂等落库和多序列缺口自动回补。需求、实施计划和数据库说明位于 `docs/`。
 
+采集监控MVP提供只读FastAPI、React Web界面、数据覆盖率、回补队列、REST权重、数据库容量和JetStream状态。默认仅监听 `127.0.0.1:8080`。
+
 ## 本地启动
 
 ```bash
@@ -42,6 +44,15 @@ make runtime-up
 make runtime-logs
 make runtime-down
 ```
+
+只启动或查看采集监控：
+
+```bash
+make monitor-up
+make monitor-logs
+```
+
+浏览器访问 `http://127.0.0.1:8080`。局域网访问前应配置认证和防火墙；开发阶段推荐SSH隧道。
 
 手动执行一轮缺口检测与回补：
 
