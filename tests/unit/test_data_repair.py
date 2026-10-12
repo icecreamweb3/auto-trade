@@ -11,8 +11,10 @@ from auto_trade.collectors.data_repair import (
     BackfillJob,
     DataRepairService,
     GapRange,
+    align_kline_range,
     group_missing_points,
     next_cycle_delay,
+    split_gap_range,
 )
 from auto_trade.collectors.service import TRADE_5M_SERIES
 
@@ -36,6 +38,59 @@ def test_group_missing_points_merges_contiguous_ranges_per_instrument() -> None:
         ),
         GapRange(2, "ETHUSDT", start, start + timedelta(minutes=5), 1),
     ]
+
+
+def test_split_gap_range_respects_binance_kline_limit() -> None:
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    gap = GapRange(
+        1,
+        "BTCUSDT",
+        start,
+        start + timedelta(minutes=5 * 3_001),
+        3_001,
+        TRADE_5M_SERIES,
+    )
+    split = split_gap_range(gap, max_points=1_500)
+
+    assert [(item.start, item.expected_count) for item in split] == [
+        (start, 1_500),
+        (start + timedelta(minutes=7_500), 1_500),
+        (start + timedelta(minutes=15_000), 1),
+    ]
+    assert split[-1].end == gap.end
+
+
+def test_gap_scan_ranges_align_to_series_boundaries() -> None:
+    start = datetime(2026, 10, 1, 12, 1, 42, tzinfo=UTC)
+    end = datetime(2026, 10, 1, 13, 4, 9, tzinfo=UTC)
+
+    assert align_kline_range(start, end, TRADE_5M_SERIES) == (
+        datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+        datetime(2026, 10, 1, 13, 0, tzinfo=UTC),
+    )
+
+
+def test_historical_gap_scan_advances_in_bounded_windows() -> None:
+    settings = SimpleNamespace(
+        gap_scan_lookback_hours=72,
+        gap_scan_recent_lookback_hours=24,
+        gap_scan_historical_window_hours=12,
+    )
+    service = DataRepairService(MagicMock(), MagicMock(), settings)
+    now = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+
+    first = service._gap_scan_ranges(now)
+    service._complete_historical_scan(first)
+    second = service._gap_scan_ranges(now)
+
+    assert first == (
+        (now - timedelta(hours=24), now),
+        (now - timedelta(hours=72), now - timedelta(hours=60)),
+    )
+    assert second == (
+        (now - timedelta(hours=24), now),
+        (now - timedelta(hours=60), now - timedelta(hours=48)),
+    )
 
 
 def test_backlog_cycles_continue_without_full_idle_delay() -> None:

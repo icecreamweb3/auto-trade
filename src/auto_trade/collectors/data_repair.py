@@ -59,6 +59,8 @@ REPAIR_SERIES = (
     TRADE_5M_SERIES,
 )
 
+MAX_KLINE_POINTS_PER_BACKFILL_JOB = 1500
+
 
 def group_missing_points(
     rows: list[tuple[int, str, datetime]], interval: timedelta
@@ -84,6 +86,45 @@ def group_missing_points(
             current = GapRange(instrument_id, symbol, point, point + interval, 1)
             gaps.append(current)
     return gaps
+
+
+def split_gap_range(
+    gap: GapRange, *, max_points: int = MAX_KLINE_POINTS_PER_BACKFILL_JOB
+) -> list[GapRange]:
+    """Split a gap into Binance Kline API-sized jobs."""
+    if max_points < 1:
+        raise ValueError("max_points must be positive")
+    interval = timedelta(seconds=gap.series.interval_seconds)
+    maximum_span = interval * max_points
+    ranges: list[GapRange] = []
+    start = gap.start
+    while start < gap.end:
+        end = min(start + maximum_span, gap.end)
+        expected_count = int((end - start) / interval)
+        ranges.append(
+            GapRange(
+                gap.instrument_id,
+                gap.symbol,
+                start,
+                end,
+                expected_count,
+                gap.series,
+            )
+        )
+        start = end
+    return ranges
+
+
+def align_kline_range(
+    start: datetime, end: datetime, series: KlineSeries
+) -> tuple[datetime, datetime]:
+    interval_seconds = series.interval_seconds
+    start_epoch = int(start.timestamp()) // interval_seconds * interval_seconds
+    end_epoch = int(end.timestamp()) // interval_seconds * interval_seconds
+    return (
+        datetime.fromtimestamp(start_epoch, tz=UTC),
+        datetime.fromtimestamp(end_epoch, tz=UTC),
+    )
 
 
 def next_cycle_delay(
@@ -113,12 +154,19 @@ class DataRepairRepository:
         series: KlineSeries,
     ) -> list[GapRange]:
         now = datetime.now(UTC).replace(microsecond=0)
-        end_epoch = (
-            int(now.timestamp()) // series.interval_seconds * series.interval_seconds
-            - series.interval_seconds
-        )
-        end = datetime.fromtimestamp(end_epoch, tz=UTC)
-        start = end - timedelta(hours=lookback_hours)
+        start = now - timedelta(hours=lookback_hours)
+        end = now
+        return await self.detect_kline_gaps_in_range(start, end, series)
+
+    async def detect_kline_gaps_in_range(
+        self,
+        start: datetime,
+        end: datetime,
+        series: KlineSeries,
+    ) -> list[GapRange]:
+        aligned_start, aligned_end = align_kline_range(start, end, series)
+        if aligned_start >= aligned_end:
+            return []
         step = timedelta(seconds=series.interval_seconds)
         async with self._engine.connect() as connection:
             result = await connection.execute(
@@ -156,8 +204,8 @@ class DataRepairRepository:
                     """
                 ),
                 {
-                    "range_start": start,
-                    "range_end": end,
+                    "range_start": aligned_start,
+                    "range_end": aligned_end,
                     "step": step,
                     "price_type": series.price_type.value,
                     "data_type": series.data_type,
@@ -183,74 +231,75 @@ class DataRepairRepository:
     async def queue_gaps(self, gaps: list[GapRange]) -> int:
         queued = 0
         async with self._engine.begin() as connection:
-            for gap in gaps:
-                gap_id = cast(
-                    UUID,
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                                INSERT INTO market.data_gaps (
-                                    instrument_id, data_type, interval_seconds,
-                                    gap_start, gap_end, expected_count, actual_count,
-                                    status, detected_at, reason_code, details
-                                ) VALUES (
-                                    :instrument_id, :data_type, :interval_seconds,
-                                    :gap_start, :gap_end,
-                                    :expected_count, 0, 'QUEUED', clock_timestamp(),
-                                    'MISSING_INTERVAL', '{}'::jsonb
-                                )
-                                ON CONFLICT (
-                                    instrument_id, data_type, interval_seconds,
-                                    gap_start, gap_end
-                                ) DO UPDATE SET
-                                    expected_count = EXCLUDED.expected_count,
-                                    actual_count = 0,
-                                    status = CASE
-                                        WHEN market.data_gaps.status = 'VERIFIED'
-                                        THEN market.data_gaps.status
-                                        ELSE 'QUEUED'
-                                    END
-                                RETURNING gap_id
-                                """
-                            ),
-                            {
-                                "instrument_id": gap.instrument_id,
-                                "data_type": gap.series.data_type,
-                                "interval_seconds": gap.series.interval_seconds,
-                                "gap_start": gap.start,
-                                "gap_end": gap.end,
-                                "expected_count": gap.expected_count,
-                            },
-                        )
-                    ).scalar_one(),
-                )
-                result = await connection.execute(
-                    text(
-                        """
-                        INSERT INTO market.backfill_jobs (
-                            gap_id, instrument_id, data_type, range_start, range_end,
-                            source_priority, status
-                        )
-                        SELECT :gap_id, :instrument_id, :data_type,
-                               :range_start, :range_end,
-                               '["BINANCE_REST"]'::jsonb, 'PENDING'
-                        WHERE NOT EXISTS (
-                            SELECT 1 FROM market.backfill_jobs
-                            WHERE gap_id = :gap_id
-                              AND status IN ('PENDING','RUNNING','SUCCEEDED')
-                        )
-                        """
-                    ),
-                    {
-                        "gap_id": gap_id,
-                        "instrument_id": gap.instrument_id,
-                        "data_type": gap.series.data_type,
-                        "range_start": gap.start,
-                        "range_end": gap.end,
-                    },
-                )
-                queued += result.rowcount
+            for detected_gap in gaps:
+                for gap in split_gap_range(detected_gap):
+                    gap_id = cast(
+                        UUID,
+                        (
+                            await connection.execute(
+                                text(
+                                    """
+                                    INSERT INTO market.data_gaps (
+                                        instrument_id, data_type, interval_seconds,
+                                        gap_start, gap_end, expected_count, actual_count,
+                                        status, detected_at, reason_code, details
+                                    ) VALUES (
+                                        :instrument_id, :data_type, :interval_seconds,
+                                        :gap_start, :gap_end,
+                                        :expected_count, 0, 'QUEUED', clock_timestamp(),
+                                        'MISSING_INTERVAL', '{}'::jsonb
+                                    )
+                                    ON CONFLICT (
+                                        instrument_id, data_type, interval_seconds,
+                                        gap_start, gap_end
+                                    ) DO UPDATE SET
+                                        expected_count = EXCLUDED.expected_count,
+                                        actual_count = 0,
+                                        status = CASE
+                                            WHEN market.data_gaps.status = 'VERIFIED'
+                                            THEN market.data_gaps.status
+                                            ELSE 'QUEUED'
+                                        END
+                                    RETURNING gap_id
+                                    """
+                                ),
+                                {
+                                    "instrument_id": gap.instrument_id,
+                                    "data_type": gap.series.data_type,
+                                    "interval_seconds": gap.series.interval_seconds,
+                                    "gap_start": gap.start,
+                                    "gap_end": gap.end,
+                                    "expected_count": gap.expected_count,
+                                },
+                            )
+                        ).scalar_one(),
+                    )
+                    result = await connection.execute(
+                        text(
+                            """
+                            INSERT INTO market.backfill_jobs (
+                                gap_id, instrument_id, data_type, range_start, range_end,
+                                source_priority, status
+                            )
+                            SELECT :gap_id, :instrument_id, :data_type,
+                                   :range_start, :range_end,
+                                   '["BINANCE_REST"]'::jsonb, 'PENDING'
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM market.backfill_jobs
+                                WHERE gap_id = :gap_id
+                                  AND status IN ('PENDING','RUNNING','SUCCEEDED')
+                            )
+                            """
+                        ),
+                        {
+                            "gap_id": gap_id,
+                            "instrument_id": gap.instrument_id,
+                            "data_type": gap.series.data_type,
+                            "range_start": gap.start,
+                            "range_end": gap.end,
+                        },
+                    )
+                    queued += result.rowcount
         return queued
 
     async def claim_job(self) -> BackfillJob | None:
@@ -570,19 +619,50 @@ class DataRepairService:
         self._repository = repository
         self._collector = collector
         self._settings = settings
+        self._historical_scan_cursor: datetime | None = None
+        self._historical_scan_stop: datetime | None = None
+
+    def _gap_scan_ranges(
+        self, now: datetime
+    ) -> tuple[tuple[datetime, datetime], ...]:
+        recent_hours = self._settings.gap_scan_recent_lookback_hours
+        historical_hours = self._settings.gap_scan_lookback_hours
+        window_hours = self._settings.gap_scan_historical_window_hours
+        recent_start = now - timedelta(hours=recent_hours)
+        ranges: list[tuple[datetime, datetime]] = [(recent_start, now)]
+        if historical_hours <= recent_hours:
+            return tuple(ranges)
+        if self._historical_scan_cursor is None:
+            self._historical_scan_cursor = now - timedelta(hours=historical_hours)
+            self._historical_scan_stop = recent_start
+        assert self._historical_scan_stop is not None
+        if self._historical_scan_cursor < self._historical_scan_stop:
+            historical_end = min(
+                self._historical_scan_cursor + timedelta(hours=window_hours),
+                self._historical_scan_stop,
+            )
+            ranges.append((self._historical_scan_cursor, historical_end))
+        return tuple(ranges)
+
+    def _complete_historical_scan(
+        self, ranges: tuple[tuple[datetime, datetime], ...]
+    ) -> None:
+        if len(ranges) > 1:
+            self._historical_scan_cursor = ranges[-1][1]
 
     async def run_cycle(self, *, scan_gaps: bool = True) -> dict[str, int]:
         gaps: list[GapRange] = []
         if scan_gaps:
+            scan_ranges = self._gap_scan_ranges(datetime.now(UTC).replace(microsecond=0))
             gap_groups = await asyncio.gather(
                 *(
-                    self._repository.detect_kline_gaps(
-                        self._settings.gap_scan_lookback_hours, series
-                    )
+                    self._repository.detect_kline_gaps_in_range(start, end, series)
+                    for start, end in scan_ranges
                     for series in REPAIR_SERIES
                 )
             )
             gaps = [gap for group in gap_groups for gap in group]
+            self._complete_historical_scan(scan_ranges)
         queued = await self._repository.queue_gaps(gaps) if gaps else 0
         succeeded = 0
         failed = 0
