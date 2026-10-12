@@ -29,7 +29,14 @@ async def test_scheduler_starts_websocket_and_rest_fallback_loops() -> None:
     scheduler._settings = SimpleNamespace(collector_startup_delay_seconds=0)
     started = {
         name: asyncio.Event()
-        for name in ("ticker", "one_minute", "five_minute", "instrument", "websocket")
+        for name in (
+            "ticker",
+            "open_interest",
+            "one_minute",
+            "five_minute",
+            "instrument",
+            "websocket",
+        )
     }
 
     async def sync_until_ready() -> None:
@@ -41,6 +48,7 @@ async def test_scheduler_starts_websocket_and_rest_fallback_loops() -> None:
 
     scheduler._sync_instruments_until_ready = sync_until_ready
     scheduler._ticker_loop = lambda: mark_started("ticker")
+    scheduler._open_interest_loop = lambda: mark_started("open_interest")
     scheduler._one_minute_kline_loop = lambda: mark_started("one_minute")
     scheduler._kline_loop = lambda: mark_started("five_minute")
     scheduler._instrument_loop = lambda: mark_started("instrument")

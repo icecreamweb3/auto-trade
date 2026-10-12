@@ -93,16 +93,27 @@ class CollectorScheduler:
                     self._symbols
                 )
                 logger.info("WebSocket ticker minute cycle published=%d", count)
-                now = datetime.now(UTC)
-                if now.minute % 5 == 0:
-                    oi_count = await self._service.collect_open_interest(self._symbols)
-                    logger.info(
-                        "REST open interest cycle published=%d symbols=%d",
-                        oi_count,
-                        len(self._symbols),
-                    )
             except Exception:
                 logger.exception("ticker minute cycle failed")
+
+    async def _open_interest_loop(self) -> None:
+        while True:
+            await asyncio.sleep(
+                seconds_until_interval(
+                    datetime.now(UTC),
+                    300,
+                    self._settings.collector_boundary_delay_seconds,
+                )
+            )
+            try:
+                count = await self._service.collect_open_interest(self._symbols)
+                logger.info(
+                    "REST open interest cycle published=%d symbols=%d",
+                    count,
+                    len(self._symbols),
+                )
+            except Exception:
+                logger.exception("open interest cycle failed")
 
     async def _kline_loop(self) -> None:
         while True:
@@ -159,6 +170,7 @@ class CollectorScheduler:
         await asyncio.sleep(self._settings.collector_startup_delay_seconds)
         await asyncio.gather(
             self._ticker_loop(),
+            self._open_interest_loop(),
             self._one_minute_kline_loop(),
             self._kline_loop(),
             self._instrument_loop(),

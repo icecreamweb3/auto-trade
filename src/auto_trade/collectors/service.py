@@ -224,6 +224,7 @@ class BinanceCollectionService:
         self._websocket_tickers: dict[str, JsonObject] = {}
         self._websocket_premiums: dict[str, JsonObject] = {}
         self._websocket_mark_minutes: dict[str, MarkMinuteState] = {}
+        self._websocket_mark_lock = asyncio.Lock()
         self._active_symbols: frozenset[str] = frozenset()
 
     def set_active_symbols(self, symbols: set[str]) -> None:
@@ -491,42 +492,89 @@ class BinanceCollectionService:
                     self._latest_mark_prices[symbol] = price
                     event_time = _utc_from_ms(value.get("E"))
                     minute_time = event_time.replace(second=0, microsecond=0)
-                    state = self._websocket_mark_minutes.get(symbol)
-                    if state is None or minute_time < state.open_time:
-                        self._websocket_mark_minutes[symbol] = MarkMinuteState(
-                            minute_time, price, price, price, price
-                        )
-                    elif minute_time == state.open_time:
-                        state.high_price = max(state.high_price, price)
-                        state.low_price = min(state.low_price, price)
-                        state.close_price = price
-                    else:
-                        close_ms = int(
-                            (state.open_time + timedelta(minutes=1)).timestamp() * 1000
-                        ) - 1
-                        await self._publish_kline_row(
-                            symbol,
-                            [
-                                int(state.open_time.timestamp() * 1000),
-                                state.open_price,
-                                state.high_price,
-                                state.low_price,
-                                state.close_price,
-                                "0",
-                                close_ms,
-                                "0",
-                                0,
-                            ],
-                            datetime.now(UTC),
-                            MarketSource.WEBSOCKET,
-                            KlineSeries(PriceType.MARK, 60),
-                        )
-                        self._websocket_mark_closes[symbol] = state.open_time
-                        self._websocket_mark_minutes[symbol] = MarkMinuteState(
-                            minute_time, price, price, price, price
-                        )
+                    async with self._websocket_mark_lock:
+                        state = self._websocket_mark_minutes.get(symbol)
+                        if state is None or minute_time < state.open_time:
+                            self._websocket_mark_minutes[symbol] = MarkMinuteState(
+                                minute_time, price, price, price, price
+                            )
+                        elif minute_time == state.open_time:
+                            state.high_price = max(state.high_price, price)
+                            state.low_price = min(state.low_price, price)
+                            state.close_price = price
+                        else:
+                            if (
+                                self._websocket_mark_closes.get(symbol)
+                                != state.open_time
+                            ):
+                                await self._publish_mark_minute(symbol, state)
+                                self._websocket_mark_closes[symbol] = state.open_time
+                            self._websocket_mark_minutes[symbol] = MarkMinuteState(
+                                minute_time, price, price, price, price
+                            )
                 handled = True
         return handled
+
+    async def _publish_mark_minute(
+        self, symbol: str, state: MarkMinuteState
+    ) -> None:
+        close_ms = int(
+            (state.open_time + timedelta(minutes=1)).timestamp() * 1000
+        ) - 1
+        await self._publish_kline_row(
+            symbol,
+            [
+                int(state.open_time.timestamp() * 1000),
+                state.open_price,
+                state.high_price,
+                state.low_price,
+                state.close_price,
+                "0",
+                close_ms,
+                "0",
+                0,
+            ],
+            datetime.now(UTC),
+            MarketSource.WEBSOCKET,
+            KlineSeries(PriceType.MARK, 60),
+        )
+
+    async def flush_websocket_mark_minutes(
+        self, symbols: set[str], expected_open: datetime
+    ) -> int:
+        """Publish cached completed mark minutes before deciding REST fallback."""
+        async with self._websocket_mark_lock:
+            pending = [
+                (symbol, state)
+                for symbol in sorted(symbols)
+                if (state := self._websocket_mark_minutes.get(symbol)) is not None
+                and state.open_time == expected_open
+                and self._websocket_mark_closes.get(symbol) != expected_open
+            ]
+            results = await asyncio.gather(
+                *(self._publish_mark_minute(symbol, state) for symbol, state in pending),
+                return_exceptions=True,
+            )
+            published = 0
+            for (symbol, state), result in zip(pending, results, strict=True):
+                if isinstance(result, BaseException):
+                    logger.error(
+                        "WebSocket mark minute flush failed symbol=%s "
+                        "open_time=%s error=%s",
+                        symbol,
+                        state.open_time.isoformat(),
+                        result,
+                    )
+                    continue
+                self._websocket_mark_closes[symbol] = state.open_time
+                published += 1
+        if published:
+            logger.info(
+                "WebSocket mark minute flush published=%d expected_open=%s",
+                published,
+                expected_open.isoformat(),
+            )
+        return published
 
     async def publish_websocket_ticker_minutes(self, symbols: set[str]) -> int:
         """Persist one minute snapshot from the latest WebSocket-only caches."""
@@ -727,6 +775,7 @@ class BinanceCollectionService:
         """REST-fetch only 1m series not confirmed closed by WebSocket."""
         now = datetime.now(UTC)
         expected_open = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        await self.flush_websocket_mark_minutes(symbols, expected_open)
         trade_symbols = {
             symbol
             for symbol in symbols

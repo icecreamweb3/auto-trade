@@ -4,6 +4,7 @@ from auto_trade.collectors.websocket_klines import (
     kline_stream_names,
     market_stream_names,
     market_stream_shards,
+    websocket_connect_options,
     websocket_proxy,
 )
 
@@ -51,3 +52,11 @@ def test_websocket_proxy_uses_explicit_binance_proxy_before_generic_proxy() -> N
         == "http://binance-proxy.test:8080"
     )
     assert websocket_proxy({}) is None
+
+
+def test_websocket_connect_uses_binance_server_keepalive() -> None:
+    options = websocket_connect_options("http://proxy.test:8080")
+
+    assert options["ping_interval"] is None
+    assert "ping_timeout" not in options
+    assert options["proxy"] == "http://proxy.test:8080"

@@ -572,6 +572,96 @@ async def test_one_minute_rest_skips_mark_already_closed_by_websocket() -> None:
     assert calls == ["/fapi/v1/klines"]
 
 
+async def test_one_minute_flushes_cached_mark_minute_before_rest_fallback() -> None:
+    now = datetime.now(UTC)
+    open_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    open_ms = int(open_time.timestamp() * 1000)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(
+            200,
+            json=[
+                [
+                    open_ms,
+                    "100",
+                    "110",
+                    "90",
+                    "105",
+                    "12",
+                    open_ms + 60_000 - 1,
+                    "1200",
+                    7,
+                    "0",
+                    "0",
+                    "0",
+                ]
+            ],
+        )
+
+    publisher = RecordingPublisher()
+    client = BinanceUsdMClient(
+        base_url="https://example.test",
+        timeout_seconds=1,
+        max_concurrency=2,
+        attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    async with client:
+        service = BinanceCollectionService(
+            client=client,
+            publisher=publisher,
+            node_id="test-node",
+            shard_id="0",
+        )
+        service.set_active_symbols({"BTCUSDT"})
+        assert await service.observe_websocket_market(
+            {
+                "stream": "!markPrice@arr@1s",
+                "data": [
+                    {
+                        "e": "markPriceUpdate",
+                        "E": open_ms + 30_000,
+                        "s": "BTCUSDT",
+                        "p": "60000",
+                        "i": "60000",
+                        "r": "0.0001",
+                        "T": open_ms + 3_600_000,
+                    }
+                ],
+            }
+        )
+        trade_count, mark_count = await service.collect_1m_klines({"BTCUSDT"})
+        assert await service.observe_websocket_market(
+            {
+                "stream": "!markPrice@arr@1s",
+                "data": [
+                    {
+                        "e": "markPriceUpdate",
+                        "E": open_ms + 60_001,
+                        "s": "BTCUSDT",
+                        "p": "60001",
+                        "i": "60001",
+                        "r": "0.0001",
+                        "T": open_ms + 3_600_000,
+                    }
+                ],
+            }
+        )
+
+    assert trade_count == 1
+    assert mark_count == 0
+    assert calls == ["/fapi/v1/klines"]
+    mark_events = [
+        event
+        for subject, event in publisher.messages
+        if subject == "market.normalized.kline.1m.mark.BTCUSDT"
+    ]
+    assert len(mark_events) == 1
+    assert mark_events[0].payload.open_time == open_time
+
+
 async def test_five_minute_rest_skips_trade_already_closed_by_websocket() -> None:
     now = datetime.now(UTC)
     current_open = now.replace(

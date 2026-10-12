@@ -33,6 +33,17 @@ def websocket_proxy(environ: Mapping[str, str] | None = None) -> str | None:
     return None
 
 
+def websocket_connect_options(proxy_url: str | None) -> dict[str, Any]:
+    """Use Binance server pings without sending client keepalive pings."""
+    return {
+        "open_timeout": 10,
+        "close_timeout": 10,
+        "ping_interval": None,
+        "max_queue": 2048,
+        "proxy": proxy_url,
+    }
+
+
 def kline_stream_names(symbols: Iterable[str]) -> tuple[str, ...]:
     streams: list[str] = []
     for symbol in sorted(set(symbols)):
@@ -155,12 +166,7 @@ class BinanceKlineWebSocketCollector:
                 try:
                     async with connect(
                         url,
-                        open_timeout=10,
-                        close_timeout=10,
-                        ping_interval=20,
-                        ping_timeout=30,
-                        max_queue=2048,
-                        proxy=self._proxy_url,
+                        **websocket_connect_options(self._proxy_url),
                     ) as websocket:
                         connected_at = monotonic()
                         logger.info(
