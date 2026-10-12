@@ -586,46 +586,68 @@ class DataRepairService:
         queued = await self._repository.queue_gaps(gaps) if gaps else 0
         succeeded = 0
         failed = 0
-        for _index in range(self._settings.backfill_jobs_per_cycle):
-            job = await self._repository.claim_job()
-            if job is None:
-                break
-            try:
-                if await self._repository.complete_if_filled(job):
-                    succeeded += 1
-                    continue
-                published = await self._collector.collect_kline_range(
-                    job.symbol, job.start, job.end, job.series
-                )
-                if await self._repository.finish_job(
-                    job,
-                    published,
-                    timeout_seconds=self._settings.backfill_verify_timeout_seconds,
-                    poll_interval_seconds=(
-                        self._settings.backfill_verify_poll_interval_seconds
-                    ),
-                ):
-                    succeeded += 1
-                else:
+        remaining = self._settings.backfill_jobs_per_cycle
+        stop_workers = asyncio.Event()
+        rate_limit_errors: list[BinanceRateLimitError] = []
+
+        async def worker() -> None:
+            nonlocal failed, remaining, succeeded
+            while remaining > 0 and not stop_workers.is_set():
+                remaining -= 1
+                job = await self._repository.claim_job()
+                if job is None:
+                    return
+                try:
+                    if await self._repository.complete_if_filled(job):
+                        succeeded += 1
+                        continue
+                    published = await self._collector.collect_kline_range(
+                        job.symbol, job.start, job.end, job.series
+                    )
+                    if await self._repository.finish_job(
+                        job,
+                        published,
+                        timeout_seconds=self._settings.backfill_verify_timeout_seconds,
+                        poll_interval_seconds=(
+                            self._settings.backfill_verify_poll_interval_seconds
+                        ),
+                    ):
+                        succeeded += 1
+                    else:
+                        failed += 1
+                    await asyncio.sleep(
+                        self._settings.backfill_request_interval_seconds
+                    )
+                except BinanceRateLimitError as error:
+                    await self._repository.defer_job(job, error)
+                    rate_limit_errors.append(error)
+                    stop_workers.set()
+                    logger.warning(
+                        "Binance rate limit paused backfill status=%d retry_after=%.0fs",
+                        error.status_code,
+                        error.retry_after_seconds,
+                    )
+                except Exception as error:
+                    await self._repository.fail_job(job, error)
+                    logger.exception(
+                        "backfill job failed id=%s symbol=%s", job.job_id, job.symbol
+                    )
                     failed += 1
-                await asyncio.sleep(
-                    self._settings.backfill_request_interval_seconds
-                )
-            except BinanceRateLimitError as error:
-                await self._repository.defer_job(job, error)
-                logger.warning(
-                    "Binance rate limit paused backfill status=%d retry_after=%.0fs",
-                    error.status_code,
-                    error.retry_after_seconds,
-                )
-                raise
-            except Exception as error:
-                await self._repository.fail_job(job, error)
-                logger.exception("backfill job failed id=%s symbol=%s", job.job_id, job.symbol)
-                failed += 1
+
+        await asyncio.gather(
+            *(worker() for _index in range(self._settings.backfill_worker_count))
+        )
+        if rate_limit_errors:
+            raise rate_limit_errors[0]
         return {"detected": len(gaps), "queued": queued, "succeeded": succeeded, "failed": failed}
 
     async def run_forever(self) -> None:
+        logger.info(
+            "data repair starting workers=%d jobs_per_cycle=%d request_interval=%.1fs",
+            self._settings.backfill_worker_count,
+            self._settings.backfill_jobs_per_cycle,
+            self._settings.backfill_request_interval_seconds,
+        )
         recovered = await self._repository.recover_interrupted_jobs(
             stale_after_seconds=self._settings.backfill_stale_job_seconds,
             failed_retry_limit=self._settings.backfill_failed_retry_limit,

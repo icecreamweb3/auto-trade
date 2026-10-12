@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -87,6 +88,7 @@ async def test_backlog_cycle_skips_scan_and_binance_for_prefilled_job() -> None:
     collector.collect_kline_range = AsyncMock()
     settings = SimpleNamespace(
         backfill_jobs_per_cycle=2,
+        backfill_worker_count=2,
         gap_scan_lookback_hours=24,
         backfill_verify_timeout_seconds=60.0,
         backfill_verify_poll_interval_seconds=1.0,
@@ -124,6 +126,7 @@ async def test_rate_limit_defers_job_and_stops_cycle() -> None:
     collector.collect_kline_range = AsyncMock(side_effect=rate_limit)
     settings = SimpleNamespace(
         backfill_jobs_per_cycle=2,
+        backfill_worker_count=1,
         gap_scan_lookback_hours=24,
         backfill_verify_timeout_seconds=60.0,
         backfill_verify_poll_interval_seconds=1.0,
@@ -137,3 +140,54 @@ async def test_rate_limit_defers_job_and_stops_cycle() -> None:
 
     repository.defer_job.assert_awaited_once_with(job, rate_limit)
     repository.fail_job.assert_not_awaited()
+
+
+async def test_backfill_workers_process_jobs_concurrently() -> None:
+    start = datetime(2026, 10, 9, 10, 0, tzinfo=UTC)
+    jobs = [
+        BackfillJob(
+            UUID(int=index),
+            UUID(int=100 + index),
+            index,
+            f"TEST{index}USDT",
+            start,
+            start + timedelta(minutes=5),
+            1,
+            TRADE_5M_SERIES,
+        )
+        for index in range(1, 5)
+    ]
+    repository = MagicMock()
+    repository.claim_job = AsyncMock(side_effect=[*jobs, None, None, None, None])
+    repository.complete_if_filled = AsyncMock(return_value=False)
+    repository.finish_job = AsyncMock(return_value=True)
+    repository.defer_job = AsyncMock()
+    repository.fail_job = AsyncMock()
+    collector = MagicMock()
+    active = 0
+    maximum_active = 0
+
+    async def collect(*_args: object) -> int:
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return 1
+
+    collector.collect_kline_range = AsyncMock(side_effect=collect)
+    settings = SimpleNamespace(
+        backfill_jobs_per_cycle=4,
+        backfill_worker_count=4,
+        gap_scan_lookback_hours=24,
+        backfill_verify_timeout_seconds=60.0,
+        backfill_verify_poll_interval_seconds=1.0,
+        backfill_request_interval_seconds=0,
+    )
+
+    result = await DataRepairService(repository, collector, settings).run_cycle(
+        scan_gaps=False
+    )
+
+    assert result == {"detected": 0, "queued": 0, "succeeded": 4, "failed": 0}
+    assert maximum_active == 4

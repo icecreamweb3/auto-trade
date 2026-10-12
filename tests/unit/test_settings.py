@@ -36,3 +36,4 @@ def test_file_logging_defaults_to_disabled() -> None:
     assert settings.file_log_enabled is False
     assert settings.file_log_directory == "/var/log/auto-trade"
     assert settings.file_log_retention_days == 14
+    assert settings.backfill_worker_count == 4

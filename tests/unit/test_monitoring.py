@@ -127,7 +127,7 @@ def test_backfill_reports_recent_throughput_and_estimated_clear_time() -> None:
     )
 
     assert metric.queue_delta_last_hour == -100
-    assert metric.estimated_clear_seconds == 7200
+    assert metric.estimated_clear_seconds == 8640
     assert metric.succeeded_last_hour == 120
     assert metric.pending_range_start == range_start
     assert metric.pending_range_end == range_end
@@ -140,6 +140,24 @@ def test_backfill_clear_time_is_unknown_without_recent_success() -> None:
         database_snapshot(backfill=BackfillRows({"PENDING": 5}, 5, 30))
     )
 
+    assert metric.estimated_clear_seconds is None
+
+
+def test_backfill_clear_time_is_unknown_while_queue_is_growing() -> None:
+    metric = backfill_metric(
+        database_snapshot(
+            backfill=BackfillRows(
+                {"PENDING": 9166, "SUCCEEDED": 24740},
+                9166,
+                18000,
+                succeeded_last_hour=1015,
+                created_last_hour=5667,
+                finished_last_hour=1015,
+            )
+        )
+    )
+
+    assert metric.queue_delta_last_hour == 4652
     assert metric.estimated_clear_seconds is None
 
 

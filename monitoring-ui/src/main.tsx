@@ -510,7 +510,14 @@ function MonitoringDashboard() {
                 <div><dt>近1小时成功</dt><dd>{data.backfill.succeeded_last_hour} 个</dd></div>
                 <div><dt>近1小时新增</dt><dd>{data.backfill.created_last_hour} 个</dd></div>
                 <div><dt>新增−结束（1h）</dt><dd className={data.backfill.queue_delta_last_hour > 0 ? "trend-up" : "trend-down"}>{formatDelta(data.backfill.queue_delta_last_hour)}</dd></div>
-                <div><dt>预计清空</dt><dd>{formatAge(data.backfill.estimated_clear_seconds)}</dd></div>
+                <div>
+                  <dt>预计清空</dt>
+                  <dd>
+                    {data.backfill.queue_delta_last_hour > 0
+                      ? "无法清空（仍增长）"
+                      : formatAge(data.backfill.estimated_clear_seconds)}
+                  </dd>
+                </div>
                 <div><dt>最近成功</dt><dd>{formatUtc(data.backfill.last_succeeded_at)}</dd></div>
                 <div><dt>最老等待</dt><dd>{formatAge(data.backfill.oldest_pending_seconds)}</dd></div>
               </dl>

@@ -115,10 +115,11 @@ def backfill_metric(snapshot: DatabaseSnapshot) -> BackfillMetric:
         status = HealthStatus.HEALTHY
         message = "回补队列正常"
     estimated_clear_seconds: float | None
+    net_finished_last_hour = row.finished_last_hour - row.created_last_hour
     if counts.pending == 0:
         estimated_clear_seconds = 0
-    elif row.succeeded_last_hour > 0:
-        estimated_clear_seconds = counts.pending / row.succeeded_last_hour * 3600
+    elif net_finished_last_hour > 0:
+        estimated_clear_seconds = counts.pending / net_finished_last_hour * 3600
     else:
         estimated_clear_seconds = None
     return BackfillMetric(
