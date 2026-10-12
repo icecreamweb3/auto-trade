@@ -35,6 +35,17 @@ interface MonitoringSnapshot {
     queue_delta_last_hour: number;
     estimated_clear_seconds: number | null;
     last_succeeded_at: string | null;
+    pending_range_start: string | null;
+    pending_range_end: string | null;
+    running_jobs: Array<{
+      symbol: string;
+      data_type: string;
+      interval_seconds: number;
+      range_start: string;
+      range_end: string;
+      started_at: string | null;
+      attempts: number;
+    }>;
     message: string;
   };
   rest_usage: {
@@ -79,6 +90,53 @@ interface MonitoringSnapshot {
   notices: string[];
 }
 
+interface RankingEntry {
+  utc_trade_date: string;
+  snapshot_at: string;
+  rank_no: number;
+  symbol: string;
+  price_change: number;
+  reference_open_price: number | null;
+  snapshot_price: number | null;
+  base_volume: number | null;
+  quote_volume: number | null;
+  amplitude: number | null;
+  period_high_price: number | null;
+  period_high_at: string | null;
+  period_low_price: number | null;
+  period_low_at: string | null;
+  open_interest_qty: number | null;
+  open_interest_value: number | null;
+  open_interest_status: string;
+  quality_status: string;
+}
+
+interface RankingResult {
+  available_first_date: string | null;
+  available_last_date: string | null;
+  date_from: string | null;
+  date_to: string | null;
+  symbol: string | null;
+  rank_from: number;
+  rank_to: number;
+  page: number;
+  page_size: number;
+  total: number;
+  matching_days: number;
+  average_change: number | null;
+  maximum_change: number | null;
+  minimum_change: number | null;
+  items: RankingEntry[];
+}
+
+interface RankingFilters {
+  dateFrom: string;
+  dateTo: string;
+  symbol: string;
+  rankFrom: number;
+  rankTo: number;
+}
+
 const statusText: Record<HealthStatus, string> = {
   HEALTHY: "健康",
   WARNING: "注意",
@@ -102,6 +160,21 @@ function formatAge(seconds: number | null): string {
   return `${(seconds / 3600).toFixed(1)} 小时`;
 }
 
+function formatUtcRange(start: string | null, end: string | null): string {
+  if (!start || !end) return "—";
+  const from = new Date(start).toISOString().replace("T", " ").slice(0, 16);
+  const to = new Date(end).toISOString().replace("T", " ").slice(0, 16);
+  return `${from} → ${to} UTC`;
+}
+
+function formatBackfillSeries(dataType: string, intervalSeconds: number): string {
+  const type = dataType === "KLINE_MARK" ? "Mark K线" : "Trade K线";
+  const interval = intervalSeconds % 60 === 0
+    ? `${intervalSeconds / 60}m`
+    : `${intervalSeconds}s`;
+  return `${type} · ${interval}`;
+}
+
 function formatDelta(value: number): string {
   return value > 0 ? `+${value}` : value.toString();
 }
@@ -117,6 +190,23 @@ function formatBytes(bytes: number): string {
     value /= 1024;
   }
   return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function formatNumber(value: number | null, maximumFractionDigits = 4): string {
+  if (value === null) return "—";
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits }).format(value);
+}
+
+function formatCompact(value: number | null): string {
+  if (value === null) return "—";
+  return new Intl.NumberFormat("zh-CN", {
+    notation: "compact",
+    maximumFractionDigits: 2
+  }).format(value);
+}
+
+function changeClass(value: number): string {
+  return value >= 0 ? "change-positive" : "change-negative";
 }
 
 function CoverageCard({ metric }: { metric: CoverageMetric }) {
@@ -146,7 +236,179 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
   );
 }
 
-function App() {
+function RankingExplorer() {
+  const [data, setData] = useState<RankingResult | null>(null);
+  const [filters, setFilters] = useState<RankingFilters>({
+    dateFrom: "",
+    dateTo: "",
+    symbol: "",
+    rankFrom: 1,
+    rankTo: 50
+  });
+  const [selected, setSelected] = useState<RankingEntry | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load(nextFilters: RankingFilters, page = 1) {
+    setLoading(true);
+    const params = new URLSearchParams({
+      rank_from: String(nextFilters.rankFrom),
+      rank_to: String(nextFilters.rankTo),
+      page: String(page),
+      page_size: "100"
+    });
+    if (nextFilters.dateFrom) params.set("date_from", nextFilters.dateFrom);
+    if (nextFilters.dateTo) params.set("date_to", nextFilters.dateTo);
+    if (nextFilters.symbol.trim()) params.set("symbol", nextFilters.symbol.trim());
+    try {
+      const response = await fetch(`/api/rankings/daily?${params}`, { cache: "no-store" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { detail?: string } | null;
+        throw new Error(payload?.detail ?? `HTTP ${response.status}`);
+      }
+      const result = await response.json() as RankingResult;
+      setData(result);
+      setSelected((current) => result.items.find((item) =>
+        current && item.utc_trade_date === current.utc_trade_date && item.rank_no === current.rank_no
+      ) ?? result.items[0] ?? null);
+      if (!nextFilters.dateFrom && !nextFilters.dateTo && result.date_from && result.date_to) {
+        setFilters((current) => ({ ...current, dateFrom: result.date_from!, dateTo: result.date_to! }));
+      }
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法读取涨幅榜");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void load(filters); }, []);
+
+  function applyRange(days: number | "all" | "latest") {
+    if (!data?.available_first_date || !data.available_last_date) return;
+    let from = data.available_last_date;
+    if (days === "all") from = data.available_first_date;
+    if (typeof days === "number") {
+      const value = new Date(`${data.available_last_date}T00:00:00Z`);
+      value.setUTCDate(value.getUTCDate() - days + 1);
+      from = value.toISOString().slice(0, 10);
+    }
+    const next = { ...filters, dateFrom: from, dateTo: data.available_last_date };
+    setFilters(next);
+    void load(next);
+  }
+
+  function navigateDay(offset: -1 | 1) {
+    const currentDay = selected?.utc_trade_date ?? data?.date_to;
+    if (!currentDay || !data?.available_first_date || !data.available_last_date) return;
+    const value = new Date(`${currentDay}T00:00:00Z`);
+    value.setUTCDate(value.getUTCDate() + offset);
+    const targetDay = value.toISOString().slice(0, 10);
+    if (targetDay < data.available_first_date || targetDay > data.available_last_date) return;
+    const next = { ...filters, dateFrom: targetDay, dateTo: targetDay };
+    setFilters(next);
+    void load(next);
+  }
+
+  const pages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1;
+  const navigationDay = selected?.utc_trade_date ?? data?.date_to ?? null;
+  const cannotGoPrevious = !data?.available_first_date || !navigationDay || navigationDay <= data.available_first_date;
+  const cannotGoNext = !data?.available_last_date || !navigationDay || navigationDay >= data.available_last_date;
+
+  return (
+    <main>
+      <header className="topbar ranking-header">
+        <div>
+          <p className="brand-mark">MARKET RESEARCH</p>
+          <h1>UTC 日涨幅榜查询</h1>
+          <p className="subtitle">UTC 00:00 开盘至 23:55 快照 · Binance USDⓈ-M 永续</p>
+        </div>
+        <div className="data-range-badge">
+          <span>本地数据范围</span>
+          <strong>{data?.available_first_date ?? "—"} → {data?.available_last_date ?? "—"}</strong>
+        </div>
+      </header>
+
+      {error && <div className="alert alert-critical">查询失败：{error}</div>}
+
+      <section className="panel query-panel">
+        <form onSubmit={(event) => { event.preventDefault(); void load(filters); }}>
+          <label><span>开始日期（UTC）</span><input type="date" value={filters.dateFrom} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateFrom: event.target.value })} /></label>
+          <label><span>结束日期（UTC）</span><input type="date" value={filters.dateTo} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateTo: event.target.value })} /></label>
+          <label className="symbol-field"><span>交易对</span><input type="search" placeholder="例如 BTC 或 USDT" value={filters.symbol} onChange={(event) => setFilters({ ...filters, symbol: event.target.value.toUpperCase() })} /></label>
+          <label><span>排名从</span><input type="number" min="1" max="50" value={filters.rankFrom} onChange={(event) => setFilters({ ...filters, rankFrom: Number(event.target.value) })} /></label>
+          <label><span>排名至</span><input type="number" min="1" max="50" value={filters.rankTo} onChange={(event) => setFilters({ ...filters, rankTo: Number(event.target.value) })} /></label>
+          <button className="primary-button" type="submit" disabled={loading}>{loading ? "查询中…" : "查询"}</button>
+        </form>
+        <div className="quick-ranges">
+          <span>快捷范围</span>
+          <button type="button" onClick={() => applyRange("latest")}>最新日</button>
+          <button type="button" onClick={() => applyRange(7)}>近 7 日</button>
+          <button type="button" onClick={() => applyRange(30)}>近 30 日</button>
+          <button type="button" onClick={() => applyRange("all")}>全部 90 日</button>
+        </div>
+      </section>
+
+      <section className="ranking-summary-grid">
+        <article className="summary-card"><span>匹配记录</span><strong>{data?.total.toLocaleString() ?? "—"}</strong><small>{data?.matching_days ?? 0} 个 UTC 交易日</small></article>
+        <article className="summary-card"><span>区间最高涨幅</span><strong className="change-positive">{data?.maximum_change == null ? "—" : `+${data.maximum_change.toFixed(2)}%`}</strong><small>筛选结果中的最大值</small></article>
+        <article className="summary-card"><span>平均涨幅</span><strong className={changeClass(data?.average_change ?? 0)}>{data?.average_change == null ? "—" : `${data.average_change.toFixed(2)}%`}</strong><small>当前筛选口径</small></article>
+        <article className="summary-card"><span>区间最低涨幅</span><strong className={changeClass(data?.minimum_change ?? 0)}>{data?.minimum_change == null ? "—" : `${data.minimum_change.toFixed(2)}%`}</strong><small>Top 50 尾部可能为负</small></article>
+      </section>
+
+      <section className="ranking-workspace">
+        <article className="panel ranking-table-panel">
+          <div className="panel-heading ranking-table-heading">
+            <div><p className="eyebrow">查询结果</p><h3>每日排名明细</h3></div>
+            <span className="message">第 {data?.page ?? 1} / {pages} 页</span>
+          </div>
+          <div className="table-scroll ranking-scroll">
+            <table className="storage-table ranking-table">
+              <thead><tr><th>UTC日期</th><th>排名</th><th>交易对</th><th>涨幅</th><th>开盘价</th><th>快照价</th><th>振幅</th><th>成交额</th><th>OI</th></tr></thead>
+              <tbody>
+                {data?.items.map((item) => (
+                  <tr key={`${item.utc_trade_date}-${item.rank_no}`} className={selected?.utc_trade_date === item.utc_trade_date && selected.rank_no === item.rank_no ? "selected-row" : ""} onClick={() => setSelected(item)}>
+                    <td>{item.utc_trade_date}</td><td><span className={`rank-badge rank-${Math.min(item.rank_no, 4)}`}>{item.rank_no}</span></td><td><a className="symbol-link" href={`https://www.binance.com/zh-CN/futures/${encodeURIComponent(item.symbol)}`} target="_blank" rel="noopener noreferrer" title={`在 Binance Futures 查看 ${item.symbol}`}><strong>{item.symbol}</strong><span aria-hidden="true">↗</span></a></td>
+                    <td className={changeClass(item.price_change)}>{item.price_change >= 0 ? "+" : ""}{item.price_change.toFixed(4)}%</td>
+                    <td>{formatNumber(item.reference_open_price, 8)}</td><td>{formatNumber(item.snapshot_price, 8)}</td><td>{formatNumber(item.amplitude, 2)}%</td><td>{formatCompact(item.quote_volume)}</td><td>{item.open_interest_status === "LOCAL_OBSERVATION" ? "有" : "—"}</td>
+                  </tr>
+                ))}
+                {!loading && data?.items.length === 0 && <tr><td className="empty-cell" colSpan={9}>没有符合条件的数据</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="pagination">
+            <button disabled={loading || cannotGoPrevious} onClick={() => navigateDay(-1)}>上一日</button>
+            <span>{data?.total.toLocaleString() ?? 0} 条 · 每页 {data?.page_size ?? 100} 条</span>
+            <button disabled={loading || cannotGoNext} onClick={() => navigateDay(1)}>下一日</button>
+          </div>
+        </article>
+
+        <aside className="panel ranking-detail">
+          <p className="eyebrow">记录详情</p>
+          {selected ? <>
+            <div className="detail-hero"><div><span>#{selected.rank_no}</span><h2>{selected.symbol}</h2><small>{selected.utc_trade_date} · 23:55 UTC</small></div><strong className={changeClass(selected.price_change)}>{selected.price_change >= 0 ? "+" : ""}{selected.price_change.toFixed(4)}%</strong></div>
+            <dl className="metric-list">
+              <div><dt>UTC 开盘价</dt><dd>{formatNumber(selected.reference_open_price, 10)}</dd></div>
+              <div><dt>23:55 快照价</dt><dd>{formatNumber(selected.snapshot_price, 10)}</dd></div>
+              <div><dt>日内最高</dt><dd>{formatNumber(selected.period_high_price, 10)}</dd></div>
+              <div><dt>日内最低</dt><dd>{formatNumber(selected.period_low_price, 10)}</dd></div>
+              <div><dt>日内振幅</dt><dd>{formatNumber(selected.amplitude, 4)}%</dd></div>
+              <div><dt>Quote 成交额</dt><dd>{formatNumber(selected.quote_volume, 2)}</dd></div>
+              <div><dt>Base 成交量</dt><dd>{formatNumber(selected.base_volume, 2)}</dd></div>
+              <div><dt>Open Interest</dt><dd>{formatNumber(selected.open_interest_qty, 4)}</dd></div>
+              <div><dt>OI 价值</dt><dd>{formatNumber(selected.open_interest_value, 2)}</dd></div>
+              <div><dt>OI 状态</dt><dd>{selected.open_interest_status === "LOCAL_OBSERVATION" ? "本地观测" : "历史不可用"}</dd></div>
+            </dl>
+            <p className="detail-note">快照时间 {formatUtc(selected.snapshot_at)}。榜单为 5 分钟 K 线重建结果，不冒充当时实时采集快照。</p>
+          </> : <p className="message">选择一条记录查看完整指标。</p>}
+        </aside>
+      </section>
+    </main>
+  );
+}
+
+function MonitoringDashboard() {
   const [data, setData] = useState<MonitoringSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -227,6 +489,23 @@ function App() {
                 <div><span>历史成功</span><strong>{data.backfill.counts.succeeded}</strong></div>
                 <div><span>历史失败</span><strong>{data.backfill.counts.failed}</strong></div>
               </div>
+              <div className="backfill-scope">
+                <div className="backfill-scope-row">
+                  <span>当前回补数据</span>
+                  {data.backfill.running_jobs.length > 0 ? data.backfill.running_jobs.map((job) => (
+                    <div className="backfill-job" key={`${job.symbol}-${job.range_start}`}>
+                      <strong>{job.symbol}</strong>
+                      <small>{formatBackfillSeries(job.data_type, job.interval_seconds)}</small>
+                      <time>{formatUtcRange(job.range_start, job.range_end)}</time>
+                    </div>
+                  )) : <p>当前无运行任务，等待下一轮领取</p>}
+                </div>
+                <div className="backfill-scope-row">
+                  <span>等待队列数据范围</span>
+                  <time>{formatUtcRange(data.backfill.pending_range_start, data.backfill.pending_range_end)}</time>
+                  <small>{data.backfill.counts.pending} 个待处理任务</small>
+                </div>
+              </div>
               <dl className="repair-details">
                 <div><dt>近1小时成功</dt><dd>{data.backfill.succeeded_last_hour} 个</dd></div>
                 <div><dt>近1小时新增</dt><dd>{data.backfill.created_last_hour} 个</dd></div>
@@ -236,6 +515,7 @@ function App() {
                 <div><dt>最老等待</dt><dd>{formatAge(data.backfill.oldest_pending_seconds)}</dd></div>
               </dl>
               <p className="message">开放缺口 {data.backfill.open_gaps} · {data.backfill.message}</p>
+              <p className="queue-explanation">“当前等待”是动态队列存量；缺口扫描新增量与完成量接近时，数量可能基本不变。</p>
             </article>
 
             <article className="panel">
@@ -288,6 +568,17 @@ function App() {
       )}
     </main>
   );
+}
+
+function App() {
+  const [view, setView] = useState<"rankings" | "monitoring">("rankings");
+  return <>
+    <nav className="workspace-tabs" aria-label="工具导航">
+      <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>
+      <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>
+    </nav>
+    {view === "rankings" ? <RankingExplorer /> : <MonitoringDashboard />}
+  </>;
 }
 
 createRoot(document.getElementById("root")!).render(

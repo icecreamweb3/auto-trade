@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,6 +39,18 @@ class QueueCounts(BaseModel):
     paused: int = 0
 
 
+class BackfillTaskMetric(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    data_type: str
+    interval_seconds: int
+    range_start: datetime
+    range_end: datetime
+    started_at: datetime | None = None
+    attempts: int = 0
+
+
 class BackfillMetric(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -52,6 +64,9 @@ class BackfillMetric(BaseModel):
     queue_delta_last_hour: int = 0
     estimated_clear_seconds: float | None = None
     last_succeeded_at: datetime | None = None
+    pending_range_start: datetime | None = None
+    pending_range_end: datetime | None = None
+    running_jobs: tuple[BackfillTaskMetric, ...] = ()
     message: str
 
 
@@ -130,3 +145,46 @@ class MonitoringSnapshot(BaseModel):
     nats: NatsMetric
     database: DatabaseMetric
     notices: tuple[str, ...] = Field(default_factory=tuple)
+
+
+class DailyRankingEntry(BaseModel):
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    utc_trade_date: date
+    snapshot_at: datetime
+    rank_no: int
+    symbol: str
+    price_change: float
+    reference_open_price: float | None = None
+    snapshot_price: float | None = None
+    base_volume: float | None = None
+    quote_volume: float | None = None
+    amplitude: float | None = None
+    period_high_price: float | None = None
+    period_high_at: datetime | None = None
+    period_low_price: float | None = None
+    period_low_at: datetime | None = None
+    open_interest_qty: float | None = None
+    open_interest_value: float | None = None
+    open_interest_status: str
+    quality_status: str
+
+
+class DailyRankingResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    available_first_date: date | None = None
+    available_last_date: date | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    symbol: str | None = None
+    rank_from: int
+    rank_to: int
+    page: int
+    page_size: int
+    total: int
+    matching_days: int
+    average_change: float | None = None
+    maximum_change: float | None = None
+    minimum_change: float | None = None
+    items: tuple[DailyRankingEntry, ...] = ()

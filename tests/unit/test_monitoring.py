@@ -1,10 +1,12 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
-from auto_trade.monitoring.models import HealthStatus
+from auto_trade.monitoring.models import DailyRankingEntry, HealthStatus
 from auto_trade.monitoring.repository import (
     BackfillRows,
+    BackfillTaskRow,
     CoverageRow,
     DatabaseSnapshot,
+    RankingEntryRow,
     RestUsageRow,
     TableSizeRow,
 )
@@ -95,6 +97,8 @@ def test_backfill_oldest_pending_controls_health() -> None:
 
 
 def test_backfill_reports_recent_throughput_and_estimated_clear_time() -> None:
+    range_start = datetime(2026, 10, 10, 2, 58, tzinfo=UTC)
+    range_end = range_start + timedelta(days=1)
     metric = backfill_metric(
         database_snapshot(
             backfill=BackfillRows(
@@ -105,6 +109,19 @@ def test_backfill_reports_recent_throughput_and_estimated_clear_time() -> None:
                 created_last_hour=20,
                 finished_last_hour=120,
                 last_succeeded_at=datetime.now(UTC),
+                pending_range_start=range_start,
+                pending_range_end=range_end,
+                running_jobs=(
+                    BackfillTaskRow(
+                        symbol="BTCUSDT",
+                        data_type="KLINE_TRADE",
+                        interval_seconds=60,
+                        range_start=range_start,
+                        range_end=range_end,
+                        started_at=datetime.now(UTC),
+                        attempts=1,
+                    ),
+                ),
             )
         )
     )
@@ -112,6 +129,10 @@ def test_backfill_reports_recent_throughput_and_estimated_clear_time() -> None:
     assert metric.queue_delta_last_hour == -100
     assert metric.estimated_clear_seconds == 7200
     assert metric.succeeded_last_hour == 120
+    assert metric.pending_range_start == range_start
+    assert metric.pending_range_end == range_end
+    assert metric.running_jobs[0].symbol == "BTCUSDT"
+    assert metric.running_jobs[0].interval_seconds == 60
 
 
 def test_backfill_clear_time_is_unknown_without_recent_success() -> None:
@@ -192,3 +213,34 @@ def test_database_metric_warns_on_low_cache_hit_rate() -> None:
     )
 
     assert database_metric(snapshot).status is HealthStatus.WARNING
+
+
+def test_daily_ranking_entry_serializes_repository_row() -> None:
+    snapshot_at = datetime(2026, 10, 9, 23, 55, tzinfo=UTC)
+    row = RankingEntryRow(
+        utc_trade_date=date(2026, 10, 9),
+        snapshot_at=snapshot_at,
+        rank_no=1,
+        symbol="BTCUSDT",
+        price_change=12.5,
+        reference_open_price=100.0,
+        snapshot_price=112.5,
+        base_volume=10.0,
+        quote_volume=1000.0,
+        amplitude=15.0,
+        period_high_price=115.0,
+        period_high_at=snapshot_at,
+        period_low_price=99.0,
+        period_low_at=snapshot_at - timedelta(hours=20),
+        open_interest_qty=None,
+        open_interest_value=None,
+        open_interest_status="UNAVAILABLE",
+        quality_status="VALID",
+    )
+
+    payload = DailyRankingEntry.model_validate(row)
+
+    assert payload.symbol == "BTCUSDT"
+    assert payload.price_change == 12.5
+    assert payload.utc_trade_date == date(2026, 10, 9)
+    assert payload.open_interest_status == "UNAVAILABLE"

@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import date
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import check_database, create_database_engine
-from auto_trade.monitoring.models import MonitoringSnapshot
+from auto_trade.monitoring.models import (
+    DailyRankingEntry,
+    DailyRankingResult,
+    MonitoringSnapshot,
+)
 from auto_trade.monitoring.nats_probe import NatsProbe
 from auto_trade.monitoring.repository import MonitoringRepository
 from auto_trade.monitoring.service import MonitoringService
@@ -57,3 +62,50 @@ async def overview(request: Request) -> MonitoringSnapshot:
         return await service.snapshot()
     except Exception as error:
         raise HTTPException(status_code=503, detail="monitoring data unavailable") from error
+
+
+@app.get("/api/rankings/daily", response_model=DailyRankingResult)
+async def daily_rankings(
+    request: Request,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    symbol: str | None = Query(default=None, max_length=32),
+    rank_from: int = Query(default=1, ge=1, le=50),
+    rank_to: int = Query(default=50, ge=1, le=50),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+) -> DailyRankingResult:
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from must not exceed date_to")
+    if rank_from > rank_to:
+        raise HTTPException(status_code=422, detail="rank_from must not exceed rank_to")
+    repository = MonitoringRepository(request.app.state.database_engine)
+    try:
+        result = await repository.daily_rankings(
+            date_from=date_from,
+            date_to=date_to,
+            symbol=symbol,
+            rank_from=rank_from,
+            rank_to=rank_to,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="ranking data unavailable") from error
+    return DailyRankingResult(
+        available_first_date=result.available_first_date,
+        available_last_date=result.available_last_date,
+        date_from=result.date_from,
+        date_to=result.date_to,
+        symbol=symbol.strip().upper() if symbol and symbol.strip() else None,
+        rank_from=rank_from,
+        rank_to=rank_to,
+        page=page,
+        page_size=page_size,
+        total=result.total,
+        matching_days=result.matching_days,
+        average_change=result.average_change,
+        maximum_change=result.maximum_change,
+        minimum_change=result.minimum_change,
+        items=tuple(DailyRankingEntry.model_validate(item) for item in result.items),
+    )

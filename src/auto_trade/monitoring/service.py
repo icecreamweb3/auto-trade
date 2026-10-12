@@ -6,6 +6,7 @@ from typing import Protocol
 from auto_trade.config import Settings
 from auto_trade.monitoring.models import (
     BackfillMetric,
+    BackfillTaskMetric,
     CoverageMetric,
     DatabaseMetric,
     DatabaseTableMetric,
@@ -135,6 +136,20 @@ def backfill_metric(snapshot: DatabaseSnapshot) -> BackfillMetric:
             else None
         ),
         last_succeeded_at=row.last_succeeded_at,
+        pending_range_start=row.pending_range_start,
+        pending_range_end=row.pending_range_end,
+        running_jobs=tuple(
+            BackfillTaskMetric(
+                symbol=job.symbol,
+                data_type=job.data_type,
+                interval_seconds=job.interval_seconds,
+                range_start=job.range_start,
+                range_end=job.range_end,
+                started_at=job.started_at,
+                attempts=job.attempts,
+            )
+            for job in row.running_jobs
+        ),
         message=message,
     )
 

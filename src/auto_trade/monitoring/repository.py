@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import cast
 
 from sqlalchemy import text
@@ -26,6 +26,20 @@ class BackfillRows:
     created_last_hour: int = 0
     finished_last_hour: int = 0
     last_succeeded_at: datetime | None = None
+    pending_range_start: datetime | None = None
+    pending_range_end: datetime | None = None
+    running_jobs: tuple[BackfillTaskRow, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BackfillTaskRow:
+    symbol: str
+    data_type: str
+    interval_seconds: int
+    range_start: datetime
+    range_end: datetime
+    started_at: datetime | None
+    attempts: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +77,42 @@ class DatabaseSnapshot:
     database_size_display: str
     cache_hit_percent: float | None = None
     largest_tables: tuple[TableSizeRow, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RankingEntryRow:
+    utc_trade_date: date
+    snapshot_at: datetime
+    rank_no: int
+    symbol: str
+    price_change: float
+    reference_open_price: float | None
+    snapshot_price: float | None
+    base_volume: float | None
+    quote_volume: float | None
+    amplitude: float | None
+    period_high_price: float | None
+    period_high_at: datetime | None
+    period_low_price: float | None
+    period_low_at: datetime | None
+    open_interest_qty: float | None
+    open_interest_value: float | None
+    open_interest_status: str
+    quality_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class RankingQueryRows:
+    available_first_date: date | None
+    available_last_date: date | None
+    date_from: date | None
+    date_to: date | None
+    total: int
+    matching_days: int
+    average_change: float | None
+    maximum_change: float | None
+    minimum_change: float | None
+    items: tuple[RankingEntryRow, ...]
 
 
 class MonitoringRepository:
@@ -265,6 +315,152 @@ class MonitoringRepository:
             ),
         )
 
+    async def daily_rankings(
+        self,
+        *,
+        date_from: date | None,
+        date_to: date | None,
+        symbol: str | None,
+        rank_from: int,
+        rank_to: int,
+        page: int,
+        page_size: int,
+    ) -> RankingQueryRows:
+        normalized_symbol = symbol.strip().upper() if symbol else None
+        async with self._engine.connect() as connection:
+            availability = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT min(utc_trade_date) AS first_date,
+                               max(utc_trade_date) AS last_date
+                        FROM market.ranking_snapshots
+                        WHERE ranking_type = 'UTC_DAILY_2355'
+                          AND quality_status = 'VALID'
+                        """
+                    )
+                )
+            ).mappings().one()
+            available_first = cast(date | None, availability["first_date"])
+            available_last = cast(date | None, availability["last_date"])
+            effective_from = date_from
+            effective_to = date_to
+            if available_last is not None and effective_from is None and effective_to is None:
+                effective_from = available_last
+                effective_to = available_last
+            elif effective_from is None:
+                effective_from = available_first
+            elif effective_to is None:
+                effective_to = available_last
+
+            parameters = {
+                "date_from": effective_from,
+                "date_to": effective_to,
+                "symbol": normalized_symbol,
+                "rank_from": rank_from,
+                "rank_to": rank_to,
+            }
+            filtered_sql = """
+                FROM market.ranking_snapshots s
+                JOIN market.ranking_entries e USING (ranking_snapshot_id)
+                JOIN core.instruments i USING (instrument_id)
+                WHERE s.ranking_type = 'UTC_DAILY_2355'
+                  AND s.quality_status = 'VALID'
+                  AND (
+                      CAST(:date_from AS date) IS NULL
+                      OR s.utc_trade_date >= CAST(:date_from AS date)
+                  )
+                  AND (
+                      CAST(:date_to AS date) IS NULL
+                      OR s.utc_trade_date <= CAST(:date_to AS date)
+                  )
+                  AND (
+                      CAST(:symbol AS text) IS NULL
+                      OR upper(i.symbol) LIKE '%' || CAST(:symbol AS text) || '%'
+                  )
+                  AND e.rank_no BETWEEN :rank_from AND :rank_to
+            """
+            summary = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT count(*) AS total,
+                               count(DISTINCT s.utc_trade_date) AS matching_days,
+                               avg(e.price_change) AS average_change,
+                               max(e.price_change) AS maximum_change,
+                               min(e.price_change) AS minimum_change
+                        """
+                        + filtered_sql
+                    ),
+                    parameters,
+                )
+            ).mappings().one()
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT s.utc_trade_date, s.snapshot_at, s.quality_status,
+                               e.rank_no, i.symbol, e.price_change,
+                               e.reference_open_price, e.snapshot_price,
+                               e.base_volume, e.quote_volume, e.amplitude,
+                               e.period_high_price, e.period_high_at,
+                               e.period_low_price, e.period_low_at,
+                               e.open_interest_qty, e.open_interest_value,
+                               coalesce(
+                                   e.metrics->>'open_interest_status', 'UNAVAILABLE'
+                               ) AS open_interest_status
+                        """
+                        + filtered_sql
+                        + """
+                        ORDER BY s.utc_trade_date DESC, e.rank_no ASC
+                        LIMIT :limit OFFSET :offset
+                        """
+                    ),
+                    parameters | {
+                        "limit": page_size,
+                        "offset": (page - 1) * page_size,
+                    },
+                )
+            ).mappings().all()
+
+        def optional_float(value: object) -> float | None:
+            return float(str(value)) if value is not None else None
+
+        return RankingQueryRows(
+            available_first_date=available_first,
+            available_last_date=available_last,
+            date_from=effective_from,
+            date_to=effective_to,
+            total=cast(int, summary["total"]),
+            matching_days=cast(int, summary["matching_days"]),
+            average_change=optional_float(summary["average_change"]),
+            maximum_change=optional_float(summary["maximum_change"]),
+            minimum_change=optional_float(summary["minimum_change"]),
+            items=tuple(
+                RankingEntryRow(
+                    utc_trade_date=cast(date, row["utc_trade_date"]),
+                    snapshot_at=cast(datetime, row["snapshot_at"]),
+                    rank_no=cast(int, row["rank_no"]),
+                    symbol=cast(str, row["symbol"]),
+                    price_change=float(row["price_change"]),
+                    reference_open_price=optional_float(row["reference_open_price"]),
+                    snapshot_price=optional_float(row["snapshot_price"]),
+                    base_volume=optional_float(row["base_volume"]),
+                    quote_volume=optional_float(row["quote_volume"]),
+                    amplitude=optional_float(row["amplitude"]),
+                    period_high_price=optional_float(row["period_high_price"]),
+                    period_high_at=cast(datetime | None, row["period_high_at"]),
+                    period_low_price=optional_float(row["period_low_price"]),
+                    period_low_at=cast(datetime | None, row["period_low_at"]),
+                    open_interest_qty=optional_float(row["open_interest_qty"]),
+                    open_interest_value=optional_float(row["open_interest_value"]),
+                    open_interest_status=cast(str, row["open_interest_status"]),
+                    quality_status=cast(str, row["quality_status"]),
+                )
+                for row in rows
+            ),
+        )
+
     async def _kline_coverage(
         self, connection: AsyncConnection
     ) -> tuple[CoverageRow, ...]:
@@ -399,6 +595,28 @@ class MonitoringRepository:
                 )
             )
         ).mappings().all()
+        running_rows = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT
+                        i.symbol,
+                        j.data_type,
+                        g.interval_seconds,
+                        j.range_start,
+                        j.range_end,
+                        j.started_at,
+                        j.attempts
+                    FROM market.backfill_jobs j
+                    JOIN core.instruments i USING (instrument_id)
+                    JOIN market.data_gaps g USING (gap_id)
+                    WHERE j.status = 'RUNNING'
+                    ORDER BY j.started_at, j.created_at
+                    LIMIT 3
+                    """
+                )
+            )
+        ).mappings().all()
         summary = (
             await connection.execute(
                 text(
@@ -407,6 +625,10 @@ class MonitoringRepository:
                         SELECT
                             min(created_at) FILTER (WHERE status = 'PENDING')
                                 AS oldest_pending_at,
+                            min(range_start) FILTER (WHERE status = 'PENDING')
+                                AS pending_range_start,
+                            max(range_end) FILTER (WHERE status = 'PENDING')
+                                AS pending_range_end,
                             count(*) FILTER (
                                 WHERE status = 'SUCCEEDED'
                                   AND finished_at >= clock_timestamp() - interval '1 hour'
@@ -455,6 +677,22 @@ class MonitoringRepository:
             created_last_hour=cast(int, summary["created_last_hour"] or 0),
             finished_last_hour=cast(int, summary["finished_last_hour"] or 0),
             last_succeeded_at=cast(datetime | None, summary["last_succeeded_at"]),
+            pending_range_start=cast(
+                datetime | None, summary["pending_range_start"]
+            ),
+            pending_range_end=cast(datetime | None, summary["pending_range_end"]),
+            running_jobs=tuple(
+                BackfillTaskRow(
+                    symbol=cast(str, row["symbol"]),
+                    data_type=cast(str, row["data_type"]),
+                    interval_seconds=cast(int, row["interval_seconds"]),
+                    range_start=cast(datetime, row["range_start"]),
+                    range_end=cast(datetime, row["range_end"]),
+                    started_at=cast(datetime | None, row["started_at"]),
+                    attempts=cast(int, row["attempts"]),
+                )
+                for row in running_rows
+            ),
         )
 
     async def _rest_usage(self, connection: AsyncConnection) -> RestUsageRow:
