@@ -15,6 +15,7 @@ from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy, ReplayPolicy
 from auto_trade.config import Settings, get_settings
 from auto_trade.infrastructure.database import create_database_engine
 from auto_trade.infrastructure.nats_streams import connect, ensure_streams
+from auto_trade.logging_config import configure_logging
 from auto_trade.writers.market_repository import IncomingEvent, MarketRepository
 
 
@@ -200,11 +201,12 @@ async def run(command: str, settings: Settings) -> object:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    settings = get_settings()
+    configure_logging(settings, "market-writer")
     parser = argparse.ArgumentParser(description="Persist market events from JetStream")
     parser.add_argument("command", choices=("drain", "run"))
     args = parser.parse_args()
-    result = asyncio.run(run(args.command, get_settings()))
+    result = asyncio.run(run(args.command, settings))
     print(json.dumps(result, indent=2))
 
 

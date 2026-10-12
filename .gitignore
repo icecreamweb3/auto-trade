@@ -17,3 +17,4 @@ backups/
 *.sql.gz
 *.log
 artifacts/*.log
+artifacts/logs-*/

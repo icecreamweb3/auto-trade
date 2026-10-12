@@ -26,6 +26,7 @@ from auto_trade.config import Settings, get_settings
 from auto_trade.contracts import PriceType
 from auto_trade.infrastructure.database import create_database_engine
 from auto_trade.infrastructure.nats_streams import connect, ensure_streams
+from auto_trade.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -703,12 +704,13 @@ async def run(command: str, settings: Settings) -> object:
 def main() -> None:
     import argparse
 
-    logging.basicConfig(level=logging.INFO)
+    settings = get_settings()
+    configure_logging(settings, "data-repair")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(description="Detect and repair market data gaps")
     parser.add_argument("command", choices=("once", "run"))
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(run(args.command, get_settings())), default=str))
+    print(json.dumps(asyncio.run(run(args.command, settings)), default=str))
 
 
 if __name__ == "__main__":

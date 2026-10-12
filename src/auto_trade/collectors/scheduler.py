@@ -13,6 +13,7 @@ from auto_trade.collectors.service import BinanceCollectionService
 from auto_trade.collectors.websocket_klines import BinanceKlineWebSocketCollector
 from auto_trade.config import Settings, get_settings
 from auto_trade.infrastructure.nats_streams import connect, ensure_streams
+from auto_trade.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,11 @@ class CollectorScheduler:
             base_url=settings.binance_usdm_websocket_url,
             streams_per_connection=settings.websocket_streams_per_connection,
             reconnect_max_seconds=settings.websocket_reconnect_max_seconds,
+            receive_timeout_seconds=settings.websocket_receive_timeout_seconds,
+            message_queue_size=settings.websocket_message_queue_size,
+            kline_workers_per_connection=(
+                settings.websocket_kline_workers_per_connection
+            ),
         )
 
     async def _sync_instruments(self) -> None:
@@ -153,6 +159,8 @@ class CollectorScheduler:
         await asyncio.sleep(self._settings.collector_startup_delay_seconds)
         await asyncio.gather(
             self._ticker_loop(),
+            self._one_minute_kline_loop(),
+            self._kline_loop(),
             self._instrument_loop(),
             self._websocket.run_forever(),
         )
@@ -181,9 +189,10 @@ async def run(settings: Settings) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    settings = get_settings()
+    configure_logging(settings, "collector")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    asyncio.run(run(get_settings()))
+    asyncio.run(run(settings))
 
 
 if __name__ == "__main__":

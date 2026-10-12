@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from auto_trade.collectors.binance_usdm import BinanceUsdMClient
 from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import create_database_engine
+from auto_trade.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 FIVE_MINUTES_MS = 300_000
@@ -483,7 +484,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging(get_settings(), "historical-rankings")
     asyncio.run(run(parse_args()))
 
 

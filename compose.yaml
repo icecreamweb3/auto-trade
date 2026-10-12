@@ -1,5 +1,11 @@
 name: auto-trade-local
 
+x-file-logging-environment: &file-logging-environment
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  FILE_LOG_ENABLED: ${FILE_LOG_ENABLED:-false}
+  FILE_LOG_DIRECTORY: /var/log/auto-trade
+  FILE_LOG_RETENTION_DAYS: ${FILE_LOG_RETENTION_DAYS:-14}
+
 services:
   database:
     image: ${TIMESCALEDB_IMAGE:-timescale/timescaledb:latest-pg16}
@@ -78,12 +84,15 @@ services:
     restart: "no"
     env_file: .env
     environment:
+      <<: *file-logging-environment
       POSTGRES_HOST: 127.0.0.1
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost,database}
       TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
     entrypoint: ["python", "-m", "auto_trade.collectors.historical_rankings"]
     depends_on:
       database:
@@ -100,10 +109,13 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      <<: *file-logging-environment
       POSTGRES_HOST: database
       POSTGRES_PORT: 5432
       NATS_URL: nats://nats:4222
       TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
     command: ["python", "-m", "auto_trade.writers.market_consumer", "run"]
     depends_on:
       database:
@@ -123,12 +135,15 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      <<: *file-logging-environment
       POSTGRES_PASSWORD: unused
       NATS_URL: nats://127.0.0.1:4222
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost}
       TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
     command: ["python", "-m", "auto_trade.collectors.scheduler"]
     network_mode: host
     depends_on:
@@ -142,12 +157,15 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      <<: *file-logging-environment
       POSTGRES_HOST: 127.0.0.1
       NATS_URL: nats://127.0.0.1:4222
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost}
       TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
     command: ["python", "-m", "auto_trade.collectors.data_repair", "run"]
     network_mode: host
     depends_on:
@@ -166,11 +184,14 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      <<: *file-logging-environment
       SERVICE_NAME: collection-monitor
       POSTGRES_HOST: database
       POSTGRES_PORT: 5432
       NATS_URL: nats://nats:4222
       TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
     command:
       - uvicorn
       - auto_trade.monitoring.app:app
@@ -216,6 +237,8 @@ volumes:
     name: auto-trade-postgres-data
   auto_trade_nats_data:
     name: auto-trade-nats-data
+  auto_trade_logs:
+    name: auto-trade-logs
 
 networks:
   backend:

@@ -219,6 +219,8 @@ class BinanceCollectionService:
         self._shard_id = shard_id
         self._latest_mark_prices: dict[str, Decimal] = {}
         self._websocket_trade_closes: dict[str, datetime] = {}
+        self._websocket_trade_5m_closes: dict[str, datetime] = {}
+        self._websocket_mark_closes: dict[str, datetime] = {}
         self._websocket_tickers: dict[str, JsonObject] = {}
         self._websocket_premiums: dict[str, JsonObject] = {}
         self._websocket_mark_minutes: dict[str, MarkMinuteState] = {}
@@ -239,6 +241,21 @@ class BinanceCollectionService:
         self._websocket_mark_minutes = {
             symbol: value
             for symbol, value in self._websocket_mark_minutes.items()
+            if symbol in self._active_symbols
+        }
+        self._websocket_trade_closes = {
+            symbol: value
+            for symbol, value in self._websocket_trade_closes.items()
+            if symbol in self._active_symbols
+        }
+        self._websocket_trade_5m_closes = {
+            symbol: value
+            for symbol, value in self._websocket_trade_5m_closes.items()
+            if symbol in self._active_symbols
+        }
+        self._websocket_mark_closes = {
+            symbol: value
+            for symbol, value in self._websocket_mark_closes.items()
             if symbol in self._active_symbols
         }
 
@@ -504,6 +521,7 @@ class BinanceCollectionService:
                             MarketSource.WEBSOCKET,
                             KlineSeries(PriceType.MARK, 60),
                         )
+                        self._websocket_mark_closes[symbol] = state.open_time
                         self._websocket_mark_minutes[symbol] = MarkMinuteState(
                             minute_time, price, price, price, price
                         )
@@ -671,14 +689,42 @@ class BinanceCollectionService:
         return True
 
     async def collect_5m_klines(self, symbols: set[str]) -> int:
-        return sum(
-            await asyncio.gather(
-                *(self._collect_latest_closed_5m(symbol) for symbol in sorted(symbols))
-            )
+        now = datetime.now(UTC)
+        current_open = now.replace(
+            minute=now.minute - now.minute % 5,
+            second=0,
+            microsecond=0,
         )
+        expected_open = current_open - timedelta(minutes=5)
+        missing_symbols = {
+            symbol
+            for symbol in symbols
+            if self._websocket_trade_5m_closes.get(symbol) != expected_open
+        }
+        results = await asyncio.gather(
+            *(self._collect_latest_closed_5m(symbol) for symbol in sorted(missing_symbols)),
+            return_exceptions=True,
+        )
+        count = 0
+        for symbol, result in zip(sorted(missing_symbols), results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error(
+                    "five-minute kline collection failed symbol=%s error=%s",
+                    symbol,
+                    result,
+                )
+            else:
+                count += result
+        cutoff = expected_open - timedelta(minutes=10)
+        self._websocket_trade_5m_closes = {
+            symbol: open_time
+            for symbol, open_time in self._websocket_trade_5m_closes.items()
+            if open_time >= cutoff
+        }
+        return count
 
     async def collect_1m_klines(self, symbols: set[str]) -> tuple[int, int]:
-        """Collect Mark klines and REST-fallback Trade klines for the last closed minute."""
+        """REST-fetch only 1m series not confirmed closed by WebSocket."""
         now = datetime.now(UTC)
         expected_open = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
         trade_symbols = {
@@ -686,8 +732,14 @@ class BinanceCollectionService:
             for symbol in symbols
             if self._websocket_trade_closes.get(symbol) != expected_open
         }
+        mark_symbols = {
+            symbol
+            for symbol in symbols
+            if self._websocket_mark_closes.get(symbol) != expected_open
+        }
         requests = [
-            (symbol, KlineSeries(PriceType.MARK, 60)) for symbol in sorted(symbols)
+            (symbol, KlineSeries(PriceType.MARK, 60))
+            for symbol in sorted(mark_symbols)
         ]
         requests.extend(
             (symbol, KlineSeries(PriceType.TRADE, 60))
@@ -715,6 +767,11 @@ class BinanceCollectionService:
         self._websocket_trade_closes = {
             symbol: open_time
             for symbol, open_time in self._websocket_trade_closes.items()
+            if open_time >= cutoff
+        }
+        self._websocket_mark_closes = {
+            symbol: open_time
+            for symbol, open_time in self._websocket_mark_closes.items()
             if open_time >= cutoff
         }
         return trade_count, mark_count
@@ -946,6 +1003,9 @@ class BinanceCollectionService:
             MarketSource.WEBSOCKET,
             KlineSeries(price_type, 60 if interval == "1m" else 300),
         )
-        if price_type is PriceType.TRADE and interval == "1m":
-            self._websocket_trade_closes[symbol] = open_time
+        if price_type is PriceType.TRADE:
+            if interval == "1m":
+                self._websocket_trade_closes[symbol] = open_time
+            else:
+                self._websocket_trade_5m_closes[symbol] = open_time
         return True

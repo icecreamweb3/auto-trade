@@ -45,6 +45,9 @@ make runtime-logs
 make runtime-down
 ```
 
+可选的持久化文件日志、按日轮转和导出方式见
+[`docs/RUNTIME_LOGGING.md`](docs/RUNTIME_LOGGING.md)。Docker控制台日志始终保留。
+
 只启动或查看采集监控：
 
 ```bash

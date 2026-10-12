@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     node_id: str = "local-1"
     shard_id: str = "0"
 
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    file_log_enabled: bool = False
+    file_log_directory: str = "/var/log/auto-trade"
+    file_log_retention_days: int = Field(default=14, ge=1, le=90)
+
     postgres_host: str = "127.0.0.1"
     postgres_port: int = Field(default=5432, ge=1, le=65535)
     postgres_db: str = "auto_trade"
@@ -36,8 +41,11 @@ class Settings(BaseSettings):
     collector_startup_delay_seconds: float = Field(default=5.0, ge=0, le=60)
     collector_boundary_delay_seconds: float = Field(default=5.0, ge=0, le=30)
     instrument_sync_utc_hour: int = Field(default=16, ge=0, le=23)
-    websocket_streams_per_connection: int = Field(default=200, ge=2, le=1000)
+    websocket_streams_per_connection: int = Field(default=100, ge=2, le=1000)
     websocket_reconnect_max_seconds: float = Field(default=30.0, ge=1, le=300)
+    websocket_receive_timeout_seconds: float = Field(default=60.0, ge=30, le=300)
+    websocket_message_queue_size: int = Field(default=4096, ge=100, le=65536)
+    websocket_kline_workers_per_connection: int = Field(default=4, ge=1, le=32)
     gap_scan_lookback_hours: int = Field(default=24, ge=1, le=168)
     gap_scan_interval_seconds: int = Field(default=300, ge=60, le=3600)
     backfill_jobs_per_cycle: int = Field(default=50, ge=1, le=500)

@@ -498,3 +498,133 @@ async def test_one_minute_rest_skips_trade_already_closed_by_websocket() -> None
     assert trade_count == 0
     assert mark_count == 1
     assert calls == ["/fapi/v1/markPriceKlines"]
+
+
+async def test_one_minute_rest_skips_mark_already_closed_by_websocket() -> None:
+    now = datetime.now(UTC)
+    open_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    next_minute = open_time + timedelta(minutes=1)
+    open_ms = int(open_time.timestamp() * 1000)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(
+            200,
+            json=[
+                [
+                    open_ms,
+                    "100",
+                    "110",
+                    "90",
+                    "105",
+                    "12",
+                    open_ms + 60_000 - 1,
+                    "1200",
+                    7,
+                    "0",
+                    "0",
+                    "0",
+                ]
+            ],
+        )
+
+    publisher = RecordingPublisher()
+    client = BinanceUsdMClient(
+        base_url="https://example.test",
+        timeout_seconds=1,
+        max_concurrency=2,
+        attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    async with client:
+        service = BinanceCollectionService(
+            client=client,
+            publisher=publisher,
+            node_id="test-node",
+            shard_id="0",
+        )
+        service.set_active_symbols({"BTCUSDT"})
+        for event_time, price in (
+            (open_time + timedelta(seconds=30), "60000"),
+            (next_minute + timedelta(seconds=1), "60001"),
+        ):
+            assert await service.observe_websocket_market(
+                {
+                    "stream": "!markPrice@arr@1s",
+                    "data": [
+                        {
+                            "e": "markPriceUpdate",
+                            "E": int(event_time.timestamp() * 1000),
+                            "s": "BTCUSDT",
+                            "p": price,
+                            "i": price,
+                            "r": "0.0001",
+                            "T": int((event_time + timedelta(hours=1)).timestamp() * 1000),
+                        }
+                    ],
+                }
+            )
+        trade_count, mark_count = await service.collect_1m_klines({"BTCUSDT"})
+
+    assert trade_count == 1
+    assert mark_count == 0
+    assert calls == ["/fapi/v1/klines"]
+
+
+async def test_five_minute_rest_skips_trade_already_closed_by_websocket() -> None:
+    now = datetime.now(UTC)
+    current_open = now.replace(
+        minute=now.minute - now.minute % 5,
+        second=0,
+        microsecond=0,
+    )
+    open_time = current_open - timedelta(minutes=5)
+    open_ms = int(open_time.timestamp() * 1000)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(500)
+
+    publisher = RecordingPublisher()
+    client = BinanceUsdMClient(
+        base_url="https://example.test",
+        timeout_seconds=1,
+        max_concurrency=2,
+        attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    async with client:
+        service = BinanceCollectionService(
+            client=client,
+            publisher=publisher,
+            node_id="test-node",
+            shard_id="0",
+        )
+        assert await service.publish_websocket_kline(
+            {
+                "stream": "btcusdt@kline_5m",
+                "data": {
+                    "e": "kline",
+                    "k": {
+                        "s": "BTCUSDT",
+                        "i": "5m",
+                        "t": open_ms,
+                        "T": open_ms + 300_000 - 1,
+                        "o": "100",
+                        "h": "110",
+                        "l": "90",
+                        "c": "105",
+                        "v": "12",
+                        "q": "1200",
+                        "n": 7,
+                        "x": True,
+                    },
+                },
+            }
+        )
+        count = await service.collect_5m_klines({"BTCUSDT"})
+
+    assert count == 0
+    assert calls == []

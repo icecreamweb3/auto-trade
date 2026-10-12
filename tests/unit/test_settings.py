@@ -12,3 +12,27 @@ def test_database_dsn_escapes_credentials() -> None:
     assert "collector%40example" in settings.database_dsn
     assert "a%2Fb%3Ac%40d" in settings.database_dsn
     assert "a/b:c@d" not in settings.database_dsn
+
+
+def test_websocket_resilience_defaults() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password=SecretStr("test-password"),
+    )
+
+    assert settings.websocket_streams_per_connection == 100
+    assert settings.websocket_receive_timeout_seconds == 60
+    assert settings.websocket_message_queue_size == 4096
+    assert settings.websocket_kline_workers_per_connection == 4
+
+
+def test_file_logging_defaults_to_disabled() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password=SecretStr("test-password"),
+    )
+
+    assert settings.log_level == "INFO"
+    assert settings.file_log_enabled is False
+    assert settings.file_log_directory == "/var/log/auto-trade"
+    assert settings.file_log_retention_days == 14

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import check_database, create_database_engine
+from auto_trade.logging_config import configure_logging
 from auto_trade.monitoring.models import (
     DailyRankingEntry,
     DailyRankingResult,
@@ -22,6 +23,7 @@ from auto_trade.monitoring.service import MonitoringService
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    configure_logging(settings, "monitor-api")
     engine = create_database_engine(settings)
     app.state.database_engine = engine
     app.state.monitoring_service = MonitoringService(

@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN groupadd --system app && useradd --system --gid app --create-home app
+RUN mkdir -p /var/log/auto-trade && chown app:app /var/log/auto-trade
 
 COPY pyproject.toml README.md ./
 COPY src ./src

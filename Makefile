@@ -1,4 +1,4 @@
-.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs monitor-up monitor-logs repair-once history-rankings-3m history-rankings-status test lint typecheck \
+.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs logs-export monitor-up monitor-logs repair-once history-rankings-3m history-rankings-status test lint typecheck \
 	db-up db-down db-status db-logs db-migrate db-shell db-verify db-storage-verify db-columnstore-poc db-poc db-poc-clean \
 	nats-up nats-logs nats-init nats-verify nats-smoke collector-smoke writer-drain
 
@@ -19,6 +19,12 @@ runtime-down:
 
 runtime-logs:
 	docker compose --profile runtime logs --tail=200 -f market-writer collector data-repair monitor-api monitor-ui
+
+logs-export:
+	@export_dir="$(CURDIR)/artifacts/logs-$$(date -u +%Y%m%dT%H%M%SZ)"; \
+	mkdir -p "$$export_dir"; \
+	docker cp auto-trade-collector:/var/log/auto-trade/. "$$export_dir"; \
+	echo "Exported application logs to $$export_dir"
 
 monitor-up:
 	docker compose --profile runtime up -d --build monitor-api monitor-ui

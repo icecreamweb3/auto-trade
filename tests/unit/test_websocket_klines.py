@@ -1,7 +1,9 @@
 from auto_trade.collectors.websocket_klines import (
+    MARKET_WIDE_STREAMS,
     chunked,
     kline_stream_names,
     market_stream_names,
+    market_stream_shards,
     websocket_proxy,
 )
 
@@ -25,6 +27,16 @@ def test_streams_are_split_into_bounded_connections() -> None:
         ("a", "b"),
         ("c", "d"),
         ("e",),
+    )
+
+
+def test_all_market_streams_use_a_dedicated_connection() -> None:
+    shards = market_stream_shards({"ETHUSDT", "BTCUSDT"}, 2)
+
+    assert shards == (
+        ("btcusdt@kline_1m", "btcusdt@kline_5m"),
+        ("ethusdt@kline_1m", "ethusdt@kline_5m"),
+        MARKET_WIDE_STREAMS,
     )
 
 
