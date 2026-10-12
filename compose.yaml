@@ -152,6 +152,9 @@ services:
 
   data-repair:
     profiles: ["runtime"]
+    build:
+      context: .
+      target: base
     image: auto-trade:local
     container_name: auto-trade-data-repair
     restart: unless-stopped
