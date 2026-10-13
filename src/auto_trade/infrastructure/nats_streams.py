@@ -15,12 +15,15 @@ from nats.js.errors import NotFoundError
 
 from auto_trade.config import Settings, get_settings
 
+GIB = 1024**3
+
 
 @dataclass(frozen=True, slots=True)
 class StreamDefinition:
     name: str
     subjects: tuple[str, ...]
     max_age: timedelta
+    max_bytes: int
     description: str
 
     def config(self) -> StreamConfig:
@@ -32,6 +35,7 @@ class StreamDefinition:
             storage=StorageType.FILE,
             discard=DiscardPolicy.OLD,
             max_age=self.max_age.total_seconds(),
+            max_bytes=self.max_bytes,
             num_replicas=1,
             allow_direct=True,
         )
@@ -42,30 +46,35 @@ STREAMS = (
         "RAW_MARKET",
         ("raw.market.>",),
         timedelta(hours=72),
+        10 * GIB,
         "Raw immutable exchange observations; short replay buffer.",
     ),
     StreamDefinition(
         "NORMALIZED_MARKET",
         ("market.normalized.>",),
         timedelta(days=7),
+        40 * GIB,
         "Validated canonical market events consumed by writers and strategies.",
     ),
     StreamDefinition(
         "DECISIONS",
         ("decision.>",),
         timedelta(days=30),
+        6 * GIB,
         "Signal, risk and decision snapshots.",
     ),
     StreamDefinition(
         "TRADE_EVENTS",
         ("trade.>",),
         timedelta(days=30),
+        4 * GIB,
         "Order and position lifecycle events.",
     ),
     StreamDefinition(
         "DLQ",
         ("dlq.>",),
         timedelta(days=30),
+        2 * GIB,
         "Events rejected after bounded retries.",
     ),
 )
@@ -106,11 +115,17 @@ async def verify_streams(js: JetStreamContext) -> list[dict[str, object]]:
             raise RuntimeError(
                 f"{definition.name} max_age {info.config.max_age!r} != {expected_max_age!r}"
             )
+        if info.config.max_bytes != definition.max_bytes:
+            raise RuntimeError(
+                f"{definition.name} max_bytes {info.config.max_bytes!r} "
+                f"!= {definition.max_bytes!r}"
+            )
         results.append(
             {
                 "name": definition.name,
                 "subjects": actual_subjects,
                 "max_age_seconds": int(definition.max_age.total_seconds()),
+                "max_bytes": definition.max_bytes,
                 "messages": info.state.messages,
             }
         )

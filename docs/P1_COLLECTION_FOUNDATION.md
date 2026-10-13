@@ -17,15 +17,15 @@
 
 ## JetStream 数据流
 
-| Stream | Subject | 保留期 | 用途 |
-|---|---|---:|---|
-| RAW_MARKET | `raw.market.>` | 72小时 | 原始交易所响应及短期重放 |
-| NORMALIZED_MARKET | `market.normalized.>` | 7天 | 规则、Ticker、K线标准事件 |
-| DECISIONS | `decision.>` | 30天 | 信号、风控和决策快照 |
-| TRADE_EVENTS | `trade.>` | 30天 | 订单和头寸事件 |
-| DLQ | `dlq.>` | 30天 | 有界重试后失败的事件 |
+| Stream | Subject | 保留期 | 容量上限 | 用途 |
+|---|---|---:|---:|---|
+| RAW_MARKET | `raw.market.>` | 72小时 | 10GB | 原始交易所响应及短期重放 |
+| NORMALIZED_MARKET | `market.normalized.>` | 7天 | 40GB | 规则、Ticker、K线标准事件 |
+| DECISIONS | `decision.>` | 30天 | 6GB | 信号、风控和决策快照 |
+| TRADE_EVENTS | `trade.>` | 30天 | 4GB | 订单和头寸事件 |
+| DLQ | `dlq.>` | 30天 | 2GB | 有界重试后失败的事件 |
 
-本地环境单副本运行；流定义保留副本参数，云端多节点部署时调整为3副本。
+本地环境 JetStream 文件存储总上限为64GB，各流上限合计62GB，保留2GB安全余量。单副本运行；流定义保留副本参数，云端多节点部署时调整为3副本。
 
 ## 验证结果
 
