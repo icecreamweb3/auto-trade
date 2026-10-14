@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -65,6 +66,31 @@ class RecordingPublisher:
 
     async def publish(self, subject: str, event: EventEnvelope[BaseModel]) -> None:
         self.messages.append((subject, event))
+
+
+class MarkPublishProbe(RecordingPublisher):
+    def __init__(self, *, fail_websocket_symbols: set[str] | None = None) -> None:
+        super().__init__()
+        self.fail_websocket_symbols = fail_websocket_symbols or set()
+        self.active_mark_publishes = 0
+        self.max_active_mark_publishes = 0
+
+    async def publish(self, subject: str, event: EventEnvelope[BaseModel]) -> None:
+        is_mark_kline = subject.startswith("market.normalized.kline.1m.mark.")
+        if is_mark_kline and event.source is MarketSource.WEBSOCKET:
+            self.active_mark_publishes += 1
+            self.max_active_mark_publishes = max(
+                self.max_active_mark_publishes,
+                self.active_mark_publishes,
+            )
+            try:
+                await asyncio.sleep(0.01)
+                symbol = subject.rsplit(".", maxsplit=1)[-1]
+                if symbol in self.fail_websocket_symbols:
+                    raise RuntimeError("simulated WebSocket mark publish failure")
+            finally:
+                self.active_mark_publishes -= 1
+        await super().publish(subject, event)
 
 
 def test_websocket_sync_failure_logs_summary_and_symbol(caplog: pytest.LogCaptureFixture) -> None:
@@ -416,6 +442,9 @@ async def test_websocket_market_cache_publishes_ticker_snapshot_without_rest() -
                 ],
             }
         )
+        assert await service.flush_websocket_mark_minutes(
+            {"BTCUSDT"}, current_minute
+        ) == 1
         assert await service.publish_websocket_ticker_minutes({"BTCUSDT"}) == 1
     finally:
         await client.aclose()
@@ -677,6 +706,224 @@ async def test_one_minute_flushes_cached_mark_minute_before_rest_fallback() -> N
     ]
     assert len(mark_events) == 1
     assert mark_events[0].payload.open_time == open_time
+
+
+async def test_mark_minute_flush_uses_bounded_concurrency(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = datetime.now(UTC)
+    open_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    publisher = MarkPublishProbe()
+    client = BinanceUsdMClient(
+        base_url="https://example.test",
+        timeout_seconds=1,
+        max_concurrency=1,
+        attempts=1,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+    )
+    service = BinanceCollectionService(
+        client=client,
+        publisher=publisher,
+        node_id="test-node",
+        shard_id="0",
+        websocket_mark_publish_concurrency=2,
+    )
+    symbols = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+    service.set_active_symbols(symbols)
+    try:
+        assert await service.observe_websocket_market(
+            {
+                "stream": "!markPrice@arr@1s",
+                "data": [
+                    {
+                        "e": "markPriceUpdate",
+                        "E": int((open_time + timedelta(seconds=30)).timestamp() * 1000),
+                        "s": symbol,
+                        "p": price,
+                        "i": price,
+                        "r": "0.0001",
+                        "T": int((open_time + timedelta(hours=1)).timestamp() * 1000),
+                    }
+                    for symbol, price in (
+                        ("BTCUSDT", "60000"),
+                        ("ETHUSDT", "3000"),
+                        ("SOLUSDT", "150"),
+                    )
+                ],
+            }
+        )
+        with caplog.at_level(logging.INFO):
+            published = await service.flush_websocket_mark_minutes(
+                symbols, open_time
+            )
+    finally:
+        await client.aclose()
+
+    assert published == 3
+    assert publisher.max_active_mark_publishes == 2
+    assert "buffered_expected=3" in caplog.text
+    assert "published=3 publish_failed=0 rest_fallback=0" in caplog.text
+
+
+async def test_mark_publish_failure_falls_back_only_failed_symbol(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = datetime.now(UTC)
+    open_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    open_ms = int(open_time.timestamp() * 1000)
+    close_ms = open_ms + 60_000 - 1
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, request.url.params["symbol"]))
+        return httpx.Response(
+            200,
+            json=[
+                [
+                    open_ms,
+                    "100",
+                    "110",
+                    "90",
+                    "105",
+                    "0",
+                    close_ms,
+                    "0",
+                    0,
+                    "0",
+                    "0",
+                    "0",
+                ]
+            ],
+        )
+
+    publisher = MarkPublishProbe(fail_websocket_symbols={"ETHUSDT"})
+    client = BinanceUsdMClient(
+        base_url="https://example.test",
+        timeout_seconds=1,
+        max_concurrency=2,
+        attempts=1,
+        transport=httpx.MockTransport(handler),
+    )
+    symbols = {"BTCUSDT", "ETHUSDT"}
+    async with client:
+        service = BinanceCollectionService(
+            client=client,
+            publisher=publisher,
+            node_id="test-node",
+            shard_id="0",
+            websocket_mark_publish_concurrency=2,
+        )
+        service.set_active_symbols(symbols)
+        assert await service.observe_websocket_market(
+            {
+                "stream": "!markPrice@arr@1s",
+                "data": [
+                    {
+                        "e": "markPriceUpdate",
+                        "E": open_ms + 30_000,
+                        "s": symbol,
+                        "p": price,
+                        "i": price,
+                        "r": "0.0001",
+                        "T": open_ms + 3_600_000,
+                    }
+                    for symbol, price in (
+                        ("BTCUSDT", "60000"),
+                        ("ETHUSDT", "3000"),
+                    )
+                ],
+            }
+        )
+        for symbol in symbols:
+            assert await service.publish_websocket_kline(
+                {
+                    "stream": f"{symbol.lower()}@kline_1m",
+                    "data": {
+                        "e": "kline",
+                        "k": {
+                            "s": symbol,
+                            "i": "1m",
+                            "t": open_ms,
+                            "T": close_ms,
+                            "o": "100",
+                            "h": "110",
+                            "l": "90",
+                            "c": "105",
+                            "v": "12",
+                            "q": "1200",
+                            "n": 7,
+                            "x": True,
+                        },
+                    },
+                }
+            )
+        with caplog.at_level(logging.INFO):
+            trade_count, mark_count = await service.collect_1m_klines(symbols)
+
+    assert trade_count == 0
+    assert mark_count == 1
+    assert calls == [("/fapi/v1/markPriceKlines", "ETHUSDT")]
+    assert "published=1 publish_failed=1 rest_fallback=1" in caplog.text
+    assert "publish_error_sample=ETHUSDT:RuntimeError" in caplog.text
+
+
+async def test_mark_aggregation_ignores_updates_for_already_closed_minute(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = datetime.now(UTC)
+    open_time = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    event_ms = int((open_time + timedelta(seconds=30)).timestamp() * 1000)
+    publisher = RecordingPublisher()
+    client = BinanceUsdMClient(
+        base_url="https://example.test",
+        timeout_seconds=1,
+        max_concurrency=1,
+        attempts=1,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+    )
+    service = BinanceCollectionService(
+        client=client,
+        publisher=publisher,
+        node_id="test-node",
+        shard_id="0",
+    )
+    service.set_active_symbols({"BTCUSDT"})
+    message = {
+        "stream": "!markPrice@arr@1s",
+        "data": [
+            {
+                "e": "markPriceUpdate",
+                "E": event_ms,
+                "s": "BTCUSDT",
+                "p": "60000",
+                "i": "60000",
+                "r": "0.0001",
+                "T": event_ms + 3_600_000,
+            }
+        ],
+    }
+    try:
+        assert await service.observe_websocket_market(message)
+        assert await service.flush_websocket_mark_minutes(
+            {"BTCUSDT"}, open_time
+        ) == 1
+        assert await service.observe_websocket_market(message)
+        with caplog.at_level(logging.INFO):
+            assert await service.flush_websocket_mark_minutes(
+                {"BTCUSDT"}, open_time
+            ) == 0
+    finally:
+        await client.aclose()
+
+    mark_events = [
+        event
+        for subject, event in publisher.messages
+        if subject == "market.normalized.kline.1m.mark.BTCUSDT"
+    ]
+    assert len(mark_events) == 1
+    assert "stale_items=1" in caplog.text
+    assert "already_closed=1" in caplog.text
+    assert "rest_fallback=0" in caplog.text
 
 
 async def test_five_minute_rest_skips_trade_already_closed_by_websocket() -> None:

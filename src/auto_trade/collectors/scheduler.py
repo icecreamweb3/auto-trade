@@ -194,6 +194,9 @@ async def run(settings: Settings) -> None:
                 publisher=JetStreamEventPublisher(jetstream),
                 node_id=settings.node_id,
                 shard_id=settings.shard_id,
+                websocket_mark_publish_concurrency=(
+                    settings.websocket_mark_publish_concurrency
+                ),
             )
             await CollectorScheduler(service, settings).run_forever()
     finally:

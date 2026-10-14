@@ -259,19 +259,29 @@ class BinanceCollectionService:
         publisher: EventPublisher,
         node_id: str,
         shard_id: str,
+        websocket_mark_publish_concurrency: int = 32,
     ) -> None:
         self._client = client
         self._publisher = publisher
         self._node_id = node_id
         self._shard_id = shard_id
+        self._websocket_mark_publish_concurrency = websocket_mark_publish_concurrency
         self._latest_mark_prices: dict[str, Decimal] = {}
         self._websocket_trade_closes: dict[str, datetime] = {}
         self._websocket_trade_5m_closes: dict[str, datetime] = {}
         self._websocket_mark_closes: dict[str, datetime] = {}
         self._websocket_tickers: dict[str, JsonObject] = {}
         self._websocket_premiums: dict[str, JsonObject] = {}
-        self._websocket_mark_minutes: dict[str, MarkMinuteState] = {}
+        self._websocket_mark_minutes: dict[
+            tuple[str, datetime], MarkMinuteState
+        ] = {}
         self._websocket_mark_lock = asyncio.Lock()
+        self._websocket_mark_frames_received = 0
+        self._websocket_mark_items_received = 0
+        self._websocket_mark_active_items = 0
+        self._websocket_mark_inactive_items = 0
+        self._websocket_mark_invalid_items = 0
+        self._websocket_mark_stale_items = 0
         self._active_symbols: frozenset[str] = frozenset()
 
     def set_active_symbols(self, symbols: set[str]) -> None:
@@ -287,9 +297,9 @@ class BinanceCollectionService:
             if symbol in self._active_symbols
         }
         self._websocket_mark_minutes = {
-            symbol: value
-            for symbol, value in self._websocket_mark_minutes.items()
-            if symbol in self._active_symbols
+            key: value
+            for key, value in self._websocket_mark_minutes.items()
+            if key[0] in self._active_symbols
         }
         self._websocket_trade_closes = {
             symbol: value
@@ -505,14 +515,20 @@ class BinanceCollectionService:
         data = message.get("data", message)
         items = data if isinstance(data, list) else [data]
         handled = False
+        is_mark_frame = "markprice@" in str(message.get("stream", "")).lower()
+        mark_updates: list[tuple[str, datetime, Decimal]] = []
+        inactive_mark_items = 0
+        invalid_mark_items = 0
         for value in items:
             if not isinstance(value, dict):
+                if is_mark_frame:
+                    invalid_mark_items += 1
                 continue
             event_name = str(value.get("e", ""))
             symbol = str(value.get("s", ""))
-            if symbol not in self._active_symbols:
-                continue
             if event_name == "24hrTicker":
+                if symbol not in self._active_symbols:
+                    continue
                 self._websocket_tickers[symbol] = {
                     "symbol": symbol,
                     "lastPrice": value.get("c"),
@@ -526,6 +542,10 @@ class BinanceCollectionService:
                 }
                 handled = True
             elif event_name == "markPriceUpdate":
+                handled = True
+                if symbol not in self._active_symbols:
+                    inactive_mark_items += 1
+                    continue
                 self._websocket_premiums[symbol] = {
                     "symbol": symbol,
                     "markPrice": value.get("p"),
@@ -534,32 +554,41 @@ class BinanceCollectionService:
                     "nextFundingTime": value.get("T"),
                 }
                 mark_price = value.get("p")
-                if mark_price not in (None, ""):
+                if mark_price in (None, ""):
+                    invalid_mark_items += 1
+                    continue
+                try:
                     price = Decimal(str(mark_price))
-                    self._latest_mark_prices[symbol] = price
                     event_time = _utc_from_ms(value.get("E"))
-                    minute_time = event_time.replace(second=0, microsecond=0)
-                    async with self._websocket_mark_lock:
-                        state = self._websocket_mark_minutes.get(symbol)
-                        if state is None or minute_time < state.open_time:
-                            self._websocket_mark_minutes[symbol] = MarkMinuteState(
-                                minute_time, price, price, price, price
-                            )
-                        elif minute_time == state.open_time:
-                            state.high_price = max(state.high_price, price)
-                            state.low_price = min(state.low_price, price)
-                            state.close_price = price
-                        else:
-                            if (
-                                self._websocket_mark_closes.get(symbol)
-                                != state.open_time
-                            ):
-                                await self._publish_mark_minute(symbol, state)
-                                self._websocket_mark_closes[symbol] = state.open_time
-                            self._websocket_mark_minutes[symbol] = MarkMinuteState(
-                                minute_time, price, price, price, price
-                            )
-                handled = True
+                except (ArithmeticError, TypeError, ValueError):
+                    invalid_mark_items += 1
+                    continue
+                self._latest_mark_prices[symbol] = price
+                minute_time = event_time.replace(second=0, microsecond=0)
+                mark_updates.append((symbol, minute_time, price))
+
+        if is_mark_frame or mark_updates:
+            async with self._websocket_mark_lock:
+                self._websocket_mark_frames_received += 1
+                self._websocket_mark_items_received += len(items)
+                self._websocket_mark_active_items += len(mark_updates)
+                self._websocket_mark_inactive_items += inactive_mark_items
+                self._websocket_mark_invalid_items += invalid_mark_items
+                for symbol, minute_time, price in mark_updates:
+                    closed_minute = self._websocket_mark_closes.get(symbol)
+                    if closed_minute is not None and minute_time <= closed_minute:
+                        self._websocket_mark_stale_items += 1
+                        continue
+                    key = (symbol, minute_time)
+                    state = self._websocket_mark_minutes.get(key)
+                    if state is None:
+                        self._websocket_mark_minutes[key] = MarkMinuteState(
+                            minute_time, price, price, price, price
+                        )
+                        continue
+                    state.high_price = max(state.high_price, price)
+                    state.low_price = min(state.low_price, price)
+                    state.close_price = price
         return handled
 
     async def _publish_mark_minute(
@@ -589,38 +618,103 @@ class BinanceCollectionService:
     async def flush_websocket_mark_minutes(
         self, symbols: set[str], expected_open: datetime
     ) -> int:
-        """Publish cached completed mark minutes before deciding REST fallback."""
+        """Snapshot cached mark minutes and publish them without blocking ingestion."""
         async with self._websocket_mark_lock:
+            already_closed = sum(
+                self._websocket_mark_closes.get(symbol) == expected_open
+                for symbol in symbols
+            )
             pending = [
-                (symbol, state)
+                (
+                    symbol,
+                    MarkMinuteState(
+                        state.open_time,
+                        state.open_price,
+                        state.high_price,
+                        state.low_price,
+                        state.close_price,
+                    ),
+                )
                 for symbol in sorted(symbols)
-                if (state := self._websocket_mark_minutes.get(symbol)) is not None
-                and state.open_time == expected_open
+                if (
+                    state := self._websocket_mark_minutes.get(
+                        (symbol, expected_open)
+                    )
+                )
+                is not None
                 and self._websocket_mark_closes.get(symbol) != expected_open
             ]
-            results = await asyncio.gather(
-                *(self._publish_mark_minute(symbol, state) for symbol, state in pending),
-                return_exceptions=True,
+            buffered_future = sum(
+                symbol in symbols and open_time > expected_open
+                for symbol, open_time in self._websocket_mark_minutes
             )
-            published = 0
-            for (symbol, state), result in zip(pending, results, strict=True):
-                if isinstance(result, BaseException):
-                    logger.error(
-                        "WebSocket mark minute flush failed symbol=%s "
-                        "open_time=%s error=%s",
-                        symbol,
-                        state.open_time.isoformat(),
-                        result,
-                    )
-                    continue
-                self._websocket_mark_closes[symbol] = state.open_time
-                published += 1
-        if published:
-            logger.info(
-                "WebSocket mark minute flush published=%d expected_open=%s",
-                published,
-                expected_open.isoformat(),
+            buffered_stale = sum(
+                symbol in symbols and open_time < expected_open
+                for symbol, open_time in self._websocket_mark_minutes
             )
+            frames_received = self._websocket_mark_frames_received
+            items_received = self._websocket_mark_items_received
+            active_items = self._websocket_mark_active_items
+            inactive_items = self._websocket_mark_inactive_items
+            invalid_items = self._websocket_mark_invalid_items
+            stale_items = self._websocket_mark_stale_items
+            self._websocket_mark_frames_received = 0
+            self._websocket_mark_items_received = 0
+            self._websocket_mark_active_items = 0
+            self._websocket_mark_inactive_items = 0
+            self._websocket_mark_invalid_items = 0
+            self._websocket_mark_stale_items = 0
+
+        semaphore = asyncio.Semaphore(self._websocket_mark_publish_concurrency)
+
+        async def publish_one(symbol: str, state: MarkMinuteState) -> None:
+            async with semaphore:
+                await self._publish_mark_minute(symbol, state)
+
+        results = await asyncio.gather(
+            *(publish_one(symbol, state) for symbol, state in pending),
+            return_exceptions=True,
+        )
+        successful_symbols: list[str] = []
+        errors: list[str] = []
+        for (symbol, _state), result in zip(pending, results, strict=True):
+            if isinstance(result, BaseException):
+                errors.append(f"{symbol}:{type(result).__name__}")
+            else:
+                successful_symbols.append(symbol)
+
+        async with self._websocket_mark_lock:
+            for symbol in successful_symbols:
+                self._websocket_mark_closes[symbol] = expected_open
+                self._websocket_mark_minutes.pop((symbol, expected_open), None)
+
+        published = len(successful_symbols)
+        publish_failed = len(errors)
+        rest_fallback = len(symbols) - already_closed - published
+        logger.log(
+            logging.WARNING if rest_fallback else logging.INFO,
+            "WebSocket mark aggregation expected_open=%s frames_received=%d "
+            "items_received=%d active_items=%d inactive_items=%d "
+            "invalid_items=%d stale_items=%d buffered_expected=%d "
+            "already_closed=%d buffered_future=%d buffered_stale=%d "
+            "published=%d publish_failed=%d rest_fallback=%d "
+            "publish_error_sample=%s",
+            expected_open.isoformat(),
+            frames_received,
+            items_received,
+            active_items,
+            inactive_items,
+            invalid_items,
+            stale_items,
+            len(pending),
+            already_closed,
+            buffered_future,
+            buffered_stale,
+            published,
+            publish_failed,
+            rest_fallback,
+            ",".join(errors[:10]) or "none",
+        )
         return published
 
     async def publish_websocket_ticker_minutes(self, symbols: set[str]) -> int:
@@ -883,11 +977,17 @@ class BinanceCollectionService:
             for symbol, open_time in self._websocket_trade_closes.items()
             if open_time >= cutoff
         }
-        self._websocket_mark_closes = {
-            symbol: open_time
-            for symbol, open_time in self._websocket_mark_closes.items()
-            if open_time >= cutoff
-        }
+        async with self._websocket_mark_lock:
+            self._websocket_mark_closes = {
+                symbol: open_time
+                for symbol, open_time in self._websocket_mark_closes.items()
+                if open_time >= cutoff
+            }
+            self._websocket_mark_minutes = {
+                key: state
+                for key, state in self._websocket_mark_minutes.items()
+                if key[1] > expected_open
+            }
         return trade_count, mark_count
 
     async def _collect_latest_closed_5m(self, symbol: str) -> int:

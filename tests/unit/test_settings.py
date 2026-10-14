@@ -24,6 +24,8 @@ def test_websocket_resilience_defaults() -> None:
     assert settings.websocket_receive_timeout_seconds == 60
     assert settings.websocket_message_queue_size == 4096
     assert settings.websocket_kline_workers_per_connection == 4
+    assert settings.websocket_mark_publish_concurrency == 32
+    assert settings.collector_boundary_delay_seconds == 15
     assert settings.gap_scan_lookback_hours == 2160
     assert settings.gap_scan_recent_lookback_hours == 24
     assert settings.gap_scan_historical_window_hours == 24
