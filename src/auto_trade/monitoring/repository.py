@@ -18,6 +18,16 @@ class CoverageRow:
 
 
 @dataclass(frozen=True, slots=True)
+class WebSocketSyncRow:
+    key: str
+    expected: int
+    succeeded: int
+    rest_fallback: int
+    other_source: int
+    missing: int
+
+
+@dataclass(frozen=True, slots=True)
 class BackfillRows:
     counts: dict[str, int]
     open_gaps: int
@@ -77,6 +87,7 @@ class DatabaseSnapshot:
     database_size_display: str
     cache_hit_percent: float | None = None
     largest_tables: tuple[TableSizeRow, ...] = ()
+    websocket_sync: tuple[WebSocketSyncRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +154,7 @@ class MonitoringRepository:
             coverage = list(await self._kline_coverage(connection))
             coverage.append(await self._ticker_coverage(connection))
             coverage.append(await self._open_interest_coverage(connection))
+            websocket_sync = await self._websocket_sync(connection, active_symbols)
 
             backfill = await self._backfill(connection)
             rest_usage = await self._rest_usage(connection)
@@ -313,6 +325,76 @@ class MonitoringRepository:
                 )
                 for row in table_rows
             ),
+            websocket_sync=websocket_sync,
+        )
+
+    async def _websocket_sync(
+        self, connection: AsyncConnection, active_symbols: int
+    ) -> tuple[WebSocketSyncRow, ...]:
+        rows = (
+            await connection.execute(
+                text(
+                    """
+                    WITH series(key, price_type, interval_seconds) AS (
+                        VALUES
+                            ('trade_60', 'TRADE', 60),
+                            ('mark_60', 'MARK', 60),
+                            ('trade_300', 'TRADE', 300)
+                    ), bounds AS (
+                        SELECT
+                            key, price_type, interval_seconds,
+                            to_timestamp(
+                                floor(extract(epoch FROM clock_timestamp()) /
+                                      interval_seconds) * interval_seconds
+                            ) - interval '1 hour' AS range_start,
+                            to_timestamp(
+                                floor(extract(epoch FROM clock_timestamp()) /
+                                      interval_seconds) * interval_seconds
+                            ) AS range_end
+                        FROM series
+                    )
+                    SELECT
+                        b.key,
+                        :active_symbols *
+                            floor(extract(epoch FROM (b.range_end - b.range_start)) /
+                                  b.interval_seconds)::bigint AS expected,
+                        count(*) FILTER (WHERE k.source = 'WEBSOCKET') AS succeeded,
+                        count(*) FILTER (WHERE k.source = 'REST') AS rest_fallback,
+                        count(*) FILTER (
+                            WHERE k.source NOT IN ('WEBSOCKET', 'REST')
+                        ) AS other_source,
+                        greatest(
+                            :active_symbols *
+                                floor(extract(epoch FROM (
+                                    b.range_end - b.range_start
+                                )) / b.interval_seconds)::bigint
+                                - count(k.instrument_id),
+                            0
+                        ) AS missing
+                    FROM bounds b
+                    LEFT JOIN market.klines k
+                      ON k.price_type = b.price_type
+                     AND k.interval_seconds = b.interval_seconds
+                     AND k.open_time >= b.range_start
+                     AND k.open_time < b.range_end
+                     AND k.is_current
+                    GROUP BY b.key, b.interval_seconds, b.range_start, b.range_end
+                    ORDER BY b.key
+                    """
+                ),
+                {"active_symbols": active_symbols},
+            )
+        ).mappings().all()
+        return tuple(
+            WebSocketSyncRow(
+                key=cast(str, row["key"]),
+                expected=cast(int, row["expected"] or 0),
+                succeeded=cast(int, row["succeeded"] or 0),
+                rest_fallback=cast(int, row["rest_fallback"] or 0),
+                other_source=cast(int, row["other_source"] or 0),
+                missing=cast(int, row["missing"] or 0),
+            )
+            for row in rows
         )
 
     async def daily_rankings(

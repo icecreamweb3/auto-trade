@@ -73,6 +73,21 @@ def market_stream_shards(
     )
 
 
+def websocket_message_context(message: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Extract stable identifiers for processing-failure diagnostics."""
+    stream = str(message.get("stream", "unknown"))
+    data = message.get("data", message)
+    if not isinstance(data, Mapping):
+        return stream, "unknown", "unknown"
+    kline = data.get("k")
+    symbol = (
+        str(kline.get("s", "unknown"))
+        if isinstance(kline, Mapping)
+        else str(data.get("s", "unknown"))
+    )
+    return stream, symbol, str(data.get("e", "unknown"))
+
+
 class BinanceKlineWebSocketCollector:
     """Collect reusable Futures market data over sharded WebSocket streams."""
 
@@ -122,12 +137,17 @@ class BinanceKlineWebSocketCollector:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                stream, symbol, event_name = websocket_message_context(message)
                 logger.exception(
                     "Binance WebSocket message processing failed "
-                    "streams=%d worker=%d queue_depth=%d",
+                    "streams=%d worker=%d queue_depth=%d stream=%s "
+                    "symbol=%s event=%s",
                     streams_count,
                     worker_id,
                     messages.qsize(),
+                    stream,
+                    symbol,
+                    event_name,
                 )
             finally:
                 messages.task_done()

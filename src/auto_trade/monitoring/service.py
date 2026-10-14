@@ -15,11 +15,13 @@ from auto_trade.monitoring.models import (
     NatsMetric,
     QueueCounts,
     RestUsageMetric,
+    WebSocketSyncMetric,
 )
 from auto_trade.monitoring.repository import (
     CoverageRow,
     DatabaseSnapshot,
     MonitoringRepository,
+    WebSocketSyncRow,
 )
 
 STATUS_PRIORITY = {
@@ -78,6 +80,30 @@ def coverage_metric(
         websocket_symbols=row.websocket_symbols,
         completeness_percent=completeness,
         message=message,
+    )
+
+
+def websocket_sync_metric(row: WebSocketSyncRow) -> WebSocketSyncMetric:
+    label = SERIES[row.key][0]
+    failed = max(row.expected - row.succeeded, 0)
+    success_percent = row.succeeded / row.expected * 100 if row.expected else 100.0
+    if success_percent >= 99:
+        status = HealthStatus.HEALTHY
+    elif success_percent >= 95:
+        status = HealthStatus.WARNING
+    else:
+        status = HealthStatus.CRITICAL
+    return WebSocketSyncMetric(
+        key=row.key,
+        label=label,
+        status=status,
+        expected=row.expected,
+        succeeded=row.succeeded,
+        failed=failed,
+        rest_fallback=row.rest_fallback,
+        other_source=row.other_source,
+        missing=row.missing,
+        success_percent=round(success_percent, 2),
     )
 
 
@@ -256,11 +282,15 @@ class MonitoringService:
             coverage_metric(key, by_key.get(key), database.active_symbols)
             for key in SERIES
         )
+        websocket_sync = tuple(
+            websocket_sync_metric(row) for row in database.websocket_sync
+        )
         backfill = backfill_metric(database)
         rest_usage = rest_usage_metric(database)
         db_metric = database_metric(database)
         statuses = [
             *(item.status for item in coverage),
+            *(item.status for item in websocket_sync),
             backfill.status,
             rest_usage.status,
             nats_status.status,
@@ -279,6 +309,7 @@ class MonitoringService:
             overall_status=overall,
             active_symbols=database.active_symbols,
             coverage=coverage,
+            websocket_sync=websocket_sync,
             backfill=backfill,
             rest_usage=rest_usage,
             nats=nats_status,

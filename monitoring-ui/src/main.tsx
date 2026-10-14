@@ -24,6 +24,19 @@ interface MonitoringSnapshot {
   overall_status: HealthStatus;
   active_symbols: number;
   coverage: CoverageMetric[];
+  websocket_sync: Array<{
+    key: string;
+    label: string;
+    status: HealthStatus;
+    window_minutes: number;
+    expected: number;
+    succeeded: number;
+    failed: number;
+    rest_fallback: number;
+    other_source: number;
+    missing: number;
+    success_percent: number;
+  }>;
   backfill: {
     status: HealthStatus;
     counts: Record<string, number>;
@@ -477,6 +490,26 @@ function MonitoringDashboard() {
             <div className="section-title"><p className="eyebrow">核心链路</p><h2>实时数据完整性</h2></div>
             <div className="coverage-grid">
               {data.coverage.map((metric) => <CoverageCard key={metric.key} metric={metric} />)}
+            </div>
+          </section>
+
+          <section>
+            <div className="section-title"><p className="eyebrow">WebSocket链路</p><h2>近1小时同步成功率</h2></div>
+            <div className="coverage-grid">
+              {data.websocket_sync.map((metric) => (
+                <article className="panel coverage-card" key={metric.key}>
+                  <div className="panel-heading"><h3>{metric.label}</h3><StatusPill status={metric.status} /></div>
+                  <div className="coverage-number"><strong>{metric.success_percent.toFixed(2)}%</strong></div>
+                  <div className="progress"><span style={{ width: `${Math.min(100, metric.success_percent)}%` }} /></div>
+                  <dl className="detail-grid">
+                    <div><dt>成功</dt><dd>{metric.succeeded}</dd></div>
+                    <div><dt>失败</dt><dd>{metric.failed}</dd></div>
+                    <div><dt>REST兜底</dt><dd>{metric.rest_fallback}</dd></div>
+                    <div><dt>仍缺失</dt><dd>{metric.missing}</dd></div>
+                  </dl>
+                  <p className="message">期望 {metric.expected} 根已闭合K线；其他来源 {metric.other_source}。</p>
+                </article>
+              ))}
             </div>
           </section>
 

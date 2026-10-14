@@ -39,6 +39,22 @@ class QueueCounts(BaseModel):
     paused: int = 0
 
 
+class WebSocketSyncMetric(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    label: str
+    status: HealthStatus
+    window_minutes: int = 60
+    expected: int
+    succeeded: int
+    failed: int
+    rest_fallback: int
+    other_source: int
+    missing: int
+    success_percent: float
+
+
 class BackfillTaskMetric(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -140,6 +156,7 @@ class MonitoringSnapshot(BaseModel):
     overall_status: HealthStatus
     active_symbols: int
     coverage: tuple[CoverageMetric, ...]
+    websocket_sync: tuple[WebSocketSyncMetric, ...]
     backfill: BackfillMetric
     rest_usage: RestUsageMetric
     nats: NatsMetric

@@ -70,7 +70,45 @@ class KlineSeries:
         return f"KLINE_{self.price_type.value}"
 
 
+TRADE_1M_SERIES = KlineSeries(PriceType.TRADE, 60)
+MARK_1M_SERIES = KlineSeries(PriceType.MARK, 60)
 TRADE_5M_SERIES = KlineSeries(PriceType.TRADE, 300)
+
+
+def log_websocket_sync_result(
+    *,
+    series: KlineSeries,
+    expected_open: datetime,
+    symbols: set[str],
+    missing_symbols: set[str],
+) -> None:
+    """Log WebSocket coverage before REST fallback hides the missing close."""
+    expected = len(symbols)
+    failed = len(missing_symbols)
+    succeeded = expected - failed
+    success_percent = succeeded / expected * 100 if expected else 100.0
+    logger.log(
+        logging.WARNING if failed else logging.INFO,
+        "WebSocket kline sync summary price_type=%s interval_seconds=%d "
+        "open_time=%s expected=%d succeeded=%d failed=%d success_percent=%.2f",
+        series.price_type.value,
+        series.interval_seconds,
+        expected_open.isoformat(),
+        expected,
+        succeeded,
+        failed,
+        success_percent,
+    )
+    for symbol in sorted(missing_symbols):
+        logger.warning(
+            "WebSocket closed kline missing symbol=%s price_type=%s "
+            "interval_seconds=%d open_time=%s reason=not_received_before_fallback "
+            "fallback=REST",
+            symbol,
+            series.price_type.value,
+            series.interval_seconds,
+            expected_open.isoformat(),
+        )
 
 
 @dataclass(slots=True)
@@ -749,6 +787,12 @@ class BinanceCollectionService:
             for symbol in symbols
             if self._websocket_trade_5m_closes.get(symbol) != expected_open
         }
+        log_websocket_sync_result(
+            series=TRADE_5M_SERIES,
+            expected_open=expected_open,
+            symbols=symbols,
+            missing_symbols=missing_symbols,
+        )
         results = await asyncio.gather(
             *(self._collect_latest_closed_5m(symbol) for symbol in sorted(missing_symbols)),
             return_exceptions=True,
@@ -786,6 +830,18 @@ class BinanceCollectionService:
             for symbol in symbols
             if self._websocket_mark_closes.get(symbol) != expected_open
         }
+        log_websocket_sync_result(
+            series=TRADE_1M_SERIES,
+            expected_open=expected_open,
+            symbols=symbols,
+            missing_symbols=trade_symbols,
+        )
+        log_websocket_sync_result(
+            series=MARK_1M_SERIES,
+            expected_open=expected_open,
+            symbols=symbols,
+            missing_symbols=mark_symbols,
+        )
         requests = [
             (symbol, KlineSeries(PriceType.MARK, 60))
             for symbol in sorted(mark_symbols)

@@ -5,6 +5,7 @@ from auto_trade.collectors.websocket_klines import (
     market_stream_names,
     market_stream_shards,
     websocket_connect_options,
+    websocket_message_context,
     websocket_proxy,
 )
 
@@ -60,3 +61,12 @@ def test_websocket_connect_uses_binance_server_keepalive() -> None:
     assert options["ping_interval"] is None
     assert "ping_timeout" not in options
     assert options["proxy"] == "http://proxy.test:8080"
+
+
+def test_websocket_message_context_identifies_failed_kline() -> None:
+    assert websocket_message_context(
+        {
+            "stream": "ethusdt@kline_1m",
+            "data": {"e": "kline", "k": {"s": "ETHUSDT"}},
+        }
+    ) == ("ethusdt@kline_1m", "ETHUSDT", "kline")

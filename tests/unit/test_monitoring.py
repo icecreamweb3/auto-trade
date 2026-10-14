@@ -9,6 +9,7 @@ from auto_trade.monitoring.repository import (
     RankingEntryRow,
     RestUsageRow,
     TableSizeRow,
+    WebSocketSyncRow,
 )
 from auto_trade.monitoring.service import (
     STATUS_PRIORITY,
@@ -16,6 +17,7 @@ from auto_trade.monitoring.service import (
     coverage_metric,
     database_metric,
     rest_usage_metric,
+    websocket_sync_metric,
 )
 
 
@@ -66,6 +68,26 @@ def test_partial_warmup_coverage_is_warning() -> None:
 
     assert metric.status is HealthStatus.WARNING
     assert metric.message == "数据仍在预热或存在少量缺失"
+
+
+def test_websocket_sync_metric_reports_fallback_and_missing_as_failures() -> None:
+    metric = websocket_sync_metric(
+        WebSocketSyncRow(
+            key="trade_60",
+            expected=1000,
+            succeeded=960,
+            rest_fallback=35,
+            other_source=0,
+            missing=5,
+        )
+    )
+
+    assert metric.status is HealthStatus.WARNING
+    assert metric.success_percent == 96.0
+    assert metric.failed == 40
+    assert metric.rest_fallback == 35
+    assert metric.other_source == 0
+    assert metric.missing == 5
 
 
 def test_missing_or_stale_coverage_is_critical() -> None:

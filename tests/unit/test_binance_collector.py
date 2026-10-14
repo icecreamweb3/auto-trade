@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -16,6 +17,7 @@ from auto_trade.collectors.service import (
     BinanceCollectionService,
     KlineSeries,
     build_rolling_ranking_entries,
+    log_websocket_sync_result,
     parse_instrument_rules,
 )
 from auto_trade.contracts import (
@@ -63,6 +65,20 @@ class RecordingPublisher:
 
     async def publish(self, subject: str, event: EventEnvelope[BaseModel]) -> None:
         self.messages.append((subject, event))
+
+
+def test_websocket_sync_failure_logs_summary_and_symbol(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.INFO):
+        log_websocket_sync_result(
+            series=KlineSeries(PriceType.TRADE, 60),
+            expected_open=datetime(2026, 10, 14, 2, 7, tzinfo=UTC),
+            symbols={"BTCUSDT", "ETHUSDT"},
+            missing_symbols={"ETHUSDT"},
+        )
+
+    assert "expected=2 succeeded=1 failed=1 success_percent=50.00" in caplog.text
+    assert "symbol=ETHUSDT" in caplog.text
+    assert "reason=not_received_before_fallback fallback=REST" in caplog.text
 
 
 async def test_rate_limit_is_not_retried_and_preserves_retry_after() -> None:
