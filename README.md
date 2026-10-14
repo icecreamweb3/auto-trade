@@ -66,3 +66,8 @@ make repair-once
 采集器将每份 Binance 响应同时用于原始事件留存和标准事件生成；策略、风控和后续数据库写入消费者从 JetStream 获取这份一致的数据，不重复请求 Binance。Trade 1m/5m 使用 WebSocket 闭合K线；Mark 1m 使用全市场 `!markPrice@arr@1s` WebSocket 实时流在本地按UTC分钟聚合，缺口再由REST回补。
 
 局域网测试机的完整部署、验收、升级、备份和分析终端接入步骤见 [`docs/COLLECTOR_LAN_DEPLOYMENT.md`](docs/COLLECTOR_LAN_DEPLOYMENT.md)。
+
+无需代理的云服务器部署资料：
+
+- [`docs/CLOUD_SERVER_CONFIGURATION_CHECKLIST.md`](docs/CLOUD_SERVER_CONFIGURATION_CHECKLIST.md)：机器规格、安全组、磁盘、备份和验收清单。
+- [`docs/CLOUD_SERVER_DEPLOYMENT.md`](docs/CLOUD_SERVER_DEPLOYMENT.md)：从主机初始化到数据迁移、启动和24小时验收的完整步骤。

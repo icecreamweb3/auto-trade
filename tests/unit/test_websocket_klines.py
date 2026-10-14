@@ -1,12 +1,15 @@
 from auto_trade.collectors.websocket_klines import (
     MARKET_WIDE_STREAMS,
     chunked,
+    format_message_counts,
     kline_stream_names,
     market_stream_names,
     market_stream_shards,
     websocket_connect_options,
     websocket_message_context,
     websocket_proxy,
+    websocket_shard_type,
+    websocket_stream_type,
 )
 
 
@@ -70,3 +73,15 @@ def test_websocket_message_context_identifies_failed_kline() -> None:
             "data": {"e": "kline", "k": {"s": "ETHUSDT"}},
         }
     ) == ("ethusdt@kline_1m", "ETHUSDT", "kline")
+
+
+def test_websocket_log_context_classifies_shards_and_streams() -> None:
+    assert websocket_shard_type(MARKET_WIDE_STREAMS) == "market_wide"
+    assert websocket_shard_type(("btcusdt@kline_1m",)) == "klines"
+    assert websocket_stream_type("btcusdt@kline_1m") == "kline_1m"
+    assert websocket_stream_type("btcusdt@kline_5m") == "kline_5m"
+    assert websocket_stream_type("!markPrice@arr@1s") == "mark_price"
+    assert websocket_stream_type("!ticker@arr") == "ticker"
+    assert format_message_counts({"ticker": 3, "mark_price": 5}) == (
+        "mark_price:5,ticker:3"
+    )

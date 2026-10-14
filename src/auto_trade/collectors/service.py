@@ -87,10 +87,16 @@ def log_websocket_sync_result(
     failed = len(missing_symbols)
     succeeded = expected - failed
     success_percent = succeeded / expected * 100 if expected else 100.0
+    failure_pattern = (
+        "none" if failed == 0 else "all_missing" if failed == expected else "partial"
+    )
+    missing_sample = ",".join(sorted(missing_symbols)[:10]) or "none"
+    fallback = "REST" if failed else "none"
     logger.log(
         logging.WARNING if failed else logging.INFO,
         "WebSocket kline sync summary price_type=%s interval_seconds=%d "
-        "open_time=%s expected=%d succeeded=%d failed=%d success_percent=%.2f",
+        "open_time=%s expected=%d succeeded=%d failed=%d success_percent=%.2f "
+        "failure_pattern=%s missing_sample=%s fallback=%s",
         series.price_type.value,
         series.interval_seconds,
         expected_open.isoformat(),
@@ -98,9 +104,12 @@ def log_websocket_sync_result(
         succeeded,
         failed,
         success_percent,
+        failure_pattern,
+        missing_sample,
+        fallback,
     )
     for symbol in sorted(missing_symbols):
-        logger.warning(
+        logger.debug(
             "WebSocket closed kline missing symbol=%s price_type=%s "
             "interval_seconds=%d open_time=%s reason=not_received_before_fallback "
             "fallback=REST",

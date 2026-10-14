@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from time import monotonic
 from typing import Any
@@ -88,6 +89,28 @@ def websocket_message_context(message: Mapping[str, Any]) -> tuple[str, str, str
     return stream, symbol, str(data.get("e", "unknown"))
 
 
+def websocket_stream_type(stream: str) -> str:
+    """Return a compact stream family suitable for operational logs."""
+    normalized = stream.lower()
+    if "@kline_1m" in normalized:
+        return "kline_1m"
+    if "@kline_5m" in normalized:
+        return "kline_5m"
+    if "markprice@" in normalized:
+        return "mark_price"
+    if "ticker@" in normalized:
+        return "ticker"
+    return "other"
+
+
+def websocket_shard_type(streams: tuple[str, ...]) -> str:
+    return "market_wide" if streams == MARKET_WIDE_STREAMS else "klines"
+
+
+def format_message_counts(counts: Mapping[str, int]) -> str:
+    return ",".join(f"{name}:{counts[name]}" for name in sorted(counts)) or "none"
+
+
 class BinanceKlineWebSocketCollector:
     """Collect reusable Futures market data over sharded WebSocket streams."""
 
@@ -124,6 +147,8 @@ class BinanceKlineWebSocketCollector:
         self,
         messages: asyncio.Queue[dict[str, Any]],
         *,
+        shard_id: int,
+        shard_type: str,
         streams_count: int,
         worker_id: int,
     ) -> None:
@@ -140,8 +165,11 @@ class BinanceKlineWebSocketCollector:
                 stream, symbol, event_name = websocket_message_context(message)
                 logger.exception(
                     "Binance WebSocket message processing failed "
-                    "streams=%d worker=%d queue_depth=%d stream=%s "
+                    "shard_id=%d shard_type=%s streams=%d worker=%d "
+                    "queue_depth=%d stream=%s "
                     "symbol=%s event=%s",
+                    shard_id,
+                    shard_type,
                     streams_count,
                     worker_id,
                     messages.qsize(),
@@ -155,16 +183,22 @@ class BinanceKlineWebSocketCollector:
             if elapsed >= 2:
                 logger.warning(
                     "Binance WebSocket slow message handler "
-                    "streams=%d worker=%d elapsed_seconds=%.3f queue_depth=%d",
+                    "shard_id=%d shard_type=%s streams=%d worker=%d "
+                    "elapsed_seconds=%.3f queue_depth=%d",
+                    shard_id,
+                    shard_type,
                     streams_count,
                     worker_id,
                     elapsed,
                     messages.qsize(),
                 )
 
-    async def _consume_shard(self, streams: tuple[str, ...]) -> None:
+    async def _consume_shard(
+        self, streams: tuple[str, ...], *, shard_id: int
+    ) -> None:
         url = f"{self._base_url}/market/stream?streams={'/'.join(streams)}"
         backoff = 1.0
+        shard_type = websocket_shard_type(streams)
         messages: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
             maxsize=self._message_queue_size
         )
@@ -174,24 +208,41 @@ class BinanceKlineWebSocketCollector:
         workers = [
             asyncio.create_task(
                 self._process_messages(
-                    messages, streams_count=len(streams), worker_id=index + 1
+                    messages,
+                    shard_id=shard_id,
+                    shard_type=shard_type,
+                    streams_count=len(streams),
+                    worker_id=index + 1,
                 )
             )
             for index in range(worker_count)
         ]
         queue_saturated = False
+        connection_number = 0
         try:
             while not self._symbols_changed.is_set():
                 connected_at: float | None = None
+                last_message_at: float | None = None
+                last_stream = "none"
+                received_messages = 0
+                message_counts: Counter[str] = Counter()
+                health_message_counts: Counter[str] = Counter()
+                last_health_log_at: float | None = None
+                connection_number += 1
+                connection_id = f"{shard_id}-{connection_number}"
                 try:
                     async with connect(
                         url,
                         **websocket_connect_options(self._proxy_url),
                     ) as websocket:
                         connected_at = monotonic()
+                        last_health_log_at = connected_at
                         logger.info(
-                            "Binance WebSocket connected streams=%d workers=%d "
-                            "proxy_enabled=%s",
+                            "Binance WebSocket connected shard_id=%d shard_type=%s "
+                            "connection_id=%s streams=%d workers=%d proxy_enabled=%s",
+                            shard_id,
+                            shard_type,
+                            connection_id,
                             len(streams),
                             worker_count,
                             self._proxy_url is not None,
@@ -203,11 +254,24 @@ class BinanceKlineWebSocketCollector:
                                     timeout=self._receive_timeout_seconds,
                                 )
                             except TimeoutError:
+                                now = monotonic()
+                                idle_seconds = now - (last_message_at or connected_at)
                                 logger.warning(
-                                    "Binance WebSocket idle streams=%d "
-                                    "timeout_seconds=%.1f queue_depth=%d",
+                                    "Binance WebSocket idle shard_id=%d shard_type=%s "
+                                    "connection_id=%s streams=%d timeout_seconds=%.1f "
+                                    "idle_seconds=%.1f connected_seconds=%.1f "
+                                    "received_messages=%d message_counts=%s "
+                                    "last_stream=%s queue_depth=%d",
+                                    shard_id,
+                                    shard_type,
+                                    connection_id,
                                     len(streams),
                                     self._receive_timeout_seconds,
+                                    idle_seconds,
+                                    now - connected_at,
+                                    received_messages,
+                                    format_message_counts(message_counts),
+                                    last_stream,
                                     messages.qsize(),
                                 )
                                 break
@@ -224,13 +288,55 @@ class BinanceKlineWebSocketCollector:
                                 )
                                 continue
                             if not isinstance(message, dict):
-                                logger.warning("ignored non-object WebSocket message")
+                                logger.warning(
+                                    "ignored non-object WebSocket message "
+                                    "shard_id=%d shard_type=%s connection_id=%s",
+                                    shard_id,
+                                    shard_type,
+                                    connection_id,
+                                )
                                 continue
+                            now = monotonic()
+                            last_message_at = now
+                            received_messages += 1
+                            last_stream = str(message.get("stream", "unknown"))
+                            stream_type = websocket_stream_type(last_stream)
+                            message_counts[stream_type] += 1
+                            health_message_counts[stream_type] += 1
+                            if (
+                                last_health_log_at is not None
+                                and now - last_health_log_at >= 60
+                            ):
+                                logger.info(
+                                    "Binance WebSocket shard health shard_id=%d "
+                                    "shard_type=%s connection_id=%s streams=%d "
+                                    "connected_seconds=%.1f received_messages=%d "
+                                    "window_seconds=%.1f window_message_counts=%s "
+                                    "total_message_counts=%s last_stream=%s "
+                                    "queue_depth=%d",
+                                    shard_id,
+                                    shard_type,
+                                    connection_id,
+                                    len(streams),
+                                    now - connected_at,
+                                    received_messages,
+                                    now - last_health_log_at,
+                                    format_message_counts(health_message_counts),
+                                    format_message_counts(message_counts),
+                                    last_stream,
+                                    messages.qsize(),
+                                )
+                                last_health_log_at = now
+                                health_message_counts.clear()
                             if messages.full() and not queue_saturated:
                                 queue_saturated = True
                                 logger.error(
                                     "Binance WebSocket processing queue saturated "
+                                    "shard_id=%d shard_type=%s connection_id=%s "
                                     "streams=%d queue_depth=%d",
+                                    shard_id,
+                                    shard_type,
+                                    connection_id,
                                     len(streams),
                                     messages.qsize(),
                                 )
@@ -242,7 +348,11 @@ class BinanceKlineWebSocketCollector:
                                 queue_saturated = False
                                 logger.info(
                                     "Binance WebSocket processing queue recovered "
+                                    "shard_id=%d shard_type=%s connection_id=%s "
                                     "streams=%d queue_depth=%d",
+                                    shard_id,
+                                    shard_type,
+                                    connection_id,
                                     len(streams),
                                     messages.qsize(),
                                 )
@@ -250,20 +360,36 @@ class BinanceKlineWebSocketCollector:
                     raise
                 except (ConnectionClosed, OSError, TimeoutError, ValueError) as error:
                     logger.warning(
-                        "Binance WebSocket disconnected streams=%d "
-                        "error_type=%s error=%s queue_depth=%d",
+                        "Binance WebSocket disconnected shard_id=%d shard_type=%s "
+                        "connection_id=%s streams=%d error_type=%s error=%s "
+                        "connected_seconds=%.1f received_messages=%d "
+                        "message_counts=%s last_stream=%s queue_depth=%d",
+                        shard_id,
+                        shard_type,
+                        connection_id,
                         len(streams),
                         type(error).__name__,
                         error,
+                        monotonic() - connected_at if connected_at is not None else 0.0,
+                        received_messages,
+                        format_message_counts(message_counts),
+                        last_stream,
                         messages.qsize(),
                     )
                 if connected_at is not None and monotonic() - connected_at >= 60:
                     backoff = 1.0
                 logger.info(
-                    "Binance WebSocket reconnect scheduled streams=%d "
-                    "retry_seconds=%.1f queue_depth=%d",
+                    "Binance WebSocket reconnect scheduled shard_id=%d "
+                    "shard_type=%s connection_id=%s streams=%d "
+                    "retry_seconds=%.1f received_messages=%d "
+                    "message_counts=%s queue_depth=%d",
+                    shard_id,
+                    shard_type,
+                    connection_id,
                     len(streams),
                     backoff,
+                    received_messages,
+                    format_message_counts(message_counts),
                     messages.qsize(),
                 )
                 try:
@@ -293,7 +419,25 @@ class BinanceKlineWebSocketCollector:
                 len(streams),
                 len(self._symbols),
             )
-            tasks = [asyncio.create_task(self._consume_shard(shard)) for shard in shards]
+            for shard_id, shard in enumerate(shards, start=1):
+                logger.info(
+                    "Binance WebSocket shard configured shard_id=%d shard_type=%s "
+                    "streams=%d workers=%d first_stream=%s last_stream=%s",
+                    shard_id,
+                    websocket_shard_type(shard),
+                    len(shard),
+                    (
+                        1
+                        if shard == MARKET_WIDE_STREAMS
+                        else self._kline_workers_per_connection
+                    ),
+                    shard[0],
+                    shard[-1],
+                )
+            tasks = [
+                asyncio.create_task(self._consume_shard(shard, shard_id=shard_id))
+                for shard_id, shard in enumerate(shards, start=1)
+            ]
             change_task = asyncio.create_task(self._symbols_changed.wait())
             try:
                 done, _pending = await asyncio.wait(

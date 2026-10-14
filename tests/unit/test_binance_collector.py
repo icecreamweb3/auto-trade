@@ -77,8 +77,9 @@ def test_websocket_sync_failure_logs_summary_and_symbol(caplog: pytest.LogCaptur
         )
 
     assert "expected=2 succeeded=1 failed=1 success_percent=50.00" in caplog.text
-    assert "symbol=ETHUSDT" in caplog.text
-    assert "reason=not_received_before_fallback fallback=REST" in caplog.text
+    assert "failure_pattern=partial" in caplog.text
+    assert "missing_sample=ETHUSDT" in caplog.text
+    assert "fallback=REST" in caplog.text
 
 
 async def test_rate_limit_is_not_retried_and_preserves_retry_after() -> None:
