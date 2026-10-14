@@ -27,7 +27,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = create_database_engine(settings)
     app.state.database_engine = engine
     app.state.monitoring_service = MonitoringService(
-        MonitoringRepository(engine),
+        MonitoringRepository(
+            engine,
+            data_safety_delay_seconds=(
+                settings.monitoring_data_safety_delay_seconds
+            ),
+        ),
         settings,
         NatsProbe(settings),
     )

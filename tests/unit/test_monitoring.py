@@ -10,6 +10,7 @@ from auto_trade.monitoring.repository import (
     RestUsageRow,
     TableSizeRow,
     WebSocketSyncRow,
+    websocket_sync_range_end,
 )
 from auto_trade.monitoring.service import (
     STATUS_PRIORITY,
@@ -19,6 +20,18 @@ from auto_trade.monitoring.service import (
     rest_usage_metric,
     websocket_sync_metric,
 )
+
+
+def test_websocket_sync_range_waits_for_safety_delay() -> None:
+    before_safe_boundary = datetime(2026, 10, 14, 9, 43, 29, tzinfo=UTC)
+    after_safe_boundary = datetime(2026, 10, 14, 9, 43, 30, tzinfo=UTC)
+
+    assert websocket_sync_range_end(before_safe_boundary, 60, 30) == datetime(
+        2026, 10, 14, 9, 42, tzinfo=UTC
+    )
+    assert websocket_sync_range_end(after_safe_boundary, 60, 30) == datetime(
+        2026, 10, 14, 9, 43, tzinfo=UTC
+    )
 
 
 def test_unknown_status_is_worse_than_healthy() -> None:

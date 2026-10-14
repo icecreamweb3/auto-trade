@@ -625,15 +625,20 @@ class DataRepairService:
     def _gap_scan_ranges(
         self, now: datetime
     ) -> tuple[tuple[datetime, datetime], ...]:
+        scan_end = now - timedelta(
+            seconds=self._settings.gap_scan_safety_delay_seconds
+        )
         recent_hours = self._settings.gap_scan_recent_lookback_hours
         historical_hours = self._settings.gap_scan_lookback_hours
         window_hours = self._settings.gap_scan_historical_window_hours
-        recent_start = now - timedelta(hours=recent_hours)
-        ranges: list[tuple[datetime, datetime]] = [(recent_start, now)]
+        recent_start = scan_end - timedelta(hours=recent_hours)
+        ranges: list[tuple[datetime, datetime]] = [(recent_start, scan_end)]
         if historical_hours <= recent_hours:
             return tuple(ranges)
         if self._historical_scan_cursor is None:
-            self._historical_scan_cursor = now - timedelta(hours=historical_hours)
+            self._historical_scan_cursor = scan_end - timedelta(
+                hours=historical_hours
+            )
             self._historical_scan_stop = recent_start
         assert self._historical_scan_stop is not None
         if self._historical_scan_cursor < self._historical_scan_stop:

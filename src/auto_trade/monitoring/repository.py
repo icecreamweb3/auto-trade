@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
 from sqlalchemy import text
@@ -126,9 +126,22 @@ class RankingQueryRows:
     items: tuple[RankingEntryRow, ...]
 
 
+def websocket_sync_range_end(
+    now: datetime, interval_seconds: int, safety_delay_seconds: int
+) -> datetime:
+    """Return the latest stable interval boundary for monitoring."""
+    safe_now = now.astimezone(UTC) - timedelta(seconds=safety_delay_seconds)
+    timestamp = int(safe_now.timestamp())
+    aligned = timestamp // interval_seconds * interval_seconds
+    return datetime.fromtimestamp(aligned, tz=UTC)
+
+
 class MonitoringRepository:
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(
+        self, engine: AsyncEngine, *, data_safety_delay_seconds: int = 30
+    ) -> None:
         self._engine = engine
+        self._data_safety_delay_seconds = data_safety_delay_seconds
 
     async def snapshot(self) -> DatabaseSnapshot:
         async with self._engine.connect() as connection:
@@ -331,26 +344,30 @@ class MonitoringRepository:
     async def _websocket_sync(
         self, connection: AsyncConnection, active_symbols: int
     ) -> tuple[WebSocketSyncRow, ...]:
+        now = datetime.now(UTC)
+        range_end_60 = websocket_sync_range_end(
+            now, 60, self._data_safety_delay_seconds
+        )
+        range_end_300 = websocket_sync_range_end(
+            now, 300, self._data_safety_delay_seconds
+        )
         rows = (
             await connection.execute(
                 text(
                     """
-                    WITH series(key, price_type, interval_seconds) AS (
+                    WITH series(key, price_type, interval_seconds, range_end) AS (
                         VALUES
-                            ('trade_60', 'TRADE', 60),
-                            ('mark_60', 'MARK', 60),
-                            ('trade_300', 'TRADE', 300)
+                            ('trade_60', 'TRADE', 60,
+                             CAST(:range_end_60 AS timestamptz)),
+                            ('mark_60', 'MARK', 60,
+                             CAST(:range_end_60 AS timestamptz)),
+                            ('trade_300', 'TRADE', 300,
+                             CAST(:range_end_300 AS timestamptz))
                     ), bounds AS (
                         SELECT
                             key, price_type, interval_seconds,
-                            to_timestamp(
-                                floor(extract(epoch FROM clock_timestamp()) /
-                                      interval_seconds) * interval_seconds
-                            ) - interval '1 hour' AS range_start,
-                            to_timestamp(
-                                floor(extract(epoch FROM clock_timestamp()) /
-                                      interval_seconds) * interval_seconds
-                            ) AS range_end
+                            range_end - interval '1 hour' AS range_start,
+                            range_end
                         FROM series
                     )
                     SELECT
@@ -382,7 +399,11 @@ class MonitoringRepository:
                     ORDER BY b.key
                     """
                 ),
-                {"active_symbols": active_symbols},
+                {
+                    "active_symbols": active_symbols,
+                    "range_end_60": range_end_60,
+                    "range_end_300": range_end_300,
+                },
             )
         ).mappings().all()
         return tuple(

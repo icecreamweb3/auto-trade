@@ -75,21 +75,29 @@ def test_historical_gap_scan_advances_in_bounded_windows() -> None:
         gap_scan_lookback_hours=72,
         gap_scan_recent_lookback_hours=24,
         gap_scan_historical_window_hours=12,
+        gap_scan_safety_delay_seconds=60,
     )
     service = DataRepairService(MagicMock(), MagicMock(), settings)
     now = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+    scan_end = now - timedelta(seconds=60)
 
     first = service._gap_scan_ranges(now)
     service._complete_historical_scan(first)
     second = service._gap_scan_ranges(now)
 
     assert first == (
-        (now - timedelta(hours=24), now),
-        (now - timedelta(hours=72), now - timedelta(hours=60)),
+        (scan_end - timedelta(hours=24), scan_end),
+        (
+            scan_end - timedelta(hours=72),
+            scan_end - timedelta(hours=60),
+        ),
     )
     assert second == (
-        (now - timedelta(hours=24), now),
-        (now - timedelta(hours=60), now - timedelta(hours=48)),
+        (scan_end - timedelta(hours=24), scan_end),
+        (
+            scan_end - timedelta(hours=60),
+            scan_end - timedelta(hours=48),
+        ),
     )
 
 
