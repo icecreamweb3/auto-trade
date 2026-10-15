@@ -4,6 +4,7 @@ from decimal import Decimal
 from auto_trade.collectors.historical_rankings import (
     Instrument,
     aggregate_daily_klines,
+    aggregate_local_daily_rows,
     instrument_is_eligible,
 )
 
@@ -57,3 +58,33 @@ def test_instrument_requires_full_eligible_utc_day() -> None:
     assert not instrument_is_eligible(
         Instrument(3, "OLDUSDT", None, datetime(2026, 1, 2, 12, tzinfo=UTC)), day
     )
+
+
+def test_local_daily_rows_include_missing_instrument_as_invalid() -> None:
+    day = date(2026, 1, 2)
+    start = datetime(2026, 1, 2, tzinfo=UTC)
+    instruments = [
+        Instrument(1, "BTCUSDT", None, None),
+        Instrument(2, "ETHUSDT", None, None),
+    ]
+    rows = [
+        {
+            "instrument_id": 1,
+            "open_time": start + timedelta(minutes=5 * index),
+            "open_price": Decimal(100 + index),
+            "high_price": Decimal(102 + index),
+            "low_price": Decimal(98 + index),
+            "close_price": Decimal(101 + index),
+            "base_volume": Decimal("2"),
+            "quote_volume": Decimal("20"),
+        }
+        for index in range(287)
+    ]
+
+    metrics = aggregate_local_daily_rows(day, instruments, rows)
+
+    assert [instrument_id for instrument_id, _ in metrics] == [1, 2]
+    assert metrics[0][1].quality_status == "VALID"
+    assert metrics[0][1].metrics["source"] == "LOCAL_DATABASE_TRADE_KLINE_5M"
+    assert metrics[1][1].quality_status == "INVALID"
+    assert metrics[1][1].metrics["reason"] == "NO_KLINES"

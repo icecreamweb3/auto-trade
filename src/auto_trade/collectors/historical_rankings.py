@@ -5,6 +5,8 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -69,7 +71,12 @@ def instrument_is_eligible(instrument: Instrument, day: date) -> bool:
     )
 
 
-def aggregate_daily_klines(day: date, raw_rows: list[object]) -> DailyMetric:
+def aggregate_daily_klines(
+    day: date,
+    raw_rows: list[object],
+    *,
+    source: str = "BINANCE_REST_KLINE_5M",
+) -> DailyMetric:
     start, end = utc_day_bounds(day)
     expected_times = {
         int(start.timestamp() * 1000) + index * FIVE_MINUTES_MS
@@ -90,7 +97,11 @@ def aggregate_daily_klines(day: date, raw_rows: list[object]) -> DailyMetric:
         return DailyMetric(
             day, start, snapshot_at, None, None, None, None, None, None, None,
             Decimal(0), Decimal(0), None, None, 0, "INVALID",
-            {"reason": "NO_KLINES", "provenance": "DERIVED_RANKING"},
+            {
+                "reason": "NO_KLINES",
+                "provenance": "DERIVED_RANKING",
+                "source": source,
+            },
         )
 
     first = ordered[0]
@@ -131,7 +142,7 @@ def aggregate_daily_klines(day: date, raw_rows: list[object]) -> DailyMetric:
         quality_status=quality,
         metrics={
             "provenance": "DERIVED_RANKING",
-            "source": "BINANCE_REST_KLINE_5M",
+            "source": source,
             "expected_bar_count": EXPECTED_BARS,
             "first_open_time_ms": first_ms,
             "last_open_time_ms": last_ms,
@@ -217,14 +228,24 @@ async def existing_days(engine: AsyncEngine, instrument_id: int) -> set[date]:
 async def save_metrics(
     engine: AsyncEngine, instrument_id: int, metrics: list[DailyMetric]
 ) -> None:
-    if not metrics:
+    await save_metric_rows(
+        engine,
+        [(instrument_id, metric) for metric in metrics],
+    )
+
+
+async def save_metric_rows(
+    engine: AsyncEngine,
+    metric_rows: list[tuple[int, DailyMetric]],
+) -> None:
+    if not metric_rows:
         return
     values = []
-    for metric in metrics:
+    for instrument_id, metric in metric_rows:
         row = asdict(metric)
         row.update(
             instrument_id=instrument_id,
-            source="BINANCE_REST_KLINE_5M",
+            source=str(metric.metrics.get("source", "BINANCE_REST_KLINE_5M")),
             payload_hash=_metric_hash(metric),
             metrics_json=json.dumps(metric.metrics, separators=(",", ":"), sort_keys=True),
         )
@@ -255,10 +276,93 @@ async def save_metrics(
             actual_bar_count=EXCLUDED.actual_bar_count, source=EXCLUDED.source,
             quality_status=EXCLUDED.quality_status, metrics=EXCLUDED.metrics,
             payload_hash=EXCLUDED.payload_hash, updated_at=clock_timestamp()
+        WHERE market.utc_daily_metrics.quality_status <> 'VALID'
+           OR EXCLUDED.quality_status = 'VALID'
         """
     )
     async with engine.begin() as connection:
         await connection.execute(statement, values)
+
+
+def aggregate_local_daily_rows(
+    day: date,
+    instruments: list[Instrument],
+    rows: list[Mapping[str, object]],
+) -> list[tuple[int, DailyMetric]]:
+    rows_by_instrument: dict[int, list[object]] = defaultdict(list)
+    for row in rows:
+        open_time = cast(datetime, row["open_time"])
+        rows_by_instrument[int(str(row["instrument_id"]))].append(
+            [
+                int(open_time.timestamp() * 1000),
+                row["open_price"],
+                row["high_price"],
+                row["low_price"],
+                row["close_price"],
+                row["base_volume"] or 0,
+                0,
+                row["quote_volume"] or 0,
+            ]
+        )
+    return [
+        (
+            instrument.instrument_id,
+            aggregate_daily_klines(
+                day,
+                rows_by_instrument[instrument.instrument_id],
+                source="LOCAL_DATABASE_TRADE_KLINE_5M",
+            ),
+        )
+        for instrument in instruments
+        if instrument_is_eligible(instrument, day)
+    ]
+
+
+async def materialize_local_daily_metrics(engine: AsyncEngine, day: date) -> tuple[int, int]:
+    instruments = [
+        instrument
+        for instrument in await load_instruments(engine, ())
+        if instrument_is_eligible(instrument, day)
+    ]
+    if not instruments:
+        return 0, 0
+    start, end = utc_day_bounds(day)
+    snapshot_at = end - timedelta(minutes=5)
+    statement = text(
+        """
+        SELECT instrument_id, open_time, open_price, high_price, low_price,
+               close_price, base_volume, quote_volume
+        FROM market.klines
+        WHERE instrument_id IN :instrument_ids
+          AND price_type = 'TRADE'
+          AND interval_seconds = 300
+          AND is_current
+          AND is_closed
+          AND quality_status = 'VALID'
+          AND open_time >= :start
+          AND open_time < :snapshot_at
+        ORDER BY instrument_id, open_time
+        """
+    ).bindparams(bindparam("instrument_ids", expanding=True))
+    async with engine.connect() as connection:
+        rows = (
+            await connection.execute(
+                statement,
+                {
+                    "instrument_ids": tuple(
+                        instrument.instrument_id for instrument in instruments
+                    ),
+                    "start": start,
+                    "snapshot_at": snapshot_at,
+                },
+            )
+        ).mappings().all()
+    local_rows = [cast(Mapping[str, object], row) for row in rows]
+    metric_rows = aggregate_local_daily_rows(day, instruments, local_rows)
+    await save_metric_rows(engine, metric_rows)
+    return len(metric_rows), sum(
+        metric.quality_status == "VALID" for _, metric in metric_rows
+    )
 
 
 async def build_rankings(engine: AsyncEngine, first_day: date, last_day: date) -> int:
@@ -372,7 +476,7 @@ async def build_rankings(engine: AsyncEngine, first_day: date, last_day: date) -
                         "metrics": json.dumps(
                             {
                                 "provenance": "DERIVED_RANKING",
-                                "source": "BINANCE_REST_KLINE_5M",
+                                "source": row["source"],
                                 "actual_bar_count": row["actual_bar_count"],
                                 "open_interest_status": (
                                     "LOCAL_OBSERVATION" if oi_at else "UNAVAILABLE"

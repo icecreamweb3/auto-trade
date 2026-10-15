@@ -2,7 +2,7 @@
 
 Binance USDⓈ-M USDT永续合约的数据采集、实时决策、交易执行和分析回测系统。
 
-当前开发阶段：P3分钟K线采集。已具备全合约目录、分钟Ticker、资金费率、1分钟Trade/Mark K线、5分钟Trade K线、5分钟OI、滚动涨幅榜、JetStream幂等落库和多序列缺口自动回补。需求、实施计划和数据库说明位于 `docs/`。
+当前开发阶段：P3分钟K线采集。已具备全合约目录、分钟Ticker、资金费率、1分钟Trade/Mark K线、5分钟Trade K线、5分钟OI、滚动涨幅榜、UTC自然日榜自动生成、JetStream幂等落库和多序列缺口自动回补。需求、实施计划和数据库说明位于 `docs/`。
 
 采集监控MVP提供只读FastAPI、React Web界面、数据覆盖率、回补队列、REST权重、数据库容量和JetStream状态。默认仅监听 `127.0.0.1:8080`。
 
@@ -64,6 +64,8 @@ make repair-once
 ```
 
 采集器将每份 Binance 响应同时用于原始事件留存和标准事件生成；策略、风控和后续数据库写入消费者从 JetStream 获取这份一致的数据，不重复请求 Binance。Trade 1m/5m 使用 WebSocket 闭合K线；Mark 1m 使用全市场 `!markPrice@arr@1s` WebSocket 实时流在本地按UTC分钟聚合，缺口再由REST回补。
+
+`daily-rankings` 服务每5分钟检查最近90天内缺失或非有效的 UTC 日榜，每轮最多处理7天。它只使用本地已闭合且质量有效的5分钟Trade K线；每天UTC日期结束后生成前一日榜单，启动时也会自动补齐遗漏日。数据尚不完整时快照保持非有效状态，缺口回补完成后由后续周期重算。
 
 局域网测试机的完整部署、验收、升级、备份和分析终端接入步骤见 [`docs/COLLECTOR_LAN_DEPLOYMENT.md`](docs/COLLECTOR_LAN_DEPLOYMENT.md)。
 

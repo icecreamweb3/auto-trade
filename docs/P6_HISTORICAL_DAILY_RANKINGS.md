@@ -56,3 +56,18 @@ docker compose --profile tools run --rm historical-rankings --days 90 --rank-onl
 ```bash
 docker compose --profile tools run --rm historical-rankings --days 90 --refresh
 ```
+
+## 后续日榜自动更新
+
+常驻运行环境包含独立的 `daily-rankings` 服务。服务启动后立即检查最近90天，之后
+每5分钟检查一次；每轮最多处理7个缺失或非有效日期。日榜直接使用
+`market.klines` 中已闭合、当前修订且质量为 `VALID` 的5分钟Trade K线，不额外请求
+Binance。
+
+每个标的仍必须具有UTC 00:00至23:50的287根完整K线才参与排名。数据不完整时会
+保存中间日指标和非有效快照，查询接口不会将其作为可用日榜；缺口修复完成后，后续
+扫描会自动重建并发布有效Top 50。配置项如下：
+
+- `DAILY_RANKING_SCAN_INTERVAL_SECONDS`：扫描间隔，默认300秒。
+- `DAILY_RANKING_LOOKBACK_DAYS`：启动补漏窗口，默认90天。
+- `DAILY_RANKING_MAX_DAYS_PER_CYCLE`：单轮处理上限，默认7天。

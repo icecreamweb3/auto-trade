@@ -177,6 +177,30 @@ services:
       nats:
         condition: service_healthy
 
+  daily-rankings:
+    profiles: ["runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    container_name: auto-trade-daily-rankings
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *file-logging-environment
+      SERVICE_NAME: daily-rankings
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
+    command: ["python", "-m", "auto_trade.collectors.daily_rankings"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - backend
+
   monitor-api:
     profiles: ["runtime"]
     build:
