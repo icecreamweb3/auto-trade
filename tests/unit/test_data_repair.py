@@ -162,6 +162,50 @@ async def test_historical_gap_scan_checkpoint_is_restored_and_advanced() -> None
     assert service._historical_scan_stop == stop
 
 
+async def test_run_forever_repairs_while_gap_scan_is_running() -> None:
+    scan_started = asyncio.Event()
+    repair_started = asyncio.Event()
+    never_complete = asyncio.Event()
+    settings = SimpleNamespace(
+        gap_scan_lookback_hours=24,
+        gap_scan_recent_lookback_hours=24,
+        gap_scan_interval_seconds=300,
+        backfill_worker_count=8,
+        backfill_jobs_per_cycle=50,
+        backfill_request_interval_seconds=2.0,
+        backfill_stale_job_seconds=300,
+        backfill_failed_retry_limit=3,
+    )
+    repository = MagicMock()
+    repository.recover_interrupted_jobs = AsyncMock(
+        return_value={"stale": 0, "failed": 0}
+    )
+    service = DataRepairService(repository, MagicMock(), settings)
+
+    async def scan() -> dict[str, int]:
+        scan_started.set()
+        await never_complete.wait()
+        return {"detected": 0, "queued": 0}
+
+    async def repair(*, scan_gaps: bool) -> dict[str, int]:
+        assert scan_gaps is False
+        repair_started.set()
+        await never_complete.wait()
+        return {"detected": 0, "queued": 0, "succeeded": 0, "failed": 0}
+
+    service._scan_and_queue_gaps = AsyncMock(side_effect=scan)  # type: ignore[method-assign]
+    service.run_cycle = AsyncMock(side_effect=repair)  # type: ignore[method-assign]
+
+    task = asyncio.create_task(service.run_forever())
+    try:
+        await asyncio.wait_for(scan_started.wait(), timeout=1)
+        await asyncio.wait_for(repair_started.wait(), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 def test_completed_historical_checkpoint_tracks_recent_scan_boundary() -> None:
     settings = SimpleNamespace(
         gap_scan_lookback_hours=72,

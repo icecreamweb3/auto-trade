@@ -789,31 +789,35 @@ class DataRepairService:
             self._historical_scan_cursor = ranges[0][0]
             self._historical_scan_stop = ranges[0][0]
 
-    async def run_cycle(self, *, scan_gaps: bool = True) -> dict[str, int]:
-        gaps: list[GapRange] = []
-        scan_ranges: tuple[tuple[datetime, datetime], ...] = ()
-        if scan_gaps:
-            scan_ranges = self._gap_scan_ranges(datetime.now(UTC).replace(microsecond=0))
-            gap_groups = await asyncio.gather(
-                *(
-                    self._repository.detect_kline_gaps_in_range(start, end, series)
-                    for start, end in scan_ranges
-                    for series in REPAIR_SERIES
-                )
+    async def _scan_and_queue_gaps(self) -> dict[str, int]:
+        scan_ranges = self._gap_scan_ranges(datetime.now(UTC).replace(microsecond=0))
+        gap_groups = await asyncio.gather(
+            *(
+                self._repository.detect_kline_gaps_in_range(start, end, series)
+                for start, end in scan_ranges
+                for series in REPAIR_SERIES
             )
-            gaps = [gap for group in gap_groups for gap in group]
+        )
+        gaps = [gap for group in gap_groups for gap in group]
         queued = await self._repository.queue_gaps(gaps) if gaps else 0
-        if scan_gaps:
-            self._complete_historical_scan(scan_ranges)
-            if (
-                self._historical_checkpoint_enabled
-                and self._historical_scan_cursor is not None
-                and self._historical_scan_stop is not None
-            ):
-                await self._repository.save_historical_scan_checkpoint(
-                    self._historical_scan_cursor,
-                    self._historical_scan_stop,
-                )
+        self._complete_historical_scan(scan_ranges)
+        if (
+            self._historical_checkpoint_enabled
+            and self._historical_scan_cursor is not None
+            and self._historical_scan_stop is not None
+        ):
+            await self._repository.save_historical_scan_checkpoint(
+                self._historical_scan_cursor,
+                self._historical_scan_stop,
+            )
+        return {"detected": len(gaps), "queued": queued}
+
+    async def run_cycle(self, *, scan_gaps: bool = True) -> dict[str, int]:
+        scan_result = (
+            await self._scan_and_queue_gaps()
+            if scan_gaps
+            else {"detected": 0, "queued": 0}
+        )
         succeeded = 0
         failed = 0
         remaining = self._settings.backfill_jobs_per_cycle
@@ -869,7 +873,11 @@ class DataRepairService:
         )
         if rate_limit_errors:
             raise rate_limit_errors[0]
-        return {"detected": len(gaps), "queued": queued, "succeeded": succeeded, "failed": failed}
+        return {
+            **scan_result,
+            "succeeded": succeeded,
+            "failed": failed,
+        }
 
     async def run_forever(self) -> None:
         logger.info(
@@ -884,14 +892,13 @@ class DataRepairService:
             failed_retry_limit=self._settings.backfill_failed_retry_limit,
         )
         logger.info("recovered interrupted backfill jobs result=%s", recovered)
-        next_scan_at = 0.0
-        delay: float
-        while True:
-            try:
-                now = time.monotonic()
-                scan_gaps = now >= next_scan_at
-                result = await self.run_cycle(scan_gaps=scan_gaps)
-                if scan_gaps:
+        jobs_queued = asyncio.Event()
+
+        async def scan_forever() -> None:
+            while True:
+                started_at = time.monotonic()
+                try:
+                    result = await self._scan_and_queue_gaps()
                     recovered = await self._repository.recover_interrupted_jobs(
                         stale_after_seconds=self._settings.backfill_stale_job_seconds,
                         failed_retry_limit=self._settings.backfill_failed_retry_limit,
@@ -900,30 +907,53 @@ class DataRepairService:
                         logger.info(
                             "recovered backfill jobs during scan result=%s", recovered
                         )
-                    next_scan_at = (
-                        now + self._settings.gap_scan_interval_seconds
+                    if result["queued"]:
+                        jobs_queued.set()
+                    logger.info("data repair scan result=%s", result)
+                except Exception:
+                    logger.exception("data repair gap scan failed")
+                elapsed = time.monotonic() - started_at
+                await asyncio.sleep(
+                    max(
+                        1.0,
+                        self._settings.gap_scan_interval_seconds - elapsed,
                     )
-                delay = next_cycle_delay(
-                    result,
-                    batch_limit=self._settings.backfill_jobs_per_cycle,
-                    idle_interval_seconds=self._settings.gap_scan_interval_seconds,
                 )
-                logger.info("data repair cycle result=%s next_delay=%d", result, delay)
-            except BinanceRateLimitError as error:
-                delay = max(
-                    error.retry_after_seconds,
-                    self._settings.backfill_rate_limit_cooldown_seconds,
-                )
-                logger.warning(
-                    "data repair cooling down after Binance rate limit "
-                    "status=%d delay=%.0fs",
-                    error.status_code,
-                    delay,
-                )
-            except Exception:
-                logger.exception("data repair cycle failed")
-                delay = self._settings.gap_scan_interval_seconds
-            await asyncio.sleep(delay)
+
+        async def repair_forever() -> None:
+            delay: float
+            while True:
+                try:
+                    result = await self.run_cycle(scan_gaps=False)
+                    delay = next_cycle_delay(
+                        result,
+                        batch_limit=self._settings.backfill_jobs_per_cycle,
+                        idle_interval_seconds=self._settings.gap_scan_interval_seconds,
+                    )
+                    logger.info(
+                        "data repair cycle result=%s next_delay=%d", result, delay
+                    )
+                except BinanceRateLimitError as error:
+                    delay = max(
+                        error.retry_after_seconds,
+                        self._settings.backfill_rate_limit_cooldown_seconds,
+                    )
+                    logger.warning(
+                        "data repair cooling down after Binance rate limit "
+                        "status=%d delay=%.0fs",
+                        error.status_code,
+                        delay,
+                    )
+                except Exception:
+                    logger.exception("data repair cycle failed")
+                    delay = self._settings.gap_scan_interval_seconds
+                try:
+                    await asyncio.wait_for(jobs_queued.wait(), timeout=delay)
+                except TimeoutError:
+                    pass
+                jobs_queued.clear()
+
+        await asyncio.gather(scan_forever(), repair_forever())
 
 
 async def run(command: str, settings: Settings) -> object:
