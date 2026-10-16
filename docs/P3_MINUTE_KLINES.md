@@ -35,6 +35,7 @@
 - 2026-10-10 UTC 07:41：Mark 1m、Trade 1m均达到525/525且来源全部为`WEBSOCKET`；Mark本地聚合写入跨度约0.47秒，Trade写入跨度约2.88秒。
 - 2026-10-10 UTC 07:35：Trade 5m达到525/525且来源全部为`WEBSOCKET`；UTC 07:42分钟ticker达到525/525，mark price与24hChange均完整。
 - 限流解除后的OI实测525/525；实时OI与受控回补叠加时，Binance返回的IP已用权重最高约549/2400，未再出现`429/418`。
+- 缺口扫描对`market.klines.open_time`使用显式起止范围，以便TimescaleDB裁剪无关分块；历史扫描游标保存在`market.backfill_scan_checkpoints`，服务重启后从已完成窗口继续。
 - 回补重启首轮自动回收2个遗留`RUNNING`及46个可重试任务，检测并排队停机缺口5764项，首批成功50、失败0；后续批次待处理数持续下降。
 - Ruff、严格 mypy 与28项单元测试通过；外部参考文件 `contracts/market_ws.py` 因依赖其他项目模块而不纳入生产代码检查。
 

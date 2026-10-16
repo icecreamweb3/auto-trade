@@ -60,6 +60,7 @@ REPAIR_SERIES = (
 )
 
 MAX_KLINE_POINTS_PER_BACKFILL_JOB = 1500
+HISTORICAL_SCAN_KEY = "KLINE_GAP_HISTORY"
 
 
 def group_missing_points(
@@ -189,6 +190,8 @@ class DataRepairRepository:
                       ON k.instrument_id = e.instrument_id
                      AND k.price_type = :price_type
                      AND k.interval_seconds = :interval_seconds
+                     AND k.open_time >= CAST(:range_start AS timestamptz)
+                     AND k.open_time < CAST(:range_end AS timestamptz)
                      AND k.open_time = e.open_time
                      AND k.is_current
                     LEFT JOIN market.data_gaps g
@@ -608,6 +611,90 @@ class DataRepairRepository:
                 {"gap_id": job.gap_id},
             )
 
+    async def load_historical_scan_checkpoint(
+        self,
+        *,
+        cursor_at: datetime,
+        scan_stop_at: datetime,
+        config_signature: str,
+    ) -> tuple[datetime, datetime]:
+        async with self._engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO market.backfill_scan_checkpoints AS checkpoint (
+                            scan_key, cursor_at, scan_stop_at, config_signature
+                        ) VALUES (
+                            :scan_key, :cursor_at, :scan_stop_at, :config_signature
+                        )
+                        ON CONFLICT (scan_key) DO UPDATE SET
+                            cursor_at = CASE
+                                WHEN checkpoint.config_signature =
+                                     EXCLUDED.config_signature
+                                THEN checkpoint.cursor_at
+                                ELSE EXCLUDED.cursor_at
+                            END,
+                            scan_stop_at = CASE
+                                WHEN checkpoint.config_signature =
+                                     EXCLUDED.config_signature
+                                THEN GREATEST(
+                                    checkpoint.scan_stop_at,
+                                    EXCLUDED.scan_stop_at
+                                )
+                                ELSE EXCLUDED.scan_stop_at
+                            END,
+                            config_signature = EXCLUDED.config_signature,
+                            completed_at = CASE
+                                WHEN checkpoint.config_signature =
+                                     EXCLUDED.config_signature
+                                 AND checkpoint.cursor_at >= GREATEST(
+                                     checkpoint.scan_stop_at,
+                                     EXCLUDED.scan_stop_at
+                                 )
+                                THEN checkpoint.completed_at
+                                ELSE NULL
+                            END,
+                            updated_at = clock_timestamp()
+                        RETURNING cursor_at, scan_stop_at
+                        """
+                    ),
+                    {
+                        "scan_key": HISTORICAL_SCAN_KEY,
+                        "cursor_at": cursor_at,
+                        "scan_stop_at": scan_stop_at,
+                        "config_signature": config_signature,
+                    },
+                )
+            ).one()
+        return cast(datetime, row[0]), cast(datetime, row[1])
+
+    async def save_historical_scan_checkpoint(
+        self, cursor_at: datetime, scan_stop_at: datetime
+    ) -> None:
+        async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE market.backfill_scan_checkpoints
+                    SET cursor_at = :cursor_at,
+                        scan_stop_at = :scan_stop_at,
+                        completed_at = CASE
+                            WHEN :cursor_at >= :scan_stop_at
+                            THEN COALESCE(completed_at, clock_timestamp())
+                            ELSE NULL
+                        END,
+                        updated_at = clock_timestamp()
+                    WHERE scan_key = :scan_key
+                    """
+                ),
+                {
+                    "scan_key": HISTORICAL_SCAN_KEY,
+                    "cursor_at": cursor_at,
+                    "scan_stop_at": scan_stop_at,
+                },
+            )
+
 
 class DataRepairService:
     def __init__(
@@ -621,6 +708,46 @@ class DataRepairService:
         self._settings = settings
         self._historical_scan_cursor: datetime | None = None
         self._historical_scan_stop: datetime | None = None
+        self._historical_checkpoint_enabled = False
+
+    def _historical_config_signature(self) -> str:
+        return (
+            "v1:"
+            f"{self._settings.gap_scan_lookback_hours}:"
+            f"{self._settings.gap_scan_recent_lookback_hours}:"
+            f"{self._settings.gap_scan_historical_window_hours}"
+        )
+
+    async def _restore_historical_scan_checkpoint(self) -> None:
+        if (
+            self._settings.gap_scan_lookback_hours
+            <= self._settings.gap_scan_recent_lookback_hours
+        ):
+            return
+        now = datetime.now(UTC).replace(microsecond=0)
+        scan_end = now - timedelta(
+            seconds=self._settings.gap_scan_safety_delay_seconds
+        )
+        cursor_at, scan_stop_at = (
+            await self._repository.load_historical_scan_checkpoint(
+                cursor_at=scan_end
+                - timedelta(hours=self._settings.gap_scan_lookback_hours),
+                scan_stop_at=scan_end
+                - timedelta(
+                    hours=self._settings.gap_scan_recent_lookback_hours
+                ),
+                config_signature=self._historical_config_signature(),
+            )
+        )
+        self._historical_scan_cursor = cursor_at
+        self._historical_scan_stop = scan_stop_at
+        self._historical_checkpoint_enabled = True
+        logger.info(
+            "historical gap scan checkpoint restored cursor=%s stop=%s completed=%s",
+            cursor_at.isoformat(),
+            scan_stop_at.isoformat(),
+            cursor_at >= scan_stop_at,
+        )
 
     def _gap_scan_ranges(
         self, now: datetime
@@ -654,9 +781,17 @@ class DataRepairService:
     ) -> None:
         if len(ranges) > 1:
             self._historical_scan_cursor = ranges[-1][1]
+        elif (
+            self._historical_scan_cursor is not None
+            and self._historical_scan_stop is not None
+            and self._historical_scan_cursor >= self._historical_scan_stop
+        ):
+            self._historical_scan_cursor = ranges[0][0]
+            self._historical_scan_stop = ranges[0][0]
 
     async def run_cycle(self, *, scan_gaps: bool = True) -> dict[str, int]:
         gaps: list[GapRange] = []
+        scan_ranges: tuple[tuple[datetime, datetime], ...] = ()
         if scan_gaps:
             scan_ranges = self._gap_scan_ranges(datetime.now(UTC).replace(microsecond=0))
             gap_groups = await asyncio.gather(
@@ -667,8 +802,18 @@ class DataRepairService:
                 )
             )
             gaps = [gap for group in gap_groups for gap in group]
-            self._complete_historical_scan(scan_ranges)
         queued = await self._repository.queue_gaps(gaps) if gaps else 0
+        if scan_gaps:
+            self._complete_historical_scan(scan_ranges)
+            if (
+                self._historical_checkpoint_enabled
+                and self._historical_scan_cursor is not None
+                and self._historical_scan_stop is not None
+            ):
+                await self._repository.save_historical_scan_checkpoint(
+                    self._historical_scan_cursor,
+                    self._historical_scan_stop,
+                )
         succeeded = 0
         failed = 0
         remaining = self._settings.backfill_jobs_per_cycle
@@ -733,6 +878,7 @@ class DataRepairService:
             self._settings.backfill_jobs_per_cycle,
             self._settings.backfill_request_interval_seconds,
         )
+        await self._restore_historical_scan_checkpoint()
         recovered = await self._repository.recover_interrupted_jobs(
             stale_after_seconds=self._settings.backfill_stale_job_seconds,
             failed_retry_limit=self._settings.backfill_failed_retry_limit,

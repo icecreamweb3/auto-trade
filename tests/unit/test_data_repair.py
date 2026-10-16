@@ -9,6 +9,7 @@ import pytest
 from auto_trade.collectors.binance_usdm import BinanceRateLimitError
 from auto_trade.collectors.data_repair import (
     BackfillJob,
+    DataRepairRepository,
     DataRepairService,
     GapRange,
     align_kline_range,
@@ -70,6 +71,30 @@ def test_gap_scan_ranges_align_to_series_boundaries() -> None:
     )
 
 
+async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
+    connection = MagicMock()
+    result = MagicMock()
+    result.all.return_value = []
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(
+        return_value=connection
+    )
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+    repository = DataRepairRepository(engine)
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+
+    await repository.detect_kline_gaps_in_range(
+        start,
+        start + timedelta(days=1),
+        TRADE_5M_SERIES,
+    )
+
+    statement = str(connection.execute.await_args.args[0])
+    assert "k.open_time >= CAST(:range_start AS timestamptz)" in statement
+    assert "k.open_time < CAST(:range_end AS timestamptz)" in statement
+
+
 def test_historical_gap_scan_advances_in_bounded_windows() -> None:
     settings = SimpleNamespace(
         gap_scan_lookback_hours=72,
@@ -99,6 +124,63 @@ def test_historical_gap_scan_advances_in_bounded_windows() -> None:
             scan_end - timedelta(hours=48),
         ),
     )
+
+
+async def test_historical_gap_scan_checkpoint_is_restored_and_advanced() -> None:
+    cursor = datetime(2026, 8, 1, tzinfo=UTC)
+    stop = datetime(2026, 10, 1, tzinfo=UTC)
+    settings = SimpleNamespace(
+        gap_scan_lookback_hours=72,
+        gap_scan_recent_lookback_hours=24,
+        gap_scan_historical_window_hours=12,
+        gap_scan_safety_delay_seconds=60,
+        backfill_jobs_per_cycle=1,
+        backfill_worker_count=1,
+        backfill_verify_timeout_seconds=60.0,
+        backfill_verify_poll_interval_seconds=1.0,
+        backfill_request_interval_seconds=0,
+    )
+    repository = MagicMock()
+    repository.load_historical_scan_checkpoint = AsyncMock(
+        return_value=(cursor, stop)
+    )
+    repository.detect_kline_gaps_in_range = AsyncMock(return_value=[])
+    repository.save_historical_scan_checkpoint = AsyncMock()
+    repository.claim_job = AsyncMock(return_value=None)
+    service = DataRepairService(repository, MagicMock(), settings)
+
+    await service._restore_historical_scan_checkpoint()
+    result = await service.run_cycle(scan_gaps=True)
+
+    assert result == {"detected": 0, "queued": 0, "succeeded": 0, "failed": 0}
+    assert repository.detect_kline_gaps_in_range.await_count == 6
+    repository.save_historical_scan_checkpoint.assert_awaited_once_with(
+        cursor + timedelta(hours=12),
+        stop,
+    )
+    assert service._historical_scan_cursor == cursor + timedelta(hours=12)
+    assert service._historical_scan_stop == stop
+
+
+def test_completed_historical_checkpoint_tracks_recent_scan_boundary() -> None:
+    settings = SimpleNamespace(
+        gap_scan_lookback_hours=72,
+        gap_scan_recent_lookback_hours=24,
+        gap_scan_historical_window_hours=12,
+        gap_scan_safety_delay_seconds=60,
+    )
+    service = DataRepairService(MagicMock(), MagicMock(), settings)
+    service._historical_scan_cursor = datetime(2026, 10, 1, tzinfo=UTC)
+    service._historical_scan_stop = datetime(2026, 10, 1, tzinfo=UTC)
+    now = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+    expected_boundary = now - timedelta(seconds=60, hours=24)
+
+    ranges = service._gap_scan_ranges(now)
+    service._complete_historical_scan(ranges)
+
+    assert ranges == ((expected_boundary, now - timedelta(seconds=60)),)
+    assert service._historical_scan_cursor == expected_boundary
+    assert service._historical_scan_stop == expected_boundary
 
 
 def test_backlog_cycles_continue_without_full_idle_delay() -> None:
