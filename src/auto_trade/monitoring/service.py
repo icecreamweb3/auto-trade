@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -38,6 +40,8 @@ SERIES = {
     "ticker_60": ("分钟Ticker", 120.0, 300.0),
     "open_interest_300": ("Open Interest 5m", 600.0, 900.0),
 }
+
+MONITORING_SNAPSHOT_CACHE_SECONDS = 10.0
 
 
 class NatsProbeProtocol(Protocol):
@@ -296,8 +300,30 @@ class MonitoringService:
         self._repository = repository
         self._settings = settings
         self._nats_probe = nats_probe
+        self._snapshot_lock = asyncio.Lock()
+        self._cached_snapshot: MonitoringSnapshot | None = None
+        self._cached_at = 0.0
 
     async def snapshot(self) -> MonitoringSnapshot:
+        now = time.monotonic()
+        if (
+            self._cached_snapshot is not None
+            and now - self._cached_at < MONITORING_SNAPSHOT_CACHE_SECONDS
+        ):
+            return self._cached_snapshot
+        async with self._snapshot_lock:
+            now = time.monotonic()
+            if (
+                self._cached_snapshot is not None
+                and now - self._cached_at < MONITORING_SNAPSHOT_CACHE_SECONDS
+            ):
+                return self._cached_snapshot
+            snapshot = await self._build_snapshot()
+            self._cached_snapshot = snapshot
+            self._cached_at = time.monotonic()
+            return snapshot
+
+    async def _build_snapshot(self) -> MonitoringSnapshot:
         database = await self._repository.snapshot()
         nats_status = await self._nats_probe.snapshot()
         by_key = {row.key: row for row in database.coverage}

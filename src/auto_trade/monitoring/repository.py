@@ -353,6 +353,8 @@ class MonitoringRepository:
         range_end_300 = websocket_sync_range_end(
             now, 300, self._data_safety_delay_seconds
         )
+        kline_range_start = min(range_end_60, range_end_300) - timedelta(hours=1)
+        kline_range_end = max(range_end_60, range_end_300)
         rows = (
             await connection.execute(
                 text(
@@ -394,6 +396,8 @@ class MonitoringRepository:
                     LEFT JOIN market.klines k
                       ON k.price_type = b.price_type
                      AND k.interval_seconds = b.interval_seconds
+                     AND k.open_time >= CAST(:kline_range_start AS timestamptz)
+                     AND k.open_time < CAST(:kline_range_end AS timestamptz)
                      AND k.open_time >= b.range_start
                      AND k.open_time < b.range_end
                      AND k.is_current
@@ -405,6 +409,8 @@ class MonitoringRepository:
                     "active_symbols": active_symbols,
                     "range_end_60": range_end_60,
                     "range_end_300": range_end_300,
+                    "kline_range_start": kline_range_start,
+                    "kline_range_end": kline_range_end,
                 },
             )
         ).mappings().all()
@@ -573,26 +579,40 @@ class MonitoringRepository:
             await connection.execute(
                 text(
                     """
-                    WITH latest AS (
-                        SELECT price_type, interval_seconds, max(open_time) AS open_time
-                        FROM market.klines
-                        WHERE is_current
-                          AND (price_type, interval_seconds) IN (
-                              ('TRADE', 60), ('MARK', 60), ('TRADE', 300)
-                          )
-                        GROUP BY 1, 2
+                    WITH series(price_type, interval_seconds) AS (
+                        VALUES ('TRADE', 60), ('MARK', 60), ('TRADE', 300)
+                    ), latest AS (
+                        SELECT
+                            series.price_type,
+                            series.interval_seconds,
+                            latest_row.open_time
+                        FROM series
+                        LEFT JOIN LATERAL (
+                            SELECT k.open_time
+                            FROM market.klines k
+                            WHERE k.price_type = series.price_type
+                              AND k.interval_seconds = series.interval_seconds
+                              AND k.open_time >= now() - interval '1 day'
+                              AND k.is_current
+                            ORDER BY k.open_time DESC
+                            LIMIT 1
+                        ) latest_row ON true
                     )
                     SELECT
-                        lower(k.price_type) || '_' || k.interval_seconds::text AS key,
+                        lower(l.price_type) || '_' || l.interval_seconds::text AS key,
                         l.open_time AS latest_at,
                         extract(epoch FROM clock_timestamp() - l.open_time) AS age_seconds,
                         count(DISTINCT k.instrument_id) AS actual_symbols,
                         count(DISTINCT k.instrument_id)
                             FILTER (WHERE k.source = 'WEBSOCKET') AS websocket_symbols
-                    FROM market.klines k
-                    JOIN latest l USING (price_type, interval_seconds, open_time)
-                    WHERE k.is_current
-                    GROUP BY 1, 2
+                    FROM latest l
+                    LEFT JOIN market.klines k
+                      ON k.price_type = l.price_type
+                     AND k.interval_seconds = l.interval_seconds
+                     AND k.open_time = l.open_time
+                     AND k.open_time >= now() - interval '1 day'
+                     AND k.is_current
+                    GROUP BY l.price_type, l.interval_seconds, l.open_time
                     ORDER BY 1
                     """
                 )
@@ -601,8 +621,12 @@ class MonitoringRepository:
         return tuple(
             CoverageRow(
                 key=cast(str, row["key"]),
-                latest_at=cast(datetime, row["latest_at"]),
-                age_seconds=float(row["age_seconds"]),
+                latest_at=cast(datetime | None, row["latest_at"]),
+                age_seconds=(
+                    float(row["age_seconds"])
+                    if row["age_seconds"] is not None
+                    else None
+                ),
                 actual_symbols=cast(int, row["actual_symbols"]),
                 websocket_symbols=cast(int, row["websocket_symbols"]),
             )
@@ -615,8 +639,11 @@ class MonitoringRepository:
                 text(
                     """
                     WITH latest AS (
-                        SELECT max(minute_time) AS minute_time
+                        SELECT minute_time
                         FROM market.ticker_minutes
+                        WHERE minute_time >= now() - interval '1 day'
+                        ORDER BY minute_time DESC
+                        LIMIT 1
                     )
                     SELECT
                         l.minute_time AS latest_at,
@@ -633,6 +660,7 @@ class MonitoringRepository:
                     FROM latest l
                     LEFT JOIN market.ticker_minutes t
                       ON t.minute_time = l.minute_time
+                     AND t.minute_time >= now() - interval '1 day'
                     GROUP BY l.minute_time
                     """
                 )
@@ -659,8 +687,11 @@ class MonitoringRepository:
                 text(
                     """
                     WITH latest AS (
-                        SELECT max(observed_at) AS observed_at
+                        SELECT observed_at
                         FROM market.open_interest_observations
+                        WHERE observed_at >= now() - interval '1 day'
+                        ORDER BY observed_at DESC
+                        LIMIT 1
                     )
                     SELECT
                         l.observed_at AS latest_at,
@@ -670,6 +701,7 @@ class MonitoringRepository:
                     LEFT JOIN market.open_interest_observations o
                       ON o.observed_at >= l.observed_at - interval '10 minutes'
                      AND o.observed_at <= l.observed_at
+                     AND o.observed_at >= now() - interval '1 day'
                     GROUP BY l.observed_at
                     """
                 )

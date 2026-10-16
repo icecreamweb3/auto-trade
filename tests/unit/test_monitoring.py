@@ -1,11 +1,15 @@
+import asyncio
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
-from auto_trade.monitoring.models import DailyRankingEntry, HealthStatus
+from auto_trade.monitoring.models import DailyRankingEntry, HealthStatus, NatsMetric
 from auto_trade.monitoring.repository import (
     BackfillRows,
     BackfillTaskRow,
     CoverageRow,
     DatabaseSnapshot,
+    MonitoringRepository,
     RankingEntryRow,
     RestUsageRow,
     TableSizeRow,
@@ -14,6 +18,7 @@ from auto_trade.monitoring.repository import (
 )
 from auto_trade.monitoring.service import (
     STATUS_PRIORITY,
+    MonitoringService,
     backfill_metric,
     coverage_metric,
     database_metric,
@@ -32,6 +37,58 @@ def test_websocket_sync_range_waits_for_safety_delay() -> None:
     assert websocket_sync_range_end(after_safe_boundary, 60, 30) == datetime(
         2026, 10, 14, 9, 43, tzinfo=UTC
     )
+
+
+async def test_kline_coverage_uses_bounded_latest_index_lookup() -> None:
+    connection = MagicMock()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = []
+    connection.execute = AsyncMock(return_value=result)
+    repository = MonitoringRepository(MagicMock())
+
+    await repository._kline_coverage(connection)
+
+    statement = str(connection.execute.await_args.args[0])
+    assert "ORDER BY k.open_time DESC" in statement
+    assert statement.count("k.open_time >= now() - interval '1 day'") == 2
+    assert "max(open_time)" not in statement
+
+
+async def test_websocket_sync_uses_absolute_kline_bounds() -> None:
+    connection = MagicMock()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = []
+    connection.execute = AsyncMock(return_value=result)
+    repository = MonitoringRepository(MagicMock())
+
+    await repository._websocket_sync(connection, 525)
+
+    statement = str(connection.execute.await_args.args[0])
+    parameters = connection.execute.await_args.args[1]
+    assert "k.open_time >= CAST(:kline_range_start AS timestamptz)" in statement
+    assert "k.open_time < CAST(:kline_range_end AS timestamptz)" in statement
+    assert parameters["kline_range_end"] > parameters["kline_range_start"]
+
+
+async def test_monitoring_snapshot_coalesces_concurrent_requests() -> None:
+    repository = MagicMock()
+    repository.snapshot = AsyncMock(return_value=database_snapshot())
+    nats_probe = MagicMock()
+    nats_probe.snapshot = AsyncMock(
+        return_value=NatsMetric(
+            status=HealthStatus.HEALTHY,
+            connected=True,
+            message="ok",
+        )
+    )
+    settings = SimpleNamespace(environment="TEST", node_id="test-node")
+    service = MonitoringService(repository, settings, nats_probe)  # type: ignore[arg-type]
+
+    first, second = await asyncio.gather(service.snapshot(), service.snapshot())
+
+    assert first is second
+    repository.snapshot.assert_awaited_once()
+    nats_probe.snapshot.assert_awaited_once()
 
 
 def test_unknown_status_is_worse_than_healthy() -> None:

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -428,8 +428,11 @@ function MonitoringDashboard() {
   const [data, setData] = useState<MonitoringSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const refreshInFlight = useRef(false);
 
   async function refresh() {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     try {
       const response = await fetch("/api/monitoring/overview", { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -438,6 +441,7 @@ function MonitoringDashboard() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "无法连接监控服务");
     } finally {
+      refreshInFlight.current = false;
       setLoading(false);
     }
   }
