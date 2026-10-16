@@ -183,9 +183,21 @@ def backfill_metric(snapshot: DatabaseSnapshot) -> BackfillMetric:
 
 def rest_usage_metric(snapshot: DatabaseSnapshot) -> RestUsageMetric:
     row = snapshot.rest_usage
+    average_utilization = (
+        row.average_used_weight_1h / 2400 * 100
+        if row.average_used_weight_1h is not None
+        else None
+    )
     if row.used_weight_1m is None:
         return RestUsageMetric(
             status=HealthStatus.UNKNOWN,
+            average_used_weight_1h=row.average_used_weight_1h,
+            average_utilization_percent_1h=(
+                round(average_utilization, 2)
+                if average_utilization is not None
+                else None
+            ),
+            sampled_minutes_1h=row.sampled_minutes_1h,
             message="最近10分钟没有REST权重样本",
         )
     utilization = row.used_weight_1m / 2400 * 100
@@ -203,6 +215,17 @@ def rest_usage_metric(snapshot: DatabaseSnapshot) -> RestUsageMetric:
         request_rate_1m=row.request_rate_1m,
         used_weight_1m=row.used_weight_1m,
         utilization_percent=round(utilization, 2),
+        average_used_weight_1h=(
+            round(row.average_used_weight_1h, 2)
+            if row.average_used_weight_1h is not None
+            else None
+        ),
+        average_utilization_percent_1h=(
+            round(average_utilization, 2)
+            if average_utilization is not None
+            else None
+        ),
+        sampled_minutes_1h=row.sampled_minutes_1h,
         observed_at=row.observed_at,
         message=message,
     )

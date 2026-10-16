@@ -57,6 +57,8 @@ class RestUsageRow:
     request_rate_1m: int | None
     used_weight_1m: int | None
     observed_at: datetime | None
+    average_used_weight_1h: float | None = None
+    sampled_minutes_1h: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,14 +805,48 @@ class MonitoringRepository:
             await connection.execute(
                 text(
                     """
+                    WITH recent AS (
+                        SELECT
+                            max((payload ->> 'request_rate_1m')::integer)
+                                FILTER (
+                                    WHERE collected_at >= clock_timestamp() - interval '10 minutes'
+                                ) AS request_rate_1m,
+                            max((payload ->> 'used_weight_1m')::integer)
+                                FILTER (
+                                    WHERE collected_at >= clock_timestamp() - interval '10 minutes'
+                                ) AS used_weight_1m,
+                            max(collected_at)
+                                FILTER (
+                                    WHERE collected_at >= clock_timestamp() - interval '10 minutes'
+                                ) AS observed_at
+                        FROM market.raw_events
+                        WHERE collected_at >= clock_timestamp() - interval '1 hour'
+                          AND payload ? 'used_weight_1m'
+                          AND payload ->> 'used_weight_1m' IS NOT NULL
+                    ), minute_peaks AS (
+                        SELECT
+                            date_trunc('minute', collected_at) AS sampled_minute,
+                            max((payload ->> 'used_weight_1m')::integer) AS used_weight_1m
+                        FROM market.raw_events
+                        WHERE collected_at >=
+                                date_trunc('minute', clock_timestamp()) - interval '1 hour'
+                          AND collected_at < date_trunc('minute', clock_timestamp())
+                          AND payload ? 'used_weight_1m'
+                          AND payload ->> 'used_weight_1m' IS NOT NULL
+                        GROUP BY date_trunc('minute', collected_at)
+                    ), hourly AS (
+                        SELECT
+                            avg(used_weight_1m) AS average_used_weight_1h,
+                            count(*) AS sampled_minutes_1h
+                        FROM minute_peaks
+                    )
                     SELECT
-                        max((payload ->> 'request_rate_1m')::integer) AS request_rate_1m,
-                        max((payload ->> 'used_weight_1m')::integer) AS used_weight_1m,
-                        max(collected_at) AS observed_at
-                    FROM market.raw_events
-                    WHERE collected_at >= clock_timestamp() - interval '10 minutes'
-                      AND payload ? 'used_weight_1m'
-                      AND payload ->> 'used_weight_1m' IS NOT NULL
+                        recent.request_rate_1m,
+                        recent.used_weight_1m,
+                        recent.observed_at,
+                        hourly.average_used_weight_1h,
+                        hourly.sampled_minutes_1h
+                    FROM recent CROSS JOIN hourly
                     """
                 )
             )
@@ -819,4 +855,10 @@ class MonitoringRepository:
             request_rate_1m=cast(int | None, row["request_rate_1m"]),
             used_weight_1m=cast(int | None, row["used_weight_1m"]),
             observed_at=cast(datetime | None, row["observed_at"]),
+            average_used_weight_1h=(
+                float(row["average_used_weight_1h"])
+                if row["average_used_weight_1h"] is not None
+                else None
+            ),
+            sampled_minutes_1h=cast(int, row["sampled_minutes_1h"]),
         )

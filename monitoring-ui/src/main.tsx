@@ -67,6 +67,9 @@ interface MonitoringSnapshot {
     used_weight_1m: number | null;
     limit_1m: number;
     utilization_percent: number | null;
+    average_used_weight_1h: number | null;
+    average_utilization_percent_1h: number | null;
+    sampled_minutes_1h: number;
     observed_at: string | null;
     message: string;
   };
@@ -478,9 +481,20 @@ function MonitoringDashboard() {
               <span>数据库空间</span><strong>{data.database.size_display}</strong><small>{data.database.message}</small>
             </article>
             <article className="summary-card">
-              <span>REST权重</span>
+              <span>REST权重 · 近10分钟峰值</span>
               <strong>{data.rest_usage.used_weight_1m ?? "—"}<em> / {data.rest_usage.limit_1m}</em></strong>
-              <small>{data.rest_usage.utilization_percent ?? 0}% · {data.rest_usage.message}</small>
+              <small>
+                近1小时加权均值 {data.rest_usage.average_used_weight_1h == null
+                  ? "—"
+                  : Math.round(data.rest_usage.average_used_weight_1h)} / {data.rest_usage.limit_1m}
+                {data.rest_usage.average_utilization_percent_1h == null
+                  ? ""
+                  : ` · ${data.rest_usage.average_utilization_percent_1h}%`}
+                {data.rest_usage.sampled_minutes_1h > 0
+                  ? ` · ${data.rest_usage.sampled_minutes_1h}分钟样本`
+                  : ""}
+              </small>
+              <small>峰值 {data.rest_usage.utilization_percent ?? 0}% · {data.rest_usage.message}</small>
             </article>
           </section>
 

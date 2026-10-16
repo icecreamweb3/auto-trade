@@ -94,6 +94,9 @@ class RestUsageMetric(BaseModel):
     used_weight_1m: int | None = None
     limit_1m: int = 2400
     utilization_percent: float | None = None
+    average_used_weight_1h: float | None = None
+    average_utilization_percent_1h: float | None = None
+    sampled_minutes_1h: int = 0
     observed_at: datetime | None = None
     message: str
 

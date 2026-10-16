@@ -199,7 +199,13 @@ def test_backfill_clear_time_is_unknown_while_queue_is_growing() -> None:
 def test_rest_usage_uses_2400_weight_limit() -> None:
     healthy = rest_usage_metric(
         database_snapshot(
-            rest_usage=RestUsageRow(525, 600, datetime.now(UTC))
+            rest_usage=RestUsageRow(
+                525,
+                600,
+                datetime.now(UTC),
+                average_used_weight_1h=480.5,
+                sampled_minutes_1h=58,
+            )
         )
     )
     critical = rest_usage_metric(
@@ -210,6 +216,9 @@ def test_rest_usage_uses_2400_weight_limit() -> None:
 
     assert healthy.status is HealthStatus.HEALTHY
     assert healthy.utilization_percent == 25
+    assert healthy.average_used_weight_1h == 480.5
+    assert healthy.average_utilization_percent_1h == 20.02
+    assert healthy.sampled_minutes_1h == 58
     assert critical.status is HealthStatus.CRITICAL
 
 
