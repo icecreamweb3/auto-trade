@@ -805,35 +805,49 @@ class MonitoringRepository:
             await connection.execute(
                 text(
                     """
-                    WITH recent AS (
+                    WITH bounds AS (
                         SELECT
-                            max((payload ->> 'request_rate_1m')::integer)
+                            now() AS observed_now,
+                            date_trunc('minute', now()) AS current_minute
+                    ), samples AS MATERIALIZED (
+                        SELECT
+                            raw.event_time,
+                            raw.collected_at,
+                            (raw.payload ->> 'request_rate_1m')::integer
+                                AS request_rate_1m,
+                            (raw.payload ->> 'used_weight_1m')::integer
+                                AS used_weight_1m
+                        FROM market.raw_events raw
+                        WHERE raw.event_time >=
+                                date_trunc('minute', now()) - interval '1 hour'
+                          AND raw.event_time <= now()
+                          AND raw.payload ? 'used_weight_1m'
+                          AND raw.payload ->> 'used_weight_1m' IS NOT NULL
+                    ), recent AS (
+                        SELECT
+                            max(samples.request_rate_1m)
                                 FILTER (
-                                    WHERE collected_at >= clock_timestamp() - interval '10 minutes'
+                                    WHERE samples.event_time >=
+                                        bounds.observed_now - interval '10 minutes'
                                 ) AS request_rate_1m,
-                            max((payload ->> 'used_weight_1m')::integer)
+                            max(samples.used_weight_1m)
                                 FILTER (
-                                    WHERE collected_at >= clock_timestamp() - interval '10 minutes'
+                                    WHERE samples.event_time >=
+                                        bounds.observed_now - interval '10 minutes'
                                 ) AS used_weight_1m,
-                            max(collected_at)
+                            max(samples.collected_at)
                                 FILTER (
-                                    WHERE collected_at >= clock_timestamp() - interval '10 minutes'
+                                    WHERE samples.event_time >=
+                                        bounds.observed_now - interval '10 minutes'
                                 ) AS observed_at
-                        FROM market.raw_events
-                        WHERE collected_at >= clock_timestamp() - interval '1 hour'
-                          AND payload ? 'used_weight_1m'
-                          AND payload ->> 'used_weight_1m' IS NOT NULL
+                        FROM samples CROSS JOIN bounds
                     ), minute_peaks AS (
                         SELECT
-                            date_trunc('minute', collected_at) AS sampled_minute,
-                            max((payload ->> 'used_weight_1m')::integer) AS used_weight_1m
-                        FROM market.raw_events
-                        WHERE collected_at >=
-                                date_trunc('minute', clock_timestamp()) - interval '1 hour'
-                          AND collected_at < date_trunc('minute', clock_timestamp())
-                          AND payload ? 'used_weight_1m'
-                          AND payload ->> 'used_weight_1m' IS NOT NULL
-                        GROUP BY date_trunc('minute', collected_at)
+                            date_trunc('minute', samples.event_time) AS sampled_minute,
+                            max(samples.used_weight_1m) AS used_weight_1m
+                        FROM samples CROSS JOIN bounds
+                        WHERE samples.event_time < bounds.current_minute
+                        GROUP BY date_trunc('minute', samples.event_time)
                     ), hourly AS (
                         SELECT
                             avg(used_weight_1m) AS average_used_weight_1h,

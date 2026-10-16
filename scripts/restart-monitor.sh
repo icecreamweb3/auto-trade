@@ -45,7 +45,7 @@ docker compose --profile runtime up -d \
   monitor-ui
 
 echo "[5/5] 验证新 REST 权重字段"
-docker compose --profile runtime exec -T monitor-api python -c '
+if ! docker compose --profile runtime exec -T monitor-api python -c '
 import json
 import urllib.request
 
@@ -71,7 +71,11 @@ result = {
     "有效分钟样本": rest.get("sampled_minutes_1h"),
 }
 print(json.dumps(result, ensure_ascii=False, indent=2))
-'
+'; then
+  echo "监控概览验证失败，最近日志如下：" >&2
+  docker compose --profile runtime logs --tail=100 monitor-api >&2
+  exit 1
+fi
 
 echo
 docker compose --profile runtime ps monitor-api monitor-ui
