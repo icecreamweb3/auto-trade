@@ -90,9 +90,31 @@ async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
         TRADE_5M_SERIES,
     )
 
+    timeout_call = connection.execute.await_args_list[0]
+    assert "set_config('statement_timeout'" in str(timeout_call.args[0])
+    assert timeout_call.args[1] == {"statement_timeout": "45s"}
     statement = str(connection.execute.await_args.args[0])
     assert "k.open_time >= CAST(:range_start AS timestamptz)" in statement
     assert "k.open_time < CAST(:range_end AS timestamptz)" in statement
+
+
+async def test_historical_checkpoint_casts_timestamp_parameters() -> None:
+    connection = MagicMock()
+    connection.execute = AsyncMock()
+    engine = MagicMock()
+    engine.begin.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.begin.return_value.__aexit__ = AsyncMock(return_value=None)
+    repository = DataRepairRepository(engine)
+
+    await repository.save_historical_scan_checkpoint(
+        datetime(2026, 10, 1, tzinfo=UTC),
+        datetime(2026, 10, 2, tzinfo=UTC),
+    )
+
+    statement = str(connection.execute.await_args.args[0])
+    assert "cursor_at = CAST(:cursor_at AS timestamptz)" in statement
+    assert "scan_stop_at = CAST(:scan_stop_at AS timestamptz)" in statement
+    assert "WHEN CAST(:cursor_at AS timestamptz)" in statement
 
 
 def test_historical_gap_scan_advances_in_bounded_windows() -> None:

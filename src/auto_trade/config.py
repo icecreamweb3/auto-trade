@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     gap_scan_historical_window_hours: int = Field(default=24, ge=1, le=168)
     gap_scan_interval_seconds: int = Field(default=300, ge=60, le=3600)
     gap_scan_safety_delay_seconds: int = Field(default=60, ge=0, le=600)
+    gap_scan_statement_timeout_seconds: int = Field(default=45, ge=5, le=600)
     backfill_jobs_per_cycle: int = Field(default=50, ge=1, le=500)
     backfill_worker_count: int = Field(default=4, ge=1, le=16)
     backfill_verify_timeout_seconds: float = Field(default=60.0, ge=5, le=300)

@@ -141,8 +141,11 @@ def next_cycle_delay(
 
 
 class DataRepairRepository:
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(
+        self, engine: AsyncEngine, *, statement_timeout_seconds: int = 45
+    ) -> None:
         self._engine = engine
+        self._statement_timeout_seconds = statement_timeout_seconds
 
     async def detect_5m_gaps(self, lookback_hours: int) -> list[GapRange]:
         return await self.detect_kline_gaps(
@@ -170,6 +173,17 @@ class DataRepairRepository:
             return []
         step = timedelta(seconds=series.interval_seconds)
         async with self._engine.connect() as connection:
+            await connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'statement_timeout', :statement_timeout, true)"
+                ),
+                {
+                    "statement_timeout": (
+                        f"{self._statement_timeout_seconds}s"
+                    )
+                },
+            )
             result = await connection.execute(
                 text(
                     """
@@ -677,10 +691,11 @@ class DataRepairRepository:
                 text(
                     """
                     UPDATE market.backfill_scan_checkpoints
-                    SET cursor_at = :cursor_at,
-                        scan_stop_at = :scan_stop_at,
+                    SET cursor_at = CAST(:cursor_at AS timestamptz),
+                        scan_stop_at = CAST(:scan_stop_at AS timestamptz),
                         completed_at = CASE
-                            WHEN :cursor_at >= :scan_stop_at
+                            WHEN CAST(:cursor_at AS timestamptz) >=
+                                 CAST(:scan_stop_at AS timestamptz)
                             THEN COALESCE(completed_at, clock_timestamp())
                             ELSE NULL
                         END,
@@ -974,7 +989,16 @@ async def run(command: str, settings: Settings) -> object:
                 node_id=settings.node_id,
                 shard_id=settings.shard_id,
             )
-            service = DataRepairService(DataRepairRepository(engine), collector, settings)
+            service = DataRepairService(
+                DataRepairRepository(
+                    engine,
+                    statement_timeout_seconds=(
+                        settings.gap_scan_statement_timeout_seconds
+                    ),
+                ),
+                collector,
+                settings,
+            )
             if command == "once":
                 return await service.run_cycle()
             await service.run_forever()
