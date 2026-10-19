@@ -145,6 +145,25 @@ interface RankingResult {
   items: RankingEntry[];
 }
 
+interface KlinePoint {
+  open_time: string;
+  close_time: string;
+  open_price: number;
+  high_price: number;
+  low_price: number;
+  close_price: number;
+  base_volume: number;
+  quote_volume: number;
+}
+
+interface DailyKlineResult {
+  symbol: string;
+  utc_trade_date: string;
+  price_type: string;
+  interval_seconds: number;
+  items: KlinePoint[];
+}
+
 interface RankingFilters {
   dateFrom: string;
   dateTo: string;
@@ -252,6 +271,174 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
   );
 }
 
+function CandlestickChart({ data }: { data: DailyKlineResult }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const width = 1100;
+  const height = 560;
+  const left = 76;
+  const right = 90;
+  const top = 28;
+  const priceBottom = 398;
+  const volumeTop = 434;
+  const volumeBottom = 520;
+  const plotWidth = width - left - right;
+  const priceHeight = priceBottom - top;
+  const volumePlotHeight = volumeBottom - volumeTop;
+  const points = data.items;
+  const low = Math.min(...points.map((point) => point.low_price));
+  const high = Math.max(...points.map((point) => point.high_price));
+  const rawRange = Math.max(high - low, Math.abs(high) * 0.001, 1e-12);
+  const priceMin = low - rawRange * 0.06;
+  const priceMax = high + rawRange * 0.06;
+  const priceRange = priceMax - priceMin;
+  const maxVolume = Math.max(...points.map((point) => point.quote_volume), 1);
+  const candleSlot = plotWidth / points.length;
+  const candleWidth = Math.max(1.2, Math.min(5, candleSlot * 0.68));
+  const hovered = hoveredIndex === null ? points[points.length - 1] : points[hoveredIndex];
+  const xAt = (index: number) => left + candleSlot * (index + 0.5);
+  const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
+  const priceTicks = Array.from({ length: 6 }, (_, index) => priceMax - priceRange * index / 5);
+  const timeTicks = [0, 72, 144, 216, points.length - 1]
+    .filter((index, position, values) => index >= 0 && index < points.length && values.indexOf(index) === position);
+
+  function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const svgX = (event.clientX - bounds.left) / bounds.width * width;
+    const index = Math.max(0, Math.min(points.length - 1, Math.floor((svgX - left) / candleSlot)));
+    setHoveredIndex(index);
+  }
+
+  return <>
+    <div className="chart-readout">
+      <span>{new Date(hovered.open_time).toISOString().slice(11, 16)} UTC</span>
+      <span>开 <strong>{formatNumber(hovered.open_price, 8)}</strong></span>
+      <span>高 <strong>{formatNumber(hovered.high_price, 8)}</strong></span>
+      <span>低 <strong>{formatNumber(hovered.low_price, 8)}</strong></span>
+      <span>收 <strong className={changeClass(hovered.close_price - hovered.open_price)}>{formatNumber(hovered.close_price, 8)}</strong></span>
+      <span>成交额 <strong>{formatCompact(hovered.quote_volume)}</strong></span>
+    </div>
+    <svg
+      className="candlestick-chart"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={`${data.symbol} ${data.utc_trade_date} UTC 五分钟K线图`}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={() => setHoveredIndex(null)}
+    >
+      <rect x="0" y="0" width={width} height={height} rx="10" className="chart-background" />
+      {priceTicks.map((price) => {
+        const y = yAt(price);
+        return <g key={price}>
+          <line x1={left} x2={width - right} y1={y} y2={y} className="chart-grid-line" />
+          <text x={width - right + 10} y={y + 4} className="chart-axis-label">{formatNumber(price, 8)}</text>
+        </g>;
+      })}
+      <line x1={left} x2={width - right} y1={volumeTop - 12} y2={volumeTop - 12} className="chart-divider" />
+      <text x="14" y={volumeTop + 10} className="chart-axis-label">成交额</text>
+      {points.map((point, index) => {
+        const x = xAt(index);
+        const openY = yAt(point.open_price);
+        const closeY = yAt(point.close_price);
+        const highY = yAt(point.high_price);
+        const lowY = yAt(point.low_price);
+        const rising = point.close_price >= point.open_price;
+        const bodyTop = Math.min(openY, closeY);
+        const bodyHeight = Math.max(1, Math.abs(closeY - openY));
+        const barHeight = point.quote_volume / maxVolume * volumePlotHeight;
+        const colorClass = rising ? "chart-up" : "chart-down";
+        return <g key={point.open_time} className={colorClass}>
+          <line x1={x} x2={x} y1={highY} y2={lowY} className="candle-wick" />
+          <rect x={x - candleWidth / 2} y={bodyTop} width={candleWidth} height={bodyHeight} className="candle-body" />
+          <rect x={x - candleWidth / 2} y={volumeBottom - barHeight} width={candleWidth} height={barHeight} className="volume-bar" />
+        </g>;
+      })}
+      {timeTicks.map((index) => <text key={index} x={xAt(index)} y={height - 16} textAnchor="middle" className="chart-axis-label">
+        {new Date(points[index].open_time).toISOString().slice(11, 16)}
+      </text>)}
+      {hoveredIndex !== null && <g className="chart-crosshair">
+        <line x1={xAt(hoveredIndex)} x2={xAt(hoveredIndex)} y1={top} y2={volumeBottom} />
+        <line x1={left} x2={width - right} y1={yAt(points[hoveredIndex].close_price)} y2={yAt(points[hoveredIndex].close_price)} />
+      </g>}
+    </svg>
+  </>;
+}
+
+function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => void }) {
+  const [data, setData] = useState<DailyKlineResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      symbol: entry.symbol,
+      utc_trade_date: entry.utc_trade_date
+    });
+    setLoading(true);
+    setData(null);
+    setError(null);
+    void fetch(`/api/market/klines/day?${params}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null) as { detail?: string } | null;
+          if (response.status === 404) throw new Error("该交易对在所选日期没有可用的本地 5 分钟 K 线");
+          throw new Error(payload?.detail ?? `HTTP ${response.status}`);
+        }
+        return response.json() as Promise<DailyKlineResult>;
+      })
+      .then(setData)
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "无法读取K线数据");
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [entry.symbol, entry.utc_trade_date]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose]);
+
+  const points = data?.items ?? [];
+  const first = points[0];
+  const last = points[points.length - 1];
+  const chartChange = first && last ? (last.close_price / first.open_price - 1) * 100 : null;
+  return <div className="chart-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="chart-modal" role="dialog" aria-modal="true" aria-labelledby="chart-modal-title">
+      <header className="chart-modal-header">
+        <div>
+          <p className="eyebrow">UTC 日内走势 · 5分钟</p>
+          <h2 id="chart-modal-title">{entry.symbol} <span>{entry.utc_trade_date}</span></h2>
+        </div>
+        <div className="chart-modal-actions">
+          {chartChange !== null && <strong className={changeClass(chartChange)}>{chartChange >= 0 ? "+" : ""}{chartChange.toFixed(4)}%</strong>}
+          <button type="button" className="chart-close-button" onClick={onClose} aria-label="关闭K线图">×</button>
+        </div>
+      </header>
+      {loading && <div className="chart-state">正在读取本地 K 线…</div>}
+      {error && <div className="chart-state chart-state-error">K 线加载失败：{error}</div>}
+      {data && data.items.length > 0 && <>
+        <div className="chart-summary">
+          <span>开盘 <strong>{formatNumber(first.open_price, 8)}</strong></span>
+          <span>最高 <strong>{formatNumber(Math.max(...points.map((point) => point.high_price)), 8)}</strong></span>
+          <span>最低 <strong>{formatNumber(Math.min(...points.map((point) => point.low_price)), 8)}</strong></span>
+          <span>收盘 <strong>{formatNumber(last.close_price, 8)}</strong></span>
+          <span>完整度 <strong>{points.length} / 287</strong></span>
+        </div>
+        <CandlestickChart data={data} />
+        <p className="chart-footnote">图表使用本地数据库中 VALID、已闭合的 Trade K 线；时间范围与排行榜一致，为 UTC 00:00 至 23:50 开盘的 287 根五分钟 K 线。</p>
+      </>}
+    </section>
+  </div>;
+}
+
 function RankingExplorer() {
   const [data, setData] = useState<RankingResult | null>(null);
   const [filters, setFilters] = useState<RankingFilters>({
@@ -262,6 +449,7 @@ function RankingExplorer() {
     rankTo: 50
   });
   const [selected, setSelected] = useState<RankingEntry | null>(null);
+  const [chartEntry, setChartEntry] = useState<RankingEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -331,6 +519,11 @@ function RankingExplorer() {
   const cannotGoPrevious = !data?.available_first_date || !navigationDay || navigationDay <= data.available_first_date;
   const cannotGoNext = !data?.available_last_date || !navigationDay || navigationDay >= data.available_last_date;
 
+  function openChart(item: RankingEntry) {
+    setSelected(item);
+    setChartEntry(item);
+  }
+
   return (
     <main>
       <header className="topbar ranking-header">
@@ -383,8 +576,8 @@ function RankingExplorer() {
               <thead><tr><th>UTC日期</th><th>排名</th><th>交易对</th><th>涨幅</th><th>开盘价</th><th>快照价</th><th>振幅</th><th>成交额</th><th>OI</th></tr></thead>
               <tbody>
                 {data?.items.map((item) => (
-                  <tr key={`${item.utc_trade_date}-${item.rank_no}`} className={selected?.utc_trade_date === item.utc_trade_date && selected.rank_no === item.rank_no ? "selected-row" : ""} onClick={() => setSelected(item)}>
-                    <td>{item.utc_trade_date}</td><td><span className={`rank-badge rank-${Math.min(item.rank_no, 4)}`}>{item.rank_no}</span></td><td><a className="symbol-link" href={`https://www.binance.com/zh-CN/futures/${encodeURIComponent(item.symbol)}`} target="_blank" rel="noopener noreferrer" title={`在 Binance Futures 查看 ${item.symbol}`}><strong>{item.symbol}</strong><span aria-hidden="true">↗</span></a></td>
+                  <tr key={`${item.utc_trade_date}-${item.rank_no}`} className={selected?.utc_trade_date === item.utc_trade_date && selected.rank_no === item.rank_no ? "selected-row" : ""} role="button" tabIndex={0} aria-label={`查看 ${item.symbol} ${item.utc_trade_date} K线`} onClick={() => openChart(item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openChart(item); } }}>
+                    <td>{item.utc_trade_date}</td><td><span className={`rank-badge rank-${Math.min(item.rank_no, 4)}`}>{item.rank_no}</span></td><td><a className="symbol-link" href={`https://www.binance.com/zh-CN/futures/${encodeURIComponent(item.symbol)}`} target="_blank" rel="noopener noreferrer" title={`在 Binance Futures 查看 ${item.symbol}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><strong>{item.symbol}</strong><span aria-hidden="true">↗</span></a></td>
                     <td className={changeClass(item.price_change)}>{item.price_change >= 0 ? "+" : ""}{item.price_change.toFixed(4)}%</td>
                     <td>{formatNumber(item.reference_open_price, 8)}</td><td>{formatNumber(item.snapshot_price, 8)}</td><td>{formatNumber(item.amplitude, 2)}%</td><td>{formatCompact(item.quote_volume)}</td><td>{item.open_interest_status === "LOCAL_OBSERVATION" ? "有" : "—"}</td>
                   </tr>
@@ -420,6 +613,7 @@ function RankingExplorer() {
           </> : <p className="message">选择一条记录查看完整指标。</p>}
         </aside>
       </section>
+      {chartEntry && <KlineModal entry={chartEntry} onClose={() => setChartEntry(null)} />}
     </main>
   );
 }

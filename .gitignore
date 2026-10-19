@@ -8,6 +8,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 *.py[cod]
+*.tsbuildinfo
 node_modules/
 dist/
 

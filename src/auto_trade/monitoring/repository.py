@@ -128,6 +128,18 @@ class RankingQueryRows:
     items: tuple[RankingEntryRow, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class KlinePointRow:
+    open_time: datetime
+    close_time: datetime
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+    base_volume: float
+    quote_volume: float
+
+
 def websocket_sync_range_end(
     now: datetime, interval_seconds: int, safety_delay_seconds: int
 ) -> datetime:
@@ -570,6 +582,61 @@ class MonitoringRepository:
                 )
                 for row in rows
             ),
+        )
+
+    async def daily_klines(
+        self, *, symbol: str, utc_trade_date: date
+    ) -> tuple[KlinePointRow, ...]:
+        """Return the same 5-minute UTC-day window used by the daily ranking."""
+        normalized_symbol = symbol.strip().upper()
+        range_start = datetime.combine(utc_trade_date, datetime.min.time(), tzinfo=UTC)
+        # The ranking snapshot is the close of the 23:50 candle at 23:55 UTC.
+        range_end = range_start + timedelta(days=1) - timedelta(minutes=5)
+        async with self._engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT k.open_time, k.close_time,
+                               k.open_price, k.high_price,
+                               k.low_price, k.close_price,
+                               k.base_volume, k.quote_volume
+                        FROM market.klines k
+                        JOIN core.instruments i USING (instrument_id)
+                        WHERE upper(i.symbol) = :symbol
+                          AND i.exchange = 'BINANCE'
+                          AND i.market = 'USD_M_FUTURES'
+                          AND i.contract_type = 'PERPETUAL'
+                          AND k.price_type = 'TRADE'
+                          AND k.interval_seconds = 300
+                          AND k.open_time >= CAST(:range_start AS timestamptz)
+                          AND k.open_time < CAST(:range_end AS timestamptz)
+                          AND k.is_current
+                          AND k.is_closed
+                          AND k.quality_status = 'VALID'
+                        ORDER BY k.open_time ASC
+                        """
+                    ),
+                    {
+                        "symbol": normalized_symbol,
+                        "range_start": range_start,
+                        "range_end": range_end,
+                    },
+                )
+            ).mappings().all()
+
+        return tuple(
+            KlinePointRow(
+                open_time=cast(datetime, row["open_time"]),
+                close_time=cast(datetime, row["close_time"]),
+                open_price=float(row["open_price"]),
+                high_price=float(row["high_price"]),
+                low_price=float(row["low_price"]),
+                close_price=float(row["close_price"]),
+                base_volume=float(row["base_volume"]),
+                quote_volume=float(row["quote_volume"]),
+            )
+            for row in rows
         )
 
     async def _kline_coverage(

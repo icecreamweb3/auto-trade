@@ -11,8 +11,10 @@ from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import check_database, create_database_engine
 from auto_trade.logging_config import configure_logging
 from auto_trade.monitoring.models import (
+    DailyKlineResult,
     DailyRankingEntry,
     DailyRankingResult,
+    KlinePoint,
     MonitoringSnapshot,
 )
 from auto_trade.monitoring.nats_probe import NatsProbe
@@ -115,4 +117,30 @@ async def daily_rankings(
         maximum_change=result.maximum_change,
         minimum_change=result.minimum_change,
         items=tuple(DailyRankingEntry.model_validate(item) for item in result.items),
+    )
+
+
+@app.get("/api/market/klines/day", response_model=DailyKlineResult)
+async def daily_klines(
+    request: Request,
+    utc_trade_date: date,
+    symbol: str = Query(min_length=1, max_length=32),
+) -> DailyKlineResult:
+    normalized_symbol = symbol.strip().upper()
+    if not normalized_symbol:
+        raise HTTPException(status_code=422, detail="symbol must not be blank")
+    repository = MonitoringRepository(request.app.state.database_engine)
+    try:
+        rows = await repository.daily_klines(
+            symbol=normalized_symbol,
+            utc_trade_date=utc_trade_date,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="kline data unavailable") from error
+    if not rows:
+        raise HTTPException(status_code=404, detail="no kline data for symbol and date")
+    return DailyKlineResult(
+        symbol=normalized_symbol,
+        utc_trade_date=utc_trade_date,
+        items=tuple(KlinePoint.model_validate(row) for row in rows),
     )

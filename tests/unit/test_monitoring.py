@@ -3,12 +3,18 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from auto_trade.monitoring.models import DailyRankingEntry, HealthStatus, NatsMetric
+from auto_trade.monitoring.models import (
+    DailyRankingEntry,
+    HealthStatus,
+    KlinePoint,
+    NatsMetric,
+)
 from auto_trade.monitoring.repository import (
     BackfillRows,
     BackfillTaskRow,
     CoverageRow,
     DatabaseSnapshot,
+    KlinePointRow,
     MonitoringRepository,
     RankingEntryRow,
     RestUsageRow,
@@ -363,3 +369,48 @@ def test_daily_ranking_entry_serializes_repository_row() -> None:
     assert payload.price_change == 12.5
     assert payload.utc_trade_date == date(2026, 10, 9)
     assert payload.open_interest_status == "UNAVAILABLE"
+
+
+def test_kline_point_serializes_repository_row() -> None:
+    open_time = datetime(2026, 10, 18, tzinfo=UTC)
+    row = KlinePointRow(
+        open_time=open_time,
+        close_time=open_time + timedelta(minutes=5),
+        open_price=100.0,
+        high_price=112.0,
+        low_price=98.0,
+        close_price=110.0,
+        base_volume=12.0,
+        quote_volume=1260.0,
+    )
+
+    payload = KlinePoint.model_validate(row)
+
+    assert payload.open_price == 100.0
+    assert payload.close_price == 110.0
+    assert payload.close_time == open_time + timedelta(minutes=5)
+
+
+async def test_daily_klines_uses_ranking_day_window() -> None:
+    rows_result = MagicMock()
+    rows_result.mappings.return_value.all.return_value = []
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=rows_result)
+    context = AsyncMock()
+    context.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = context
+    repository = MonitoringRepository(engine)
+
+    await repository.daily_klines(
+        symbol=" btcusdt ", utc_trade_date=date(2026, 10, 18)
+    )
+
+    statement = str(connection.execute.await_args.args[0])
+    parameters = connection.execute.await_args.args[1]
+    assert "k.interval_seconds = 300" in statement
+    assert "k.is_current" in statement
+    assert "i.market = 'USD_M_FUTURES'" in statement
+    assert parameters["symbol"] == "BTCUSDT"
+    assert parameters["range_start"] == datetime(2026, 10, 18, tzinfo=UTC)
+    assert parameters["range_end"] == datetime(2026, 10, 18, 23, 55, tzinfo=UTC)

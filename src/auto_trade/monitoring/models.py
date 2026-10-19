@@ -208,3 +208,26 @@ class DailyRankingResult(BaseModel):
     maximum_change: float | None = None
     minimum_change: float | None = None
     items: tuple[DailyRankingEntry, ...] = ()
+
+
+class KlinePoint(BaseModel):
+    model_config = ConfigDict(frozen=True, from_attributes=True)
+
+    open_time: datetime
+    close_time: datetime
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+    base_volume: float
+    quote_volume: float
+
+
+class DailyKlineResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    utc_trade_date: date
+    price_type: str = "TRADE"
+    interval_seconds: int = 300
+    items: tuple[KlinePoint, ...] = ()
