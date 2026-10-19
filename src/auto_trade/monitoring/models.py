@@ -235,3 +235,13 @@ class DailyKlineResult(BaseModel):
     price_type: str = "TRADE"
     interval_seconds: int = 300
     items: tuple[KlinePoint, ...] = ()
+
+
+class KlineHistoryResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str
+    price_type: str = "TRADE"
+    interval_seconds: int
+    has_more: bool
+    items: tuple[KlinePoint, ...] = ()

@@ -152,6 +152,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-axis-reset { border-color: #29455e; padding: 3px 8px; color: #70cbbb; background: #0b1d2d; font-size: 10px; }
 .chart-axis-reset:hover { background: #153047; }
 .chart-drag-hint { margin-left: auto; color: #58a99c; }
+.chart-history-error { color: #ff9aa6; }
 .candlestick-chart { display: block; width: 100%; min-width: 720px; border: 1px solid #173047; border-radius: 11px; cursor: grab; overscroll-behavior: contain; touch-action: none; user-select: none; }
 .candlestick-chart:active { cursor: grabbing; }
 .chart-background { fill: #071522; }

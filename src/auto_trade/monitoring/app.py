@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -14,6 +14,7 @@ from auto_trade.monitoring.models import (
     DailyKlineResult,
     DailyRankingEntry,
     DailyRankingResult,
+    KlineHistoryResult,
     KlinePoint,
     MonitoringSnapshot,
 )
@@ -148,4 +149,35 @@ async def daily_klines(
         utc_trade_date=utc_trade_date,
         interval_seconds=interval_seconds,
         items=tuple(KlinePoint.model_validate(row) for row in rows),
+    )
+
+
+@app.get("/api/market/klines/history", response_model=KlineHistoryResult)
+async def kline_history(
+    request: Request,
+    before: datetime,
+    symbol: str = Query(min_length=1, max_length=32),
+    interval_seconds: int = Query(default=300),
+    limit: int = Query(default=300, ge=50, le=500),
+) -> KlineHistoryResult:
+    if interval_seconds not in (300, 900):
+        raise HTTPException(status_code=422, detail="interval_seconds must be 300 or 900")
+    normalized_symbol = symbol.strip().upper()
+    if not normalized_symbol:
+        raise HTTPException(status_code=422, detail="symbol must not be blank")
+    repository = MonitoringRepository(request.app.state.database_engine)
+    try:
+        result = await repository.kline_history(
+            symbol=normalized_symbol,
+            before=before,
+            interval_seconds=interval_seconds,
+            limit=limit,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="kline history unavailable") from error
+    return KlineHistoryResult(
+        symbol=normalized_symbol,
+        interval_seconds=interval_seconds,
+        has_more=result.has_more,
+        items=tuple(KlinePoint.model_validate(row) for row in result.items),
     )

@@ -474,3 +474,46 @@ async def test_daily_klines_aggregates_15m_and_attaches_latest_oi() -> None:
     assert points[0].open_interest_value == 2200
     assert points[0].ema20 == 30
     assert points[1].ema20 > points[0].ema20
+
+
+async def test_kline_history_returns_older_page_and_has_more() -> None:
+    before = datetime(2026, 10, 18, tzinfo=UTC)
+    kline_rows = [
+        {
+            "open_time": before - timedelta(minutes=5 * (4 - index)),
+            "close_time": before - timedelta(minutes=5 * (3 - index)),
+            "open_price": 100 + index,
+            "high_price": 102 + index,
+            "low_price": 99 + index,
+            "close_price": 101 + index,
+            "base_volume": 10,
+            "quote_volume": 100,
+        }
+        for index in range(4)
+    ]
+    kline_result = MagicMock()
+    kline_result.mappings.return_value.all.return_value = kline_rows
+    oi_result = MagicMock()
+    oi_result.mappings.return_value.all.return_value = []
+    connection = MagicMock()
+    connection.execute = AsyncMock(side_effect=[kline_result, oi_result])
+    context = AsyncMock()
+    context.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = context
+
+    result = await MonitoringRepository(engine).kline_history(
+        symbol="BTCUSDT",
+        before=before,
+        interval_seconds=300,
+        limit=2,
+    )
+
+    assert result.has_more is True
+    assert len(result.items) == 2
+    assert result.items[0].open_time == before - timedelta(minutes=10)
+    statement = str(connection.execute.await_args_list[0].args[0])
+    parameters = connection.execute.await_args_list[0].args[1]
+    assert "ORDER BY k.open_time DESC" in statement
+    assert parameters["before"] == before
+    assert parameters["raw_limit"] == 243

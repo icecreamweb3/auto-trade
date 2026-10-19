@@ -168,6 +168,14 @@ interface DailyKlineResult {
   items: KlinePoint[];
 }
 
+interface KlineHistoryResult {
+  symbol: string;
+  price_type: string;
+  interval_seconds: number;
+  has_more: boolean;
+  items: KlinePoint[];
+}
+
 interface RankingFilters {
   dateFrom: string;
   dateTo: string;
@@ -278,13 +286,21 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
 function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [verticalZoom, setVerticalZoom] = useState(1);
-  const viewportCount = Math.min(data.items.length, data.interval_seconds === 300 ? 112 : 64);
-  const [viewportStart, setViewportStart] = useState(() => Math.max(0, data.items.length - viewportCount));
+  const desiredViewportCount = data.interval_seconds === 300 ? 112 : 64;
+  const [allItems, setAllItems] = useState(data.items);
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const viewportCount = Math.min(allItems.length, desiredViewportCount);
+  const [viewportStart, setViewportStart] = useState(() => Math.max(0, allItems.length - viewportCount));
   const dragRef = useRef<{ clientX: number; viewportStart: number } | null>(null);
   const chartRef = useRef<SVGSVGElement>(null);
-  const maxViewportStart = Math.max(0, data.items.length - viewportCount);
-  const points = data.items.slice(viewportStart, viewportStart + viewportCount);
-  const hasOi = data.items.some((point) => point.open_interest_value !== null || point.open_interest_qty !== null);
+  const loadingHistoryRef = useRef(false);
+  const dataKeyRef = useRef(`${data.symbol}-${data.utc_trade_date}-${data.interval_seconds}`);
+  dataKeyRef.current = `${data.symbol}-${data.utc_trade_date}-${data.interval_seconds}`;
+  const maxViewportStart = Math.max(0, allItems.length - viewportCount);
+  const points = allItems.slice(viewportStart, viewportStart + viewportCount);
+  const hasOi = allItems.some((point) => point.open_interest_value !== null || point.open_interest_qty !== null);
   const width = 1100;
   const height = hasOi ? 650 : 560;
   const left = 76;
@@ -336,10 +352,15 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   }).filter((bar): bar is { index: number; value: number; rising: boolean } => bar !== null);
 
   useEffect(() => {
-    setViewportStart(Math.max(0, data.items.length - viewportCount));
+    setAllItems(data.items);
+    setViewportStart(Math.max(0, data.items.length - Math.min(data.items.length, desiredViewportCount)));
+    setHasMoreHistory(true);
+    setLoadingHistory(false);
+    setHistoryError(null);
+    loadingHistoryRef.current = false;
     setHoveredIndex(null);
     setVerticalZoom(1);
-  }, [data, viewportCount]);
+  }, [data, desiredViewportCount]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -361,7 +382,9 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
     if (dragRef.current) {
       const pixelsPerBar = bounds.width / viewportCount;
       const barsMoved = Math.round((event.clientX - dragRef.current.clientX) / pixelsPerBar);
-      setViewportStart(Math.max(0, Math.min(maxViewportStart, dragRef.current.viewportStart - barsMoved)));
+      const nextStart = Math.max(0, Math.min(maxViewportStart, dragRef.current.viewportStart - barsMoved));
+      setViewportStart(nextStart);
+      if (nextStart <= 8) void loadEarlier();
       setHoveredIndex(null);
       return;
     }
@@ -373,6 +396,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
     dragRef.current = { clientX: event.clientX, viewportStart };
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (viewportStart <= 8) void loadEarlier();
   }
 
   function handlePointerUp(event: React.PointerEvent<SVGSVGElement>) {
@@ -382,9 +406,49 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
     }
   }
 
+  async function loadEarlier() {
+    if (loadingHistoryRef.current || !hasMoreHistory || allItems.length === 0) return;
+    const requestKey = `${data.symbol}-${data.utc_trade_date}-${data.interval_seconds}`;
+    const before = allItems[0].open_time;
+    loadingHistoryRef.current = true;
+    setLoadingHistory(true);
+    setHistoryError(null);
+    const params = new URLSearchParams({
+      symbol: data.symbol,
+      interval_seconds: String(data.interval_seconds),
+      before,
+      limit: "300"
+    });
+    try {
+      const response = await fetch(`/api/market/klines/history?${params}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = await response.json() as KlineHistoryResult;
+      if (dataKeyRef.current !== requestKey) return;
+      const earliest = new Date(allItems[0].open_time).getTime();
+      const earlier = result.items.filter((item) => new Date(item.open_time).getTime() < earliest);
+      if (earlier.length === 0) {
+        setHasMoreHistory(false);
+        return;
+      }
+      setAllItems([...earlier, ...allItems]);
+      setViewportStart((currentStart) => currentStart + earlier.length);
+      if (dragRef.current) dragRef.current.viewportStart += earlier.length;
+      setHasMoreHistory(result.has_more);
+    } catch {
+      if (dataKeyRef.current === requestKey) {
+        setHistoryError("更早K线加载失败，请再次拖动重试");
+      }
+    } finally {
+      if (dataKeyRef.current === requestKey) {
+        loadingHistoryRef.current = false;
+        setLoadingHistory(false);
+      }
+    }
+  }
+
   return <>
     <div className="chart-readout">
-      <span>{new Date(hovered.open_time).toISOString().slice(11, 16)} UTC</span>
+      <span>{new Date(hovered.open_time).toISOString().replace("T", " ").slice(0, 16)} UTC</span>
       <span>开 <strong>{formatNumber(hovered.open_price, 8)}</strong></span>
       <span>高 <strong>{formatNumber(hovered.high_price, 8)}</strong></span>
       <span>低 <strong>{formatNumber(hovered.low_price, 8)}</strong></span>
@@ -394,7 +458,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <span>成交额 <strong>{formatCompact(hovered.quote_volume)}</strong></span>
       {(hovered.open_interest_value !== null || hovered.open_interest_qty !== null) && <span>OI{hovered.open_interest_value !== null ? "价值" : "数量"} <strong>{formatCompact(hovered.open_interest_value ?? hovered.open_interest_qty)}</strong></span>}
       <button type="button" className="chart-axis-reset" onClick={() => setVerticalZoom(1)} title="恢复自动纵轴">纵轴 {Math.round(verticalZoom * 100)}%</button>
-      <span className="chart-drag-hint">左右拖动浏览 · 主图滚轮缩放纵轴 · {viewportStart + 1}–{viewportStart + points.length} / {data.items.length}</span>
+      <span className={`chart-drag-hint${historyError ? " chart-history-error" : ""}`}>{loadingHistory ? "正在加载更早K线…" : historyError ?? (!hasMoreHistory && viewportStart === 0 ? "已到最早K线" : "向右拖动持续回溯")} · 主图滚轮缩放纵轴 · {viewportStart + 1}–{viewportStart + points.length} / {allItems.length}</span>
     </div>
     <svg
       ref={chartRef}
@@ -438,11 +502,11 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <polyline points={ema20Path} className="ema-line ema20-line" />
       <polyline points={ema240Path} className="ema-line ema240-line" />
       {timeTicks.map((index) => <text key={index} x={xAt(index)} y={height - 16} textAnchor="middle" className="chart-axis-label">
-        {new Date(points[index].open_time).toISOString().slice(11, 16)}
+        {new Date(points[index].open_time).toISOString().slice(5, 16).replace("T", " ")}
       </text>)}
       {hasOi && <>
         <line x1={left} x2={width - right} y1={oiTop - 18} y2={oiTop - 18} className="chart-divider" />
-        <text x="14" y={oiTop + 10} className="chart-axis-label">OI{data.items.some((point) => point.open_interest_value !== null) ? "价值" : "数量"}</text>
+        <text x="14" y={oiTop + 10} className="chart-axis-label">OI{allItems.some((point) => point.open_interest_value !== null) ? "价值" : "数量"}</text>
         {oiBars.map((bar) => {
           const y = oiYAt(bar.value);
           return <rect
