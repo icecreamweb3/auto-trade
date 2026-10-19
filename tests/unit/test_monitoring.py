@@ -20,6 +20,7 @@ from auto_trade.monitoring.repository import (
     RestUsageRow,
     TableSizeRow,
     WebSocketSyncRow,
+    attach_precomputed_ema,
     websocket_sync_range_end,
 )
 from auto_trade.monitoring.service import (
@@ -394,6 +395,34 @@ def test_kline_point_serializes_repository_row() -> None:
     assert payload.close_time == open_time + timedelta(minutes=5)
 
 
+def test_attach_precomputed_ema_derives_realtime_trailing_candle() -> None:
+    start = datetime(2026, 10, 19, 6, 25, tzinfo=UTC)
+    points = [
+        KlinePointRow(
+            open_time=start + timedelta(minutes=5 * index),
+            close_time=start + timedelta(minutes=5 * (index + 1)),
+            open_price=100 + index,
+            high_price=102 + index,
+            low_price=99 + index,
+            close_price=101 + index,
+            base_volume=10,
+            quote_volume=100,
+        )
+        for index in range(2)
+    ]
+
+    attach_precomputed_ema(
+        points,
+        [{"open_time": start, "ema20": 100.0, "ema240": 90.0}],
+        300,
+    )
+
+    assert points[0].ema20 == 100.0
+    assert points[0].ema240 == 90.0
+    assert points[1].ema20 == 100.0 + (2 / 21) * 2
+    assert points[1].ema240 == 90.0 + (2 / 241) * 12
+
+
 async def test_daily_klines_uses_ranking_day_through_latest_closed_window() -> None:
     rows_result = MagicMock()
     rows_result.mappings.return_value.all.return_value = []
@@ -421,7 +450,7 @@ async def test_daily_klines_uses_ranking_day_through_latest_closed_window() -> N
     assert parameters["range_end"] > datetime(2026, 10, 18, 23, 55, tzinfo=UTC)
     assert parameters["range_end"].second == 0
     assert parameters["range_end"].microsecond == 0
-    assert before_call - timedelta(minutes=5) <= parameters["range_end"] <= after_call
+    assert before_call - timedelta(minutes=6) <= parameters["range_end"] <= after_call
     ema_statement = str(connection.execute.await_args_list[1].args[0])
     assert "market.kline_ema_indicators" in ema_statement
 

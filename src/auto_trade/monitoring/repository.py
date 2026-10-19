@@ -207,20 +207,17 @@ def attach_precomputed_ema(
     previous_ema240: float | None = None
     alpha20 = 2 / 21
     alpha240 = 2 / 241
-    for index, point in enumerate(points):
+    for point in points:
         stored = indicators.get(point.open_time)
         is_partial_15m = interval_seconds == 900 and point.source_bar_count < 3
         if stored is not None and not is_partial_15m:
             point.ema20, point.ema240 = stored
-        elif (
-            is_partial_15m
-            and index == len(points) - 1
-            and previous_ema20 is not None
-            and previous_ema240 is not None
-        ):
-            # A requested window can stop inside a 15m bucket. Its database EMA
-            # includes all three source bars, so derive one transient value using
-            # only the partial candle that is actually shown.
+        elif previous_ema20 is not None and previous_ema240 is not None:
+            # The realtime K-line writer can commit a closed candle just before
+            # the EMA worker reaches the same instrument. Continue from the last
+            # persisted EMA so this short trailing race does not fail the entire
+            # chart. This also keeps a partial final 15m bucket honest instead of
+            # using the stored value for a later, complete version of that bucket.
             point.ema20 = alpha20 * point.close_price + (1 - alpha20) * previous_ema20
             point.ema240 = (
                 alpha240 * point.close_price + (1 - alpha240) * previous_ema240
