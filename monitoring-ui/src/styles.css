@@ -148,8 +148,8 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-summary strong { margin-left: 5px; color: #cbdbea; font-variant-numeric: tabular-nums; }
 .chart-readout { display: flex; flex-wrap: wrap; min-height: 35px; gap: 7px 17px; padding: 7px 12px; color: #7790a8; font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart-readout strong { margin-left: 3px; color: #c8d7e6; }
-.chart-readout .ema20-label, .chart-summary .ema20-label { color: #efb852; }
-.chart-readout .ema240-label, .chart-summary .ema240-label { color: #a98cff; }
+.chart-readout .ema20-label, .chart-summary .ema20-label { color: #a98cff; }
+.chart-readout .ema240-label, .chart-summary .ema240-label { color: #38a34a; }
 .chart-axis-reset { border-color: #29455e; padding: 3px 8px; color: #70cbbb; background: #0b1d2d; font-size: 10px; }
 .chart-axis-reset:hover { background: #153047; }
 .chart-drag-hint { margin-left: auto; color: #58a99c; }
@@ -166,8 +166,8 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-down .volume-bar { fill: rgba(65,201,170,.4); }
 .candle-wick { stroke-width: 1; }
 .ema-line { fill: none; stroke-width: 1.8; pointer-events: none; }
-.ema20-line { stroke: #efb852; }
-.ema240-line { stroke: #a98cff; }
+.ema20-line { stroke: #a98cff; }
+.ema240-line { stroke: #38a34a; }
 .oi-bar { opacity: .72; }
 .oi-bar-up { fill: #ff7182; }
 .oi-bar-down { fill: #41c9aa; }
