@@ -201,6 +201,30 @@ services:
     networks:
       - backend
 
+  ema-indicators:
+    profiles: ["runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    container_name: auto-trade-ema-indicators
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *file-logging-environment
+      SERVICE_NAME: ema-indicators
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
+    command: ["python", "-m", "auto_trade.collectors.ema_indicators"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - backend
+
   monitor-api:
     profiles: ["runtime"]
     build:

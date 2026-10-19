@@ -415,8 +415,10 @@ async def test_daily_klines_uses_ranking_day_window() -> None:
     assert "k.is_current" in statement
     assert "i.market = 'USD_M_FUTURES'" in statement
     assert parameters["symbol"] == "BTCUSDT"
-    assert parameters["warmup_start"] == datetime(2026, 10, 17, 4, tzinfo=UTC)
+    assert parameters["range_start"] == datetime(2026, 10, 18, tzinfo=UTC)
     assert parameters["range_end"] == datetime(2026, 10, 18, 23, 55, tzinfo=UTC)
+    ema_statement = str(connection.execute.await_args_list[1].args[0])
+    assert "market.kline_ema_indicators" in ema_statement
 
 
 async def test_daily_klines_aggregates_15m_and_attaches_latest_oi() -> None:
@@ -450,8 +452,17 @@ async def test_daily_klines_aggregates_15m_and_attaches_latest_oi() -> None:
     kline_result.mappings.return_value.all.return_value = kline_rows
     oi_result = MagicMock()
     oi_result.mappings.return_value.all.return_value = oi_rows
+    ema_result = MagicMock()
+    ema_result.mappings.return_value.all.return_value = [
+        {"open_time": start, "ema20": 25, "ema240": 15},
+        {
+            "open_time": start + timedelta(minutes=15),
+            "ema20": 999,
+            "ema240": 999,
+        },
+    ]
     connection = MagicMock()
-    connection.execute = AsyncMock(side_effect=[kline_result, oi_result])
+    connection.execute = AsyncMock(side_effect=[kline_result, ema_result, oi_result])
     context = AsyncMock()
     context.__aenter__.return_value = connection
     engine = MagicMock()
@@ -472,8 +483,10 @@ async def test_daily_klines_aggregates_15m_and_attaches_latest_oi() -> None:
     assert points[0].quote_volume == 300
     assert points[0].open_interest_qty == 1100
     assert points[0].open_interest_value == 2200
-    assert points[0].ema20 == 30
+    assert points[0].ema20 == 25
+    assert points[0].ema240 == 15
     assert points[1].ema20 > points[0].ema20
+    assert points[1].ema20 != 999
 
 
 async def test_kline_history_returns_older_page_and_has_more() -> None:
@@ -495,8 +508,17 @@ async def test_kline_history_returns_older_page_and_has_more() -> None:
     kline_result.mappings.return_value.all.return_value = kline_rows
     oi_result = MagicMock()
     oi_result.mappings.return_value.all.return_value = []
+    ema_result = MagicMock()
+    ema_result.mappings.return_value.all.return_value = [
+        {
+            "open_time": row["open_time"],
+            "ema20": row["close_price"] - 1,
+            "ema240": row["close_price"] - 2,
+        }
+        for row in kline_rows[-2:]
+    ]
     connection = MagicMock()
-    connection.execute = AsyncMock(side_effect=[kline_result, oi_result])
+    connection.execute = AsyncMock(side_effect=[kline_result, ema_result, oi_result])
     context = AsyncMock()
     context.__aenter__.return_value = connection
     engine = MagicMock()
@@ -516,4 +538,4 @@ async def test_kline_history_returns_older_page_and_has_more() -> None:
     parameters = connection.execute.await_args_list[0].args[1]
     assert "ORDER BY k.open_time DESC" in statement
     assert parameters["before"] == before
-    assert parameters["raw_limit"] == 243
+    assert parameters["raw_limit"] == 3

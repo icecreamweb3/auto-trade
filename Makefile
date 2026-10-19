@@ -12,13 +12,13 @@ infra-status:
 	docker compose ps
 
 runtime-up:
-	docker compose --profile runtime up -d --build market-writer collector data-repair daily-rankings monitor-api monitor-ui
+	docker compose --profile runtime up -d --build market-writer collector data-repair daily-rankings ema-indicators monitor-api monitor-ui
 
 runtime-down:
-	docker compose --profile runtime stop market-writer collector data-repair daily-rankings monitor-api monitor-ui
+	docker compose --profile runtime stop market-writer collector data-repair daily-rankings ema-indicators monitor-api monitor-ui
 
 runtime-logs:
-	docker compose --profile runtime logs --tail=200 -f market-writer collector data-repair daily-rankings monitor-api monitor-ui
+	docker compose --profile runtime logs --tail=200 -f market-writer collector data-repair daily-rankings ema-indicators monitor-api monitor-ui
 
 logs-export:
 	@export_dir="$(CURDIR)/artifacts/logs-$$(date -u +%Y%m%dT%H%M%SZ)"; \

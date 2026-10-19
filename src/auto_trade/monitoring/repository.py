@@ -139,6 +139,7 @@ class KlinePointRow:
     close_price: float
     base_volume: float
     quote_volume: float
+    source_bar_count: int = 1
     open_interest_qty: float | None = None
     open_interest_value: float | None = None
     ema20: float = 0
@@ -172,6 +173,7 @@ def aggregate_kline_rows(
             point.close_price = number(row["close_price"])
             point.base_volume += number(row["base_volume"])
             point.quote_volume += number(row["quote_volume"])
+            point.source_bar_count += 1
             continue
         points.append(
             KlinePointRow(
@@ -186,24 +188,50 @@ def aggregate_kline_rows(
             )
         )
 
-    ema20: float | None = None
-    ema240: float | None = None
+    return points
+
+
+def attach_precomputed_ema(
+    points: Sequence[KlinePointRow],
+    rows: Sequence[Mapping[str, object]],
+    interval_seconds: int,
+) -> None:
+    indicators = {
+        cast(datetime, row["open_time"]): (
+            float(str(row["ema20"])),
+            float(str(row["ema240"])),
+        )
+        for row in rows
+    }
+    previous_ema20: float | None = None
+    previous_ema240: float | None = None
     alpha20 = 2 / 21
     alpha240 = 2 / 241
-    for point in points:
-        ema20 = (
-            point.close_price
-            if ema20 is None
-            else alpha20 * point.close_price + (1 - alpha20) * ema20
-        )
-        ema240 = (
-            point.close_price
-            if ema240 is None
-            else alpha240 * point.close_price + (1 - alpha240) * ema240
-        )
-        point.ema20 = ema20
-        point.ema240 = ema240
-    return points
+    for index, point in enumerate(points):
+        stored = indicators.get(point.open_time)
+        is_partial_15m = interval_seconds == 900 and point.source_bar_count < 3
+        if stored is not None and not is_partial_15m:
+            point.ema20, point.ema240 = stored
+        elif (
+            is_partial_15m
+            and index == len(points) - 1
+            and previous_ema20 is not None
+            and previous_ema240 is not None
+        ):
+            # A requested window can stop inside a 15m bucket. Its database EMA
+            # includes all three source bars, so derive one transient value using
+            # only the partial candle that is actually shown.
+            point.ema20 = alpha20 * point.close_price + (1 - alpha20) * previous_ema20
+            point.ema240 = (
+                alpha240 * point.close_price + (1 - alpha240) * previous_ema240
+            )
+        else:
+            raise RuntimeError(
+                "EMA indicators are not ready for "
+                f"{point.open_time.isoformat()} interval={interval_seconds}"
+            )
+        previous_ema20 = point.ema20
+        previous_ema240 = point.ema240
 
 
 def attach_open_interest(
@@ -678,14 +706,13 @@ class MonitoringRepository:
         utc_trade_date: date,
         interval_seconds: int = 300,
     ) -> tuple[KlinePointRow, ...]:
-        """Return 5m/15m candles for the UTC ranking day with warmed-up EMAs."""
+        """Return 5m/15m candles and database-precomputed, warmed EMAs."""
         if interval_seconds not in (300, 900):
             raise ValueError("interval_seconds must be 300 or 900")
         normalized_symbol = symbol.strip().upper()
         range_start = datetime.combine(utc_trade_date, datetime.min.time(), tzinfo=UTC)
         # The ranking snapshot is the close of the 23:50 candle at 23:55 UTC.
         range_end = range_start + timedelta(days=1) - timedelta(minutes=5)
-        warmup_start = range_start - timedelta(seconds=interval_seconds * 240)
         async with self._engine.connect() as connection:
             kline_rows = (
                 await connection.execute(
@@ -703,7 +730,7 @@ class MonitoringRepository:
                           AND i.contract_type = 'PERPETUAL'
                           AND k.price_type = 'TRADE'
                           AND k.interval_seconds = 300
-                          AND k.open_time >= CAST(:warmup_start AS timestamptz)
+                          AND k.open_time >= CAST(:range_start AS timestamptz)
                           AND k.open_time < CAST(:range_end AS timestamptz)
                           AND k.is_current
                           AND k.is_closed
@@ -713,7 +740,33 @@ class MonitoringRepository:
                     ),
                     {
                         "symbol": normalized_symbol,
-                        "warmup_start": warmup_start,
+                        "range_start": range_start,
+                        "range_end": range_end,
+                    },
+                )
+            ).mappings().all()
+            ema_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT e.open_time, e.ema20, e.ema240
+                        FROM market.kline_ema_indicators e
+                        JOIN core.instruments i USING (instrument_id)
+                        WHERE upper(i.symbol) = :symbol
+                          AND i.exchange = 'BINANCE'
+                          AND i.market = 'USD_M_FUTURES'
+                          AND i.contract_type = 'PERPETUAL'
+                          AND e.price_type = 'TRADE'
+                          AND e.interval_seconds = :interval_seconds
+                          AND e.open_time >= CAST(:range_start AS timestamptz)
+                          AND e.open_time < CAST(:range_end AS timestamptz)
+                        ORDER BY e.open_time ASC
+                        """
+                    ),
+                    {
+                        "symbol": normalized_symbol,
+                        "interval_seconds": interval_seconds,
+                        "range_start": range_start,
                         "range_end": range_end,
                     },
                 )
@@ -746,10 +799,12 @@ class MonitoringRepository:
 
         local_kline_rows = [cast(Mapping[str, object], row) for row in kline_rows]
         local_oi_rows = [cast(Mapping[str, object], row) for row in oi_rows]
-        points = aggregate_kline_rows(local_kline_rows, interval_seconds)
-        visible_points = [
-            point for point in points if range_start <= point.open_time < range_end
-        ]
+        visible_points = aggregate_kline_rows(local_kline_rows, interval_seconds)
+        attach_precomputed_ema(
+            visible_points,
+            [cast(Mapping[str, object], row) for row in ema_rows],
+            interval_seconds,
+        )
         attach_open_interest(visible_points, local_oi_rows, interval_seconds)
 
         return tuple(visible_points)
@@ -762,7 +817,7 @@ class MonitoringRepository:
         interval_seconds: int,
         limit: int,
     ) -> KlineHistoryRows:
-        """Return the next older chart page, with extra candles used for EMA warmup."""
+        """Return an older chart page with EMA values read from the indicator table."""
         if interval_seconds not in (300, 900):
             raise ValueError("interval_seconds must be 300 or 900")
         normalized_symbol = symbol.strip().upper()
@@ -771,7 +826,7 @@ class MonitoringRepository:
             if before.tzinfo is None
             else before.astimezone(UTC)
         )
-        raw_limit = (limit + 241) * (interval_seconds // 300)
+        raw_limit = (limit + 1) * (interval_seconds // 300)
         async with self._engine.connect() as connection:
             kline_rows = (
                 await connection.execute(
@@ -814,6 +869,37 @@ class MonitoringRepository:
             points = aggregate_kline_rows(local_kline_rows, interval_seconds)
             visible_points = points[-limit:]
             if visible_points:
+                ema_rows = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT e.open_time, e.ema20, e.ema240
+                            FROM market.kline_ema_indicators e
+                            JOIN core.instruments i USING (instrument_id)
+                            WHERE upper(i.symbol) = :symbol
+                              AND i.exchange = 'BINANCE'
+                              AND i.market = 'USD_M_FUTURES'
+                              AND i.contract_type = 'PERPETUAL'
+                              AND e.price_type = 'TRADE'
+                              AND e.interval_seconds = :interval_seconds
+                              AND e.open_time >= CAST(:range_start AS timestamptz)
+                              AND e.open_time < CAST(:range_end AS timestamptz)
+                            ORDER BY e.open_time ASC
+                            """
+                        ),
+                        {
+                            "symbol": normalized_symbol,
+                            "interval_seconds": interval_seconds,
+                            "range_start": visible_points[0].open_time,
+                            "range_end": before_utc,
+                        },
+                    )
+                ).mappings().all()
+                attach_precomputed_ema(
+                    visible_points,
+                    [cast(Mapping[str, object], row) for row in ema_rows],
+                    interval_seconds,
+                )
                 oi_rows = (
                     await connection.execute(
                         text(
