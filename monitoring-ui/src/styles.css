@@ -133,12 +133,13 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .metric-list dd { font-variant-numeric: tabular-nums; white-space: normal; }
 .detail-note { margin: 22px 0 0; padding: 12px; border-radius: 9px; color: #7891a8; background: #0b1a2a; font-size: 11px; line-height: 1.55; }
 .chart-modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 10px; background: rgba(2, 8, 15, .82); backdrop-filter: blur(8px); }
-.chart-modal { width: min(1536px, calc(100vw - 20px)); height: min(1067px, calc(100vh - 20px)); overflow: auto; border: 1px solid #29475f; border-radius: 17px; padding: 22px; background: #091827; box-shadow: 0 28px 90px rgba(0,0,0,.58); }
+.chart-modal { display: flex; flex-direction: column; width: min(1536px, calc(100vw - 20px)); height: min(1164px, calc(100vh - 20px)); overflow: hidden; border: 1px solid #29475f; border-radius: 17px; padding: 22px; background: #091827; box-shadow: 0 28px 90px rgba(0,0,0,.58); }
 .chart-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 .chart-modal-header h2 { font-size: 25px; }
 .chart-modal-header h2 span { margin-left: 8px; color: #8199ae; font-size: 14px; font-weight: 500; }
 .chart-modal-actions { display: flex; align-items: center; gap: 18px; }
 .chart-modal-actions > strong { font-size: 21px; font-variant-numeric: tabular-nums; }
+.chart-modal-body { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .chart-interval-switch { display: inline-flex; padding: 3px; border: 1px solid #29455e; border-radius: 9px; background: #071522; }
 .chart-interval-switch button { border: 0; padding: 6px 11px; color: #7891a8; background: transparent; font-size: 11px; }
 .chart-interval-switch button.active { color: #06131f; background: #58d6c2; }
@@ -153,7 +154,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-axis-reset:hover { background: #153047; }
 .chart-drag-hint { margin-left: auto; color: #58a99c; }
 .chart-history-error { color: #ff9aa6; }
-.candlestick-chart { display: block; width: 100%; min-width: 720px; border: 1px solid #173047; border-radius: 11px; cursor: grab; overscroll-behavior: contain; touch-action: none; user-select: none; }
+.candlestick-chart { display: block; flex: 1; width: 100%; height: 100%; min-width: 720px; min-height: 0; border: 1px solid #173047; border-radius: 11px; cursor: grab; overscroll-behavior: contain; touch-action: none; user-select: none; }
 .candlestick-chart:active { cursor: grabbing; }
 .chart-background { fill: #071522; }
 .chart-grid-line { stroke: #193044; stroke-width: 1; stroke-dasharray: 3 5; }
@@ -177,4 +178,4 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-footnote { margin: 12px 3px 0; color: #6f879e; font-size: 11px; }
 @media (max-width: 1000px) { .summary-grid { grid-template-columns: 1fr 1fr; } .coverage-grid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 1180px) { .query-panel form { grid-template-columns: repeat(3, 1fr); } .ranking-workspace { grid-template-columns: 1fr; } .ranking-detail { position: static; } .ranking-summary-grid { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 680px) { main { width: min(100% - 26px, 1480px); padding-top: 32px; } .workspace-tabs { top: 8px; margin-bottom: -8px; } .topbar { align-items: flex-start; flex-direction: column; } .ranking-header .data-range-badge { width: 100%; min-width: 0; } .summary-grid, .coverage-grid, .operations-grid, .ranking-summary-grid { grid-template-columns: 1fr; } .query-panel form { grid-template-columns: 1fr 1fr; } .symbol-field { grid-column: 1 / -1; } .query-panel .primary-button { grid-column: 1 / -1; } .quick-ranges { flex-wrap: wrap; } .queue-grid, .database-summary { grid-template-columns: 1fr 1fr; } .backfill-scope { grid-template-columns: 1fr; } .repair-details, .metric-list { grid-template-columns: 1fr 1fr; } .chart-modal-backdrop { align-items: end; padding: 10px; } .chart-modal { width: 100%; height: auto; max-height: calc(100vh - 20px); padding: 16px; } .chart-modal-header { flex-direction: column; } .chart-modal-actions { width: 100%; justify-content: space-between; } .chart-modal-header h2 span { display: block; margin: 5px 0 0; } .chart-drag-hint { width: 100%; margin-left: 0; } }
+@media (max-width: 680px) { main { width: min(100% - 26px, 1480px); padding-top: 32px; } .workspace-tabs { top: 8px; margin-bottom: -8px; } .topbar { align-items: flex-start; flex-direction: column; } .ranking-header .data-range-badge { width: 100%; min-width: 0; } .summary-grid, .coverage-grid, .operations-grid, .ranking-summary-grid { grid-template-columns: 1fr; } .query-panel form { grid-template-columns: 1fr 1fr; } .symbol-field { grid-column: 1 / -1; } .query-panel .primary-button { grid-column: 1 / -1; } .quick-ranges { flex-wrap: wrap; } .queue-grid, .database-summary { grid-template-columns: 1fr 1fr; } .backfill-scope { grid-template-columns: 1fr; } .repair-details, .metric-list { grid-template-columns: 1fr 1fr; } .chart-modal-backdrop { align-items: end; padding: 10px; } .chart-modal { width: 100%; height: auto; max-height: calc(100vh - 20px); overflow: auto; padding: 16px; } .chart-modal-body { display: block; } .chart-modal-header { flex-direction: column; } .chart-modal-actions { width: 100%; justify-content: space-between; } .chart-modal-header h2 span { display: block; margin: 5px 0 0; } .chart-drag-hint { width: 100%; margin-left: 0; } }

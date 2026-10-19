@@ -622,17 +622,19 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
       {loading && <div className="chart-state">正在读取本地 K 线…</div>}
       {error && <div className="chart-state chart-state-error">K 线加载失败：{error}</div>}
       {data && data.items.length > 0 && <>
-        <div className="chart-summary">
-          <span>开盘 <strong>{formatNumber(first.open_price, 8)}</strong></span>
-          <span>最高 <strong>{formatNumber(Math.max(...points.map((point) => point.high_price)), 8)}</strong></span>
-          <span>最低 <strong>{formatNumber(Math.min(...points.map((point) => point.low_price)), 8)}</strong></span>
-          <span>收盘 <strong>{formatNumber(last.close_price, 8)}</strong></span>
-          <span>完整度 <strong>{points.length} / {intervalSeconds === 300 ? 287 : 96}</strong></span>
-          <span className="ema20-label">━ EMA20</span>
-          <span className="ema240-label">━ EMA240</span>
+        <div className="chart-modal-body">
+          <div className="chart-summary">
+            <span>开盘 <strong>{formatNumber(first.open_price, 8)}</strong></span>
+            <span>最高 <strong>{formatNumber(Math.max(...points.map((point) => point.high_price)), 8)}</strong></span>
+            <span>最低 <strong>{formatNumber(Math.min(...points.map((point) => point.low_price)), 8)}</strong></span>
+            <span>收盘 <strong>{formatNumber(last.close_price, 8)}</strong></span>
+            <span>完整度 <strong>{points.length} / {intervalSeconds === 300 ? 287 : 96}</strong></span>
+            <span className="ema20-label">━ EMA20</span>
+            <span className="ema240-label">━ EMA240</span>
+          </div>
+          <CandlestickChart data={data} />
+          <p className="chart-footnote">图表时间统一显示为 UTC+8；使用本地数据库中 VALID、已闭合的 Trade K 线。15min 由 5min 数据聚合，最后一根按排行榜次日 07:55（UTC+8）快照边界形成。EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
         </div>
-        <CandlestickChart data={data} />
-        <p className="chart-footnote">图表时间统一显示为 UTC+8；使用本地数据库中 VALID、已闭合的 Trade K 线。15min 由 5min 数据聚合，最后一根按排行榜次日 07:55（UTC+8）快照边界形成。EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
       </>}
     </section>
   </div>;
