@@ -320,12 +320,17 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
 function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [verticalZoom, setVerticalZoom] = useState(1);
+  const [horizontalZoom, setHorizontalZoom] = useState(1);
   const desiredViewportCount = data.interval_seconds === 300 ? 112 : 64;
   const [allItems, setAllItems] = useState(data.items);
   const [hasMoreHistory, setHasMoreHistory] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const viewportCount = Math.min(allItems.length, desiredViewportCount);
+  const requestedViewportCount = Math.max(
+    12,
+    Math.round(desiredViewportCount / horizontalZoom)
+  );
+  const viewportCount = Math.min(allItems.length, requestedViewportCount);
   const [viewportStart, setViewportStart] = useState(() => Math.max(0, allItems.length - viewportCount));
   const dragRef = useRef<{ clientX: number; viewportStart: number } | null>(null);
   const chartRef = useRef<SVGSVGElement>(null);
@@ -396,6 +401,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
     loadingHistoryRef.current = false;
     setHoveredIndex(null);
     setVerticalZoom(1);
+    setHorizontalZoom(1);
   }, [data, desiredViewportCount]);
 
   useEffect(() => {
@@ -403,15 +409,31 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
     if (!chart) return;
     const handleWheel = (event: WheelEvent) => {
       const bounds = chart.getBoundingClientRect();
+      const svgX = (event.clientX - bounds.left) / bounds.width * width;
       const svgY = (event.clientY - bounds.top) / bounds.height * height;
-      if (svgY < top || svgY > priceBottom || event.deltaY === 0) return;
+      if (event.deltaY === 0) return;
       event.preventDefault();
       const zoomFactor = Math.exp(-event.deltaY * 0.002);
-      setVerticalZoom((current) => Math.max(0.25, Math.min(8, current * zoomFactor)));
+      const isPriceAxis = svgX >= width - right && svgY >= top && svgY <= priceBottom;
+      if (isPriceAxis) {
+        setVerticalZoom((current) => Math.max(0.25, Math.min(8, current * zoomFactor)));
+        return;
+      }
+      const anchorRatio = Math.max(0, Math.min(1, (svgX - left) / plotWidth));
+      setHorizontalZoom((current) => {
+        const next = Math.max(0.25, Math.min(8, current * zoomFactor));
+        const nextCount = Math.min(
+          allItems.length,
+          Math.max(12, Math.round(desiredViewportCount / next))
+        );
+        const anchorIndex = viewportStart + Math.round(anchorRatio * (viewportCount - 1));
+        setViewportStart(Math.max(0, Math.min(allItems.length - nextCount, anchorIndex - Math.round(anchorRatio * (nextCount - 1)))));
+        return next;
+      });
     };
     chart.addEventListener("wheel", handleWheel, { passive: false });
     return () => chart.removeEventListener("wheel", handleWheel);
-  }, [height, priceBottom]);
+  }, [allItems.length, desiredViewportCount, height, left, plotWidth, priceBottom, right, viewportCount, viewportStart, width]);
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -482,6 +504,12 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
     }
   }
 
+  function resetZoom() {
+    setVerticalZoom(1);
+    setHorizontalZoom(1);
+    setViewportStart(Math.max(0, allItems.length - Math.min(allItems.length, desiredViewportCount)));
+  }
+
   return <>
     <div className="chart-readout">
       <span>{formatKlineTime(hovered.open_time)}</span>
@@ -495,8 +523,8 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <span className="ema240-label">EMA240 <strong>{formatNumber(hovered.ema240, 8)}</strong></span>
       <span>成交额 <strong>{formatCompact(hovered.quote_volume)}</strong></span>
       {(hovered.open_interest_value !== null || hovered.open_interest_qty !== null) && <span>OI{hovered.open_interest_value !== null ? "价值" : "数量"} <strong>{formatCompact(hovered.open_interest_value ?? hovered.open_interest_qty)}</strong></span>}
-      <button type="button" className="chart-axis-reset" onClick={() => setVerticalZoom(1)} title="恢复自动纵轴">纵轴 {Math.round(verticalZoom * 100)}%</button>
-      <span className={`chart-drag-hint${historyError ? " chart-history-error" : ""}`}>{loadingHistory ? "正在加载更早K线…" : historyError ?? (!hasMoreHistory && viewportStart === 0 ? "已到最早K线" : "向右拖动持续回溯")} · 主图滚轮缩放纵轴 · {viewportStart + 1}–{viewportStart + points.length} / {allItems.length}</span>
+      <button type="button" className="chart-axis-reset" onClick={resetZoom} title="恢复横轴和纵轴缩放">横轴 {Math.round(horizontalZoom * 100)}% · 纵轴 {Math.round(verticalZoom * 100)}%</button>
+      <span className={`chart-drag-hint${historyError ? " chart-history-error" : ""}`}>{loadingHistory ? "正在加载更早K线…" : historyError ?? (!hasMoreHistory && viewportStart === 0 ? "已到最早K线" : "向右拖动持续回溯")} · 图表滚轮缩放时间轴 · 右侧价格轴滚轮缩放纵轴 · {viewportStart + 1}–{viewportStart + points.length} / {allItems.length}</span>
     </div>
     <svg
       ref={chartRef}
