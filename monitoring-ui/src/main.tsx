@@ -277,9 +277,11 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
 
 function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [verticalZoom, setVerticalZoom] = useState(1);
   const viewportCount = Math.min(data.items.length, data.interval_seconds === 300 ? 112 : 64);
   const [viewportStart, setViewportStart] = useState(() => Math.max(0, data.items.length - viewportCount));
   const dragRef = useRef<{ clientX: number; viewportStart: number } | null>(null);
+  const chartRef = useRef<SVGSVGElement>(null);
   const maxViewportStart = Math.max(0, data.items.length - viewportCount);
   const points = data.items.slice(viewportStart, viewportStart + viewportCount);
   const hasOi = data.items.some((point) => point.open_interest_value !== null || point.open_interest_qty !== null);
@@ -299,43 +301,60 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const low = Math.min(...points.flatMap((point) => [point.low_price, point.ema20, point.ema240]));
   const high = Math.max(...points.flatMap((point) => [point.high_price, point.ema20, point.ema240]));
   const rawRange = Math.max(high - low, Math.abs(high) * 0.001, 1e-12);
-  const priceMin = low - rawRange * 0.06;
-  const priceMax = high + rawRange * 0.06;
-  const priceRange = priceMax - priceMin;
+  const priceCenter = (low + high) / 2;
+  const priceRange = rawRange * 1.12 / verticalZoom;
+  const priceMin = priceCenter - priceRange / 2;
+  const priceMax = priceCenter + priceRange / 2;
   const maxVolume = Math.max(...points.map((point) => point.quote_volume), 1);
   const oiValues = points
     .map((point) => point.open_interest_value ?? point.open_interest_qty)
     .filter((value): value is number => value !== null);
   const oiMin = oiValues.length > 0 ? Math.min(...oiValues) : 0;
   const oiMax = oiValues.length > 0 ? Math.max(...oiValues) : 1;
-  const oiRange = Math.max(oiMax - oiMin, Math.abs(oiMax) * 0.001, 1e-12);
+  const oiDataRange = Math.max(oiMax - oiMin, Math.abs(oiMax) * 0.001, 1e-12);
+  const oiScaleMin = Math.max(0, oiMin - oiDataRange * 0.08);
+  const oiScaleMax = oiMax + oiDataRange * 0.05;
+  const oiRange = oiScaleMax - oiScaleMin;
   const candleSlot = plotWidth / points.length;
   const candleWidth = Math.max(2, Math.min(8, candleSlot * 0.68));
   const hovered = hoveredIndex === null ? points[points.length - 1] : points[hoveredIndex];
   const xAt = (index: number) => left + candleSlot * (index + 0.5);
   const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
-  const oiYAt = (value: number) => oiTop + (oiMax - value) / oiRange * (oiBottom - oiTop);
+  const oiYAt = (value: number) => oiTop + (oiScaleMax - value) / oiRange * (oiBottom - oiTop);
   const priceTicks = Array.from({ length: 6 }, (_, index) => priceMax - priceRange * index / 5);
   const timeTicks = [0, Math.round((points.length - 1) / 4), Math.round((points.length - 1) / 2), Math.round((points.length - 1) * 3 / 4), points.length - 1]
     .filter((index, position, values) => index >= 0 && index < points.length && values.indexOf(index) === position);
   const ema20Path = points.map((point, index) => `${xAt(index)},${yAt(point.ema20)}`).join(" ");
   const ema240Path = points.map((point, index) => `${xAt(index)},${yAt(point.ema240)}`).join(" ");
-  let oiPath = "";
-  let oiConnected = false;
-  points.forEach((point, index) => {
+  let previousOi: number | null = null;
+  const oiBars = points.map((point, index) => {
     const value = point.open_interest_value ?? point.open_interest_qty;
-    if (value === null) {
-      oiConnected = false;
-      return;
-    }
-    oiPath += `${oiConnected ? " L" : "M"} ${xAt(index)} ${oiYAt(value)}`;
-    oiConnected = true;
-  });
+    if (value === null) return null;
+    const rising = previousOi === null || value >= previousOi;
+    previousOi = value;
+    return { index, value, rising };
+  }).filter((bar): bar is { index: number; value: number; rising: boolean } => bar !== null);
 
   useEffect(() => {
     setViewportStart(Math.max(0, data.items.length - viewportCount));
     setHoveredIndex(null);
+    setVerticalZoom(1);
   }, [data, viewportCount]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const handleWheel = (event: WheelEvent) => {
+      const bounds = chart.getBoundingClientRect();
+      const svgY = (event.clientY - bounds.top) / bounds.height * height;
+      if (svgY < top || svgY > priceBottom || event.deltaY === 0) return;
+      event.preventDefault();
+      const zoomFactor = Math.exp(-event.deltaY * 0.002);
+      setVerticalZoom((current) => Math.max(0.25, Math.min(8, current * zoomFactor)));
+    };
+    chart.addEventListener("wheel", handleWheel, { passive: false });
+    return () => chart.removeEventListener("wheel", handleWheel);
+  }, [height, priceBottom]);
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -374,9 +393,11 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <span className="ema240-label">EMA240 <strong>{formatNumber(hovered.ema240, 8)}</strong></span>
       <span>成交额 <strong>{formatCompact(hovered.quote_volume)}</strong></span>
       {(hovered.open_interest_value !== null || hovered.open_interest_qty !== null) && <span>OI{hovered.open_interest_value !== null ? "价值" : "数量"} <strong>{formatCompact(hovered.open_interest_value ?? hovered.open_interest_qty)}</strong></span>}
-      <span className="chart-drag-hint">按住图表左右拖动 · {viewportStart + 1}–{viewportStart + points.length} / {data.items.length}</span>
+      <button type="button" className="chart-axis-reset" onClick={() => setVerticalZoom(1)} title="恢复自动纵轴">纵轴 {Math.round(verticalZoom * 100)}%</button>
+      <span className="chart-drag-hint">左右拖动浏览 · 主图滚轮缩放纵轴 · {viewportStart + 1}–{viewportStart + points.length} / {data.items.length}</span>
     </div>
     <svg
+      ref={chartRef}
       className="candlestick-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
@@ -422,9 +443,19 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       {hasOi && <>
         <line x1={left} x2={width - right} y1={oiTop - 18} y2={oiTop - 18} className="chart-divider" />
         <text x="14" y={oiTop + 10} className="chart-axis-label">OI{data.items.some((point) => point.open_interest_value !== null) ? "价值" : "数量"}</text>
-        <path d={oiPath} className="oi-line" />
-        <text x={width - right + 10} y={oiTop + 4} className="chart-axis-label">{formatCompact(oiMax)}</text>
-        <text x={width - right + 10} y={oiBottom + 4} className="chart-axis-label">{formatCompact(oiMin)}</text>
+        {oiBars.map((bar) => {
+          const y = oiYAt(bar.value);
+          return <rect
+            key={points[bar.index].open_time}
+            x={xAt(bar.index) - candleWidth / 2}
+            y={y}
+            width={candleWidth}
+            height={Math.max(1, oiBottom - y)}
+            className={bar.rising ? "oi-bar oi-bar-up" : "oi-bar oi-bar-down"}
+          />;
+        })}
+        <text x={width - right + 10} y={oiTop + 4} className="chart-axis-label">{formatCompact(oiScaleMax)}</text>
+        <text x={width - right + 10} y={oiBottom + 4} className="chart-axis-label">{formatCompact(oiScaleMin)}</text>
       </>}
       {hoveredIndex !== null && <g className="chart-crosshair">
         <line x1={xAt(hoveredIndex)} x2={xAt(hoveredIndex)} y1={top} y2={hasOi ? oiBottom : volumeBottom} />

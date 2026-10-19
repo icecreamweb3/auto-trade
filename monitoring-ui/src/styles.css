@@ -149,8 +149,10 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-readout strong { margin-left: 3px; color: #c8d7e6; }
 .chart-readout .ema20-label, .chart-summary .ema20-label { color: #efb852; }
 .chart-readout .ema240-label, .chart-summary .ema240-label { color: #a98cff; }
+.chart-axis-reset { border-color: #29455e; padding: 3px 8px; color: #70cbbb; background: #0b1d2d; font-size: 10px; }
+.chart-axis-reset:hover { background: #153047; }
 .chart-drag-hint { margin-left: auto; color: #58a99c; }
-.candlestick-chart { display: block; width: 100%; min-width: 720px; border: 1px solid #173047; border-radius: 11px; cursor: grab; touch-action: none; user-select: none; }
+.candlestick-chart { display: block; width: 100%; min-width: 720px; border: 1px solid #173047; border-radius: 11px; cursor: grab; overscroll-behavior: contain; touch-action: none; user-select: none; }
 .candlestick-chart:active { cursor: grabbing; }
 .chart-background { fill: #071522; }
 .chart-grid-line { stroke: #193044; stroke-width: 1; stroke-dasharray: 3 5; }
@@ -164,7 +166,9 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .ema-line { fill: none; stroke-width: 1.8; pointer-events: none; }
 .ema20-line { stroke: #efb852; }
 .ema240-line { stroke: #a98cff; }
-.oi-line { fill: none; stroke: #53a9f5; stroke-width: 1.7; }
+.oi-bar { opacity: .72; }
+.oi-bar-up { fill: #ff7182; }
+.oi-bar-down { fill: #41c9aa; }
 .chart-crosshair { pointer-events: none; }
 .chart-crosshair line { stroke: #93aabd; stroke-width: 1; stroke-dasharray: 4 4; opacity: .72; }
 .chart-state { display: grid; min-height: 460px; place-items: center; border: 1px dashed #29455e; border-radius: 11px; color: #8da4ba; background: #071522; }
