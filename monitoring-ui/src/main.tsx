@@ -214,6 +214,31 @@ function formatUtcRange(start: string | null, end: string | null): string {
   return `${from} → ${to} UTC`;
 }
 
+const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function utc8Iso(value: string): string {
+  return new Date(new Date(value).getTime() + UTC8_OFFSET_MS).toISOString();
+}
+
+function formatKlineTime(value: string, axis = false): string {
+  const local = utc8Iso(value);
+  const datePart = axis ? local.slice(5, 10) : local.slice(0, 10);
+  return `${datePart} ${local.slice(11, 16)}${axis ? "" : " UTC+8"}`;
+}
+
+function formatKlineTradeWindow(utcTradeDate: string): string {
+  const start = utc8Iso(`${utcTradeDate}T00:00:00Z`);
+  const end = utc8Iso(`${utcTradeDate}T23:55:00Z`);
+  return `${start.slice(0, 10)} ${start.slice(11, 16)} – ${end.slice(0, 10)} ${end.slice(11, 16)}`;
+}
+
+function formatRankingDataRange(firstDate: string | null, lastDate: string | null): string {
+  if (!firstDate || !lastDate) return "—";
+  const start = utc8Iso(`${firstDate}T00:00:00Z`);
+  const end = utc8Iso(`${lastDate}T23:55:00Z`);
+  return `${start.slice(0, 10)} ${start.slice(11, 16)} → ${end.slice(0, 10)} ${end.slice(11, 16)} UTC+8`;
+}
+
 function formatBackfillSeries(dataType: string, intervalSeconds: number): string {
   const type = dataType === "KLINE_MARK" ? "Mark K线" : "Trade K线";
   const interval = intervalSeconds % 60 === 0
@@ -448,7 +473,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
 
   return <>
     <div className="chart-readout">
-      <span>{new Date(hovered.open_time).toISOString().replace("T", " ").slice(0, 16)} UTC</span>
+      <span>{formatKlineTime(hovered.open_time)}</span>
       <span>开 <strong>{formatNumber(hovered.open_price, 8)}</strong></span>
       <span>高 <strong>{formatNumber(hovered.high_price, 8)}</strong></span>
       <span>低 <strong>{formatNumber(hovered.low_price, 8)}</strong></span>
@@ -465,7 +490,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       className="candlestick-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`${data.symbol} ${data.utc_trade_date} UTC ${data.interval_seconds / 60}分钟K线图`}
+      aria-label={`${data.symbol} ${formatKlineTradeWindow(data.utc_trade_date)} UTC+8 ${data.interval_seconds / 60}分钟K线图`}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -502,7 +527,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <polyline points={ema20Path} className="ema-line ema20-line" />
       <polyline points={ema240Path} className="ema-line ema240-line" />
       {timeTicks.map((index) => <text key={index} x={xAt(index)} y={height - 16} textAnchor="middle" className="chart-axis-label">
-        {new Date(points[index].open_time).toISOString().slice(5, 16).replace("T", " ")}
+        {formatKlineTime(points[index].open_time, true)}
       </text>)}
       {hasOi && <>
         <line x1={left} x2={width - right} y1={oiTop - 18} y2={oiTop - 18} className="chart-divider" />
@@ -582,8 +607,8 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
     <section className="chart-modal" role="dialog" aria-modal="true" aria-labelledby="chart-modal-title">
       <header className="chart-modal-header">
         <div>
-          <p className="eyebrow">UTC 日内走势 · {intervalSeconds / 60}分钟</p>
-          <h2 id="chart-modal-title">{entry.symbol} <span>{entry.utc_trade_date}</span></h2>
+          <p className="eyebrow">本地时间 UTC+8 · {intervalSeconds / 60}分钟</p>
+          <h2 id="chart-modal-title">{entry.symbol} <span>{formatKlineTradeWindow(entry.utc_trade_date)}</span></h2>
         </div>
         <div className="chart-modal-actions">
           <div className="chart-interval-switch" aria-label="K线周期">
@@ -607,7 +632,7 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
           <span className="ema240-label">━ EMA240</span>
         </div>
         <CandlestickChart data={data} />
-        <p className="chart-footnote">图表使用本地数据库中 VALID、已闭合的 Trade K 线；15min 由 5min 数据聚合，最后一根按排行榜 23:55 UTC 快照边界形成。EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
+        <p className="chart-footnote">图表时间统一显示为 UTC+8；使用本地数据库中 VALID、已闭合的 Trade K 线。15min 由 5min 数据聚合，最后一根按排行榜次日 07:55（UTC+8）快照边界形成。EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
       </>}
     </section>
   </div>;
@@ -703,12 +728,12 @@ function RankingExplorer() {
       <header className="topbar ranking-header">
         <div>
           <p className="brand-mark">MARKET RESEARCH</p>
-          <h1>UTC 日涨幅榜查询</h1>
-          <p className="subtitle">UTC 00:00 开盘至 23:55 快照 · Binance USDⓈ-M 永续</p>
+          <h1>UTC+8 日涨幅榜查询</h1>
+          <p className="subtitle">UTC+8 08:00 开盘至次日 07:55 快照 · Binance USDⓈ-M 永续</p>
         </div>
         <div className="data-range-badge">
           <span>本地数据范围</span>
-          <strong>{data?.available_first_date ?? "—"} → {data?.available_last_date ?? "—"}</strong>
+          <strong>{formatRankingDataRange(data?.available_first_date ?? null, data?.available_last_date ?? null)}</strong>
         </div>
       </header>
 
@@ -716,8 +741,8 @@ function RankingExplorer() {
 
       <section className="panel query-panel">
         <form onSubmit={(event) => { event.preventDefault(); void load(filters); }}>
-          <label><span>开始日期（UTC）</span><input type="date" value={filters.dateFrom} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateFrom: event.target.value })} /></label>
-          <label><span>结束日期（UTC）</span><input type="date" value={filters.dateTo} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateTo: event.target.value })} /></label>
+          <label><span>开始交易日（UTC+8 08:00）</span><input type="date" value={filters.dateFrom} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateFrom: event.target.value })} /></label>
+          <label><span>结束交易日（UTC+8 08:00）</span><input type="date" value={filters.dateTo} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateTo: event.target.value })} /></label>
           <label className="symbol-field"><span>交易对</span><input type="search" placeholder="例如 BTC 或 USDT" value={filters.symbol} onChange={(event) => setFilters({ ...filters, symbol: event.target.value.toUpperCase() })} /></label>
           <label><span>排名从</span><input type="number" min="1" max="50" value={filters.rankFrom} onChange={(event) => setFilters({ ...filters, rankFrom: Number(event.target.value) })} /></label>
           <label><span>排名至</span><input type="number" min="1" max="50" value={filters.rankTo} onChange={(event) => setFilters({ ...filters, rankTo: Number(event.target.value) })} /></label>
@@ -733,7 +758,7 @@ function RankingExplorer() {
       </section>
 
       <section className="ranking-summary-grid">
-        <article className="summary-card"><span>匹配记录</span><strong>{data?.total.toLocaleString() ?? "—"}</strong><small>{data?.matching_days ?? 0} 个 UTC 交易日</small></article>
+        <article className="summary-card"><span>匹配记录</span><strong>{data?.total.toLocaleString() ?? "—"}</strong><small>{data?.matching_days ?? 0} 个 UTC+8 交易区间</small></article>
         <article className="summary-card"><span>区间最高涨幅</span><strong className="change-positive">{data?.maximum_change == null ? "—" : `+${data.maximum_change.toFixed(2)}%`}</strong><small>筛选结果中的最大值</small></article>
         <article className="summary-card"><span>平均涨幅</span><strong className={changeClass(data?.average_change ?? 0)}>{data?.average_change == null ? "—" : `${data.average_change.toFixed(2)}%`}</strong><small>当前筛选口径</small></article>
         <article className="summary-card"><span>区间最低涨幅</span><strong className={changeClass(data?.minimum_change ?? 0)}>{data?.minimum_change == null ? "—" : `${data.minimum_change.toFixed(2)}%`}</strong><small>Top 50 尾部可能为负</small></article>
@@ -747,11 +772,11 @@ function RankingExplorer() {
           </div>
           <div className="table-scroll ranking-scroll">
             <table className="storage-table ranking-table">
-              <thead><tr><th>UTC日期</th><th>排名</th><th>交易对</th><th>涨幅</th><th>开盘价</th><th>快照价</th><th>振幅</th><th>成交额</th><th>OI</th></tr></thead>
+              <thead><tr><th>UTC+8 时间区间</th><th>排名</th><th>交易对</th><th>涨幅</th><th>开盘价</th><th>快照价</th><th>振幅</th><th>成交额</th><th>OI</th></tr></thead>
               <tbody>
                 {data?.items.map((item) => (
-                  <tr key={`${item.utc_trade_date}-${item.rank_no}`} className={selected?.utc_trade_date === item.utc_trade_date && selected.rank_no === item.rank_no ? "selected-row" : ""} role="button" tabIndex={0} aria-label={`查看 ${item.symbol} ${item.utc_trade_date} K线`} onClick={() => openChart(item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openChart(item); } }}>
-                    <td>{item.utc_trade_date}</td><td><span className={`rank-badge rank-${Math.min(item.rank_no, 4)}`}>{item.rank_no}</span></td><td><a className="symbol-link" href={`https://www.binance.com/zh-CN/futures/${encodeURIComponent(item.symbol)}`} target="_blank" rel="noopener noreferrer" title={`在 Binance Futures 查看 ${item.symbol}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><strong>{item.symbol}</strong><span aria-hidden="true">↗</span></a></td>
+                  <tr key={`${item.utc_trade_date}-${item.rank_no}`} className={selected?.utc_trade_date === item.utc_trade_date && selected.rank_no === item.rank_no ? "selected-row" : ""} role="button" tabIndex={0} aria-label={`查看 ${item.symbol} ${formatKlineTradeWindow(item.utc_trade_date)} K线`} onClick={() => openChart(item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openChart(item); } }}>
+                    <td>{formatKlineTradeWindow(item.utc_trade_date)}</td><td><span className={`rank-badge rank-${Math.min(item.rank_no, 4)}`}>{item.rank_no}</span></td><td><a className="symbol-link" href={`https://www.binance.com/zh-CN/futures/${encodeURIComponent(item.symbol)}`} target="_blank" rel="noopener noreferrer" title={`在 Binance Futures 查看 ${item.symbol}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><strong>{item.symbol}</strong><span aria-hidden="true">↗</span></a></td>
                     <td className={changeClass(item.price_change)}>{item.price_change >= 0 ? "+" : ""}{item.price_change.toFixed(4)}%</td>
                     <td>{formatNumber(item.reference_open_price, 8)}</td><td>{formatNumber(item.snapshot_price, 8)}</td><td>{formatNumber(item.amplitude, 2)}%</td><td>{formatCompact(item.quote_volume)}</td><td>{item.open_interest_status === "LOCAL_OBSERVATION" ? "有" : "—"}</td>
                   </tr>
@@ -770,10 +795,10 @@ function RankingExplorer() {
         <aside className="panel ranking-detail">
           <p className="eyebrow">记录详情</p>
           {selected ? <>
-            <div className="detail-hero"><div><span>#{selected.rank_no}</span><h2>{selected.symbol}</h2><small>{selected.utc_trade_date} · 23:55 UTC</small></div><strong className={changeClass(selected.price_change)}>{selected.price_change >= 0 ? "+" : ""}{selected.price_change.toFixed(4)}%</strong></div>
+            <div className="detail-hero"><div><span>#{selected.rank_no}</span><h2>{selected.symbol}</h2><small>{formatKlineTime(selected.snapshot_at)}</small></div><strong className={changeClass(selected.price_change)}>{selected.price_change >= 0 ? "+" : ""}{selected.price_change.toFixed(4)}%</strong></div>
             <dl className="metric-list">
-              <div><dt>UTC 开盘价</dt><dd>{formatNumber(selected.reference_open_price, 10)}</dd></div>
-              <div><dt>23:55 快照价</dt><dd>{formatNumber(selected.snapshot_price, 10)}</dd></div>
+              <div><dt>08:00 开盘价</dt><dd>{formatNumber(selected.reference_open_price, 10)}</dd></div>
+              <div><dt>次日 07:55 快照价</dt><dd>{formatNumber(selected.snapshot_price, 10)}</dd></div>
               <div><dt>日内最高</dt><dd>{formatNumber(selected.period_high_price, 10)}</dd></div>
               <div><dt>日内最低</dt><dd>{formatNumber(selected.period_low_price, 10)}</dd></div>
               <div><dt>日内振幅</dt><dd>{formatNumber(selected.amplitude, 4)}%</dd></div>
@@ -783,7 +808,7 @@ function RankingExplorer() {
               <div><dt>OI 价值</dt><dd>{formatNumber(selected.open_interest_value, 2)}</dd></div>
               <div><dt>OI 状态</dt><dd>{selected.open_interest_status === "LOCAL_OBSERVATION" ? "本地观测" : "历史不可用"}</dd></div>
             </dl>
-            <p className="detail-note">快照时间 {formatUtc(selected.snapshot_at)}。榜单为 5 分钟 K 线重建结果，不冒充当时实时采集快照。</p>
+            <p className="detail-note">快照时间 {formatKlineTime(selected.snapshot_at)}。榜单为 5 分钟 K 线重建结果，不冒充当时实时采集快照。</p>
           </> : <p className="message">选择一条记录查看完整指标。</p>}
         </aside>
       </section>
