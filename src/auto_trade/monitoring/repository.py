@@ -128,7 +128,7 @@ class RankingQueryRows:
     items: tuple[RankingEntryRow, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class KlinePointRow:
     open_time: datetime
     close_time: datetime
@@ -138,6 +138,10 @@ class KlinePointRow:
     close_price: float
     base_volume: float
     quote_volume: float
+    open_interest_qty: float | None = None
+    open_interest_value: float | None = None
+    ema20: float = 0
+    ema240: float = 0
 
 
 def websocket_sync_range_end(
@@ -585,15 +589,22 @@ class MonitoringRepository:
         )
 
     async def daily_klines(
-        self, *, symbol: str, utc_trade_date: date
+        self,
+        *,
+        symbol: str,
+        utc_trade_date: date,
+        interval_seconds: int = 300,
     ) -> tuple[KlinePointRow, ...]:
-        """Return the same 5-minute UTC-day window used by the daily ranking."""
+        """Return 5m/15m candles for the UTC ranking day with warmed-up EMAs."""
+        if interval_seconds not in (300, 900):
+            raise ValueError("interval_seconds must be 300 or 900")
         normalized_symbol = symbol.strip().upper()
         range_start = datetime.combine(utc_trade_date, datetime.min.time(), tzinfo=UTC)
         # The ranking snapshot is the close of the 23:50 candle at 23:55 UTC.
         range_end = range_start + timedelta(days=1) - timedelta(minutes=5)
+        warmup_start = range_start - timedelta(seconds=interval_seconds * 240)
         async with self._engine.connect() as connection:
-            rows = (
+            kline_rows = (
                 await connection.execute(
                     text(
                         """
@@ -609,12 +620,37 @@ class MonitoringRepository:
                           AND i.contract_type = 'PERPETUAL'
                           AND k.price_type = 'TRADE'
                           AND k.interval_seconds = 300
-                          AND k.open_time >= CAST(:range_start AS timestamptz)
+                          AND k.open_time >= CAST(:warmup_start AS timestamptz)
                           AND k.open_time < CAST(:range_end AS timestamptz)
                           AND k.is_current
                           AND k.is_closed
                           AND k.quality_status = 'VALID'
                         ORDER BY k.open_time ASC
+                        """
+                    ),
+                    {
+                        "symbol": normalized_symbol,
+                        "warmup_start": warmup_start,
+                        "range_end": range_end,
+                    },
+                )
+            ).mappings().all()
+            oi_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT o.observed_at, o.open_interest_qty,
+                               o.open_interest_value
+                        FROM market.open_interest_observations o
+                        JOIN core.instruments i USING (instrument_id)
+                        WHERE upper(i.symbol) = :symbol
+                          AND i.exchange = 'BINANCE'
+                          AND i.market = 'USD_M_FUTURES'
+                          AND i.contract_type = 'PERPETUAL'
+                          AND o.observed_at >= CAST(:range_start AS timestamptz)
+                          AND o.observed_at < CAST(:range_end AS timestamptz)
+                          AND o.quality_status = 'VALID'
+                        ORDER BY o.observed_at ASC
                         """
                     ),
                     {
@@ -625,19 +661,72 @@ class MonitoringRepository:
                 )
             ).mappings().all()
 
-        return tuple(
-            KlinePointRow(
-                open_time=cast(datetime, row["open_time"]),
-                close_time=cast(datetime, row["close_time"]),
-                open_price=float(row["open_price"]),
-                high_price=float(row["high_price"]),
-                low_price=float(row["low_price"]),
-                close_price=float(row["close_price"]),
-                base_volume=float(row["base_volume"]),
-                quote_volume=float(row["quote_volume"]),
+        points: list[KlinePointRow] = []
+        for row in kline_rows:
+            open_time = cast(datetime, row["open_time"])
+            bucket_time = datetime.fromtimestamp(
+                int(open_time.timestamp()) // interval_seconds * interval_seconds,
+                tz=UTC,
             )
-            for row in rows
-        )
+            if points and points[-1].open_time == bucket_time:
+                point = points[-1]
+                point.close_time = cast(datetime, row["close_time"])
+                point.high_price = max(point.high_price, float(row["high_price"]))
+                point.low_price = min(point.low_price, float(row["low_price"]))
+                point.close_price = float(row["close_price"])
+                point.base_volume += float(row["base_volume"])
+                point.quote_volume += float(row["quote_volume"])
+                continue
+            points.append(
+                KlinePointRow(
+                    open_time=bucket_time,
+                    close_time=cast(datetime, row["close_time"]),
+                    open_price=float(row["open_price"]),
+                    high_price=float(row["high_price"]),
+                    low_price=float(row["low_price"]),
+                    close_price=float(row["close_price"]),
+                    base_volume=float(row["base_volume"]),
+                    quote_volume=float(row["quote_volume"]),
+                )
+            )
+
+        ema20: float | None = None
+        ema240: float | None = None
+        alpha20 = 2 / 21
+        alpha240 = 2 / 241
+        for point in points:
+            ema20 = (
+                point.close_price
+                if ema20 is None
+                else alpha20 * point.close_price + (1 - alpha20) * ema20
+            )
+            ema240 = (
+                point.close_price
+                if ema240 is None
+                else alpha240 * point.close_price + (1 - alpha240) * ema240
+            )
+            point.ema20 = ema20
+            point.ema240 = ema240
+
+        visible_points = [
+            point for point in points if range_start <= point.open_time < range_end
+        ]
+        visible_by_time = {point.open_time: point for point in visible_points}
+        for row in oi_rows:
+            observed_at = cast(datetime, row["observed_at"])
+            bucket_time = datetime.fromtimestamp(
+                int(observed_at.timestamp()) // interval_seconds * interval_seconds,
+                tz=UTC,
+            )
+            oi_point = visible_by_time.get(bucket_time)
+            if oi_point is not None:
+                oi_point.open_interest_qty = float(row["open_interest_qty"])
+                value = row["open_interest_value"]
+                oi_point.open_interest_value = (
+                    float(value) if value is not None else None
+                )
+
+        return tuple(visible_points)
 
     async def _kline_coverage(
         self, connection: AsyncConnection

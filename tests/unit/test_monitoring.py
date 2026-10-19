@@ -69,8 +69,8 @@ async def test_websocket_sync_uses_absolute_kline_bounds() -> None:
 
     await repository._websocket_sync(connection, 525)
 
-    statement = str(connection.execute.await_args.args[0])
-    parameters = connection.execute.await_args.args[1]
+    statement = str(connection.execute.await_args_list[0].args[0])
+    parameters = connection.execute.await_args_list[0].args[1]
     assert "k.open_time >= CAST(:kline_range_start AS timestamptz)" in statement
     assert "k.open_time < CAST(:kline_range_end AS timestamptz)" in statement
     assert parameters["kline_range_end"] > parameters["kline_range_start"]
@@ -382,12 +382,15 @@ def test_kline_point_serializes_repository_row() -> None:
         close_price=110.0,
         base_volume=12.0,
         quote_volume=1260.0,
+        ema20=105.0,
+        ema240=101.0,
     )
 
     payload = KlinePoint.model_validate(row)
 
     assert payload.open_price == 100.0
     assert payload.close_price == 110.0
+    assert payload.ema20 == 105.0
     assert payload.close_time == open_time + timedelta(minutes=5)
 
 
@@ -406,11 +409,68 @@ async def test_daily_klines_uses_ranking_day_window() -> None:
         symbol=" btcusdt ", utc_trade_date=date(2026, 10, 18)
     )
 
-    statement = str(connection.execute.await_args.args[0])
-    parameters = connection.execute.await_args.args[1]
+    statement = str(connection.execute.await_args_list[0].args[0])
+    parameters = connection.execute.await_args_list[0].args[1]
     assert "k.interval_seconds = 300" in statement
     assert "k.is_current" in statement
     assert "i.market = 'USD_M_FUTURES'" in statement
     assert parameters["symbol"] == "BTCUSDT"
-    assert parameters["range_start"] == datetime(2026, 10, 18, tzinfo=UTC)
+    assert parameters["warmup_start"] == datetime(2026, 10, 17, 4, tzinfo=UTC)
     assert parameters["range_end"] == datetime(2026, 10, 18, 23, 55, tzinfo=UTC)
+
+
+async def test_daily_klines_aggregates_15m_and_attaches_latest_oi() -> None:
+    start = datetime(2026, 10, 18, tzinfo=UTC)
+    kline_rows = [
+        {
+            "open_time": start + timedelta(minutes=offset),
+            "close_time": start + timedelta(minutes=offset + 5),
+            "open_price": price - 1,
+            "high_price": price + 2,
+            "low_price": price - 2,
+            "close_price": price,
+            "base_volume": 10,
+            "quote_volume": 100,
+        }
+        for offset, price in ((0, 10), (5, 20), (10, 30), (15, 40))
+    ]
+    oi_rows = [
+        {
+            "observed_at": start + timedelta(minutes=6),
+            "open_interest_qty": 1000,
+            "open_interest_value": 2000,
+        },
+        {
+            "observed_at": start + timedelta(minutes=14),
+            "open_interest_qty": 1100,
+            "open_interest_value": 2200,
+        },
+    ]
+    kline_result = MagicMock()
+    kline_result.mappings.return_value.all.return_value = kline_rows
+    oi_result = MagicMock()
+    oi_result.mappings.return_value.all.return_value = oi_rows
+    connection = MagicMock()
+    connection.execute = AsyncMock(side_effect=[kline_result, oi_result])
+    context = AsyncMock()
+    context.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = context
+
+    points = await MonitoringRepository(engine).daily_klines(
+        symbol="BTCUSDT",
+        utc_trade_date=date(2026, 10, 18),
+        interval_seconds=900,
+    )
+
+    assert len(points) == 2
+    assert points[0].open_time == start
+    assert points[0].open_price == 9
+    assert points[0].high_price == 32
+    assert points[0].low_price == 8
+    assert points[0].close_price == 30
+    assert points[0].quote_volume == 300
+    assert points[0].open_interest_qty == 1100
+    assert points[0].open_interest_value == 2200
+    assert points[0].ema20 == 30
+    assert points[1].ema20 > points[0].ema20

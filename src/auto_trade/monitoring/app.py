@@ -125,7 +125,10 @@ async def daily_klines(
     request: Request,
     utc_trade_date: date,
     symbol: str = Query(min_length=1, max_length=32),
+    interval_seconds: int = Query(default=300),
 ) -> DailyKlineResult:
+    if interval_seconds not in (300, 900):
+        raise HTTPException(status_code=422, detail="interval_seconds must be 300 or 900")
     normalized_symbol = symbol.strip().upper()
     if not normalized_symbol:
         raise HTTPException(status_code=422, detail="symbol must not be blank")
@@ -134,6 +137,7 @@ async def daily_klines(
         rows = await repository.daily_klines(
             symbol=normalized_symbol,
             utc_trade_date=utc_trade_date,
+            interval_seconds=interval_seconds,
         )
     except Exception as error:
         raise HTTPException(status_code=503, detail="kline data unavailable") from error
@@ -142,5 +146,6 @@ async def daily_klines(
     return DailyKlineResult(
         symbol=normalized_symbol,
         utc_trade_date=utc_trade_date,
+        interval_seconds=interval_seconds,
         items=tuple(KlinePoint.model_validate(row) for row in rows),
     )

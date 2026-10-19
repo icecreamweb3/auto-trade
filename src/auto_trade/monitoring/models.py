@@ -221,6 +221,10 @@ class KlinePoint(BaseModel):
     close_price: float
     base_volume: float
     quote_volume: float
+    open_interest_qty: float | None = None
+    open_interest_value: float | None = None
+    ema20: float
+    ema240: float
 
 
 class DailyKlineResult(BaseModel):

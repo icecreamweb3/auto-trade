@@ -154,6 +154,10 @@ interface KlinePoint {
   close_price: number;
   base_volume: number;
   quote_volume: number;
+  open_interest_qty: number | null;
+  open_interest_value: number | null;
+  ema20: number;
+  ema240: number;
 }
 
 interface DailyKlineResult {
@@ -273,39 +277,90 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
 
 function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const viewportCount = Math.min(data.items.length, data.interval_seconds === 300 ? 112 : 64);
+  const [viewportStart, setViewportStart] = useState(() => Math.max(0, data.items.length - viewportCount));
+  const dragRef = useRef<{ clientX: number; viewportStart: number } | null>(null);
+  const maxViewportStart = Math.max(0, data.items.length - viewportCount);
+  const points = data.items.slice(viewportStart, viewportStart + viewportCount);
+  const hasOi = data.items.some((point) => point.open_interest_value !== null || point.open_interest_qty !== null);
   const width = 1100;
-  const height = 560;
+  const height = hasOi ? 650 : 560;
   const left = 76;
   const right = 90;
   const top = 28;
-  const priceBottom = 398;
-  const volumeTop = 434;
-  const volumeBottom = 520;
+  const priceBottom = hasOi ? 350 : 398;
+  const volumeTop = hasOi ? 386 : 434;
+  const volumeBottom = hasOi ? 466 : 520;
+  const oiTop = 510;
+  const oiBottom = 610;
   const plotWidth = width - left - right;
   const priceHeight = priceBottom - top;
   const volumePlotHeight = volumeBottom - volumeTop;
-  const points = data.items;
-  const low = Math.min(...points.map((point) => point.low_price));
-  const high = Math.max(...points.map((point) => point.high_price));
+  const low = Math.min(...points.flatMap((point) => [point.low_price, point.ema20, point.ema240]));
+  const high = Math.max(...points.flatMap((point) => [point.high_price, point.ema20, point.ema240]));
   const rawRange = Math.max(high - low, Math.abs(high) * 0.001, 1e-12);
   const priceMin = low - rawRange * 0.06;
   const priceMax = high + rawRange * 0.06;
   const priceRange = priceMax - priceMin;
   const maxVolume = Math.max(...points.map((point) => point.quote_volume), 1);
+  const oiValues = points
+    .map((point) => point.open_interest_value ?? point.open_interest_qty)
+    .filter((value): value is number => value !== null);
+  const oiMin = oiValues.length > 0 ? Math.min(...oiValues) : 0;
+  const oiMax = oiValues.length > 0 ? Math.max(...oiValues) : 1;
+  const oiRange = Math.max(oiMax - oiMin, Math.abs(oiMax) * 0.001, 1e-12);
   const candleSlot = plotWidth / points.length;
-  const candleWidth = Math.max(1.2, Math.min(5, candleSlot * 0.68));
+  const candleWidth = Math.max(2, Math.min(8, candleSlot * 0.68));
   const hovered = hoveredIndex === null ? points[points.length - 1] : points[hoveredIndex];
   const xAt = (index: number) => left + candleSlot * (index + 0.5);
   const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
+  const oiYAt = (value: number) => oiTop + (oiMax - value) / oiRange * (oiBottom - oiTop);
   const priceTicks = Array.from({ length: 6 }, (_, index) => priceMax - priceRange * index / 5);
-  const timeTicks = [0, 72, 144, 216, points.length - 1]
+  const timeTicks = [0, Math.round((points.length - 1) / 4), Math.round((points.length - 1) / 2), Math.round((points.length - 1) * 3 / 4), points.length - 1]
     .filter((index, position, values) => index >= 0 && index < points.length && values.indexOf(index) === position);
+  const ema20Path = points.map((point, index) => `${xAt(index)},${yAt(point.ema20)}`).join(" ");
+  const ema240Path = points.map((point, index) => `${xAt(index)},${yAt(point.ema240)}`).join(" ");
+  let oiPath = "";
+  let oiConnected = false;
+  points.forEach((point, index) => {
+    const value = point.open_interest_value ?? point.open_interest_qty;
+    if (value === null) {
+      oiConnected = false;
+      return;
+    }
+    oiPath += `${oiConnected ? " L" : "M"} ${xAt(index)} ${oiYAt(value)}`;
+    oiConnected = true;
+  });
+
+  useEffect(() => {
+    setViewportStart(Math.max(0, data.items.length - viewportCount));
+    setHoveredIndex(null);
+  }, [data, viewportCount]);
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
+    if (dragRef.current) {
+      const pixelsPerBar = bounds.width / viewportCount;
+      const barsMoved = Math.round((event.clientX - dragRef.current.clientX) / pixelsPerBar);
+      setViewportStart(Math.max(0, Math.min(maxViewportStart, dragRef.current.viewportStart - barsMoved)));
+      setHoveredIndex(null);
+      return;
+    }
     const svgX = (event.clientX - bounds.left) / bounds.width * width;
     const index = Math.max(0, Math.min(points.length - 1, Math.floor((svgX - left) / candleSlot)));
     setHoveredIndex(index);
+  }
+
+  function handlePointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    dragRef.current = { clientX: event.clientX, viewportStart };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handlePointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   return <>
@@ -315,15 +370,22 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <span>高 <strong>{formatNumber(hovered.high_price, 8)}</strong></span>
       <span>低 <strong>{formatNumber(hovered.low_price, 8)}</strong></span>
       <span>收 <strong className={changeClass(hovered.close_price - hovered.open_price)}>{formatNumber(hovered.close_price, 8)}</strong></span>
+      <span className="ema20-label">EMA20 <strong>{formatNumber(hovered.ema20, 8)}</strong></span>
+      <span className="ema240-label">EMA240 <strong>{formatNumber(hovered.ema240, 8)}</strong></span>
       <span>成交额 <strong>{formatCompact(hovered.quote_volume)}</strong></span>
+      {(hovered.open_interest_value !== null || hovered.open_interest_qty !== null) && <span>OI{hovered.open_interest_value !== null ? "价值" : "数量"} <strong>{formatCompact(hovered.open_interest_value ?? hovered.open_interest_qty)}</strong></span>}
+      <span className="chart-drag-hint">按住图表左右拖动 · {viewportStart + 1}–{viewportStart + points.length} / {data.items.length}</span>
     </div>
     <svg
       className="candlestick-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`${data.symbol} ${data.utc_trade_date} UTC 五分钟K线图`}
+      aria-label={`${data.symbol} ${data.utc_trade_date} UTC ${data.interval_seconds / 60}分钟K线图`}
+      onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerLeave={() => setHoveredIndex(null)}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onPointerLeave={() => { if (!dragRef.current) setHoveredIndex(null); }}
     >
       <rect x="0" y="0" width={width} height={height} rx="10" className="chart-background" />
       {priceTicks.map((price) => {
@@ -352,11 +414,20 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
           <rect x={x - candleWidth / 2} y={volumeBottom - barHeight} width={candleWidth} height={barHeight} className="volume-bar" />
         </g>;
       })}
+      <polyline points={ema20Path} className="ema-line ema20-line" />
+      <polyline points={ema240Path} className="ema-line ema240-line" />
       {timeTicks.map((index) => <text key={index} x={xAt(index)} y={height - 16} textAnchor="middle" className="chart-axis-label">
         {new Date(points[index].open_time).toISOString().slice(11, 16)}
       </text>)}
+      {hasOi && <>
+        <line x1={left} x2={width - right} y1={oiTop - 18} y2={oiTop - 18} className="chart-divider" />
+        <text x="14" y={oiTop + 10} className="chart-axis-label">OI{data.items.some((point) => point.open_interest_value !== null) ? "价值" : "数量"}</text>
+        <path d={oiPath} className="oi-line" />
+        <text x={width - right + 10} y={oiTop + 4} className="chart-axis-label">{formatCompact(oiMax)}</text>
+        <text x={width - right + 10} y={oiBottom + 4} className="chart-axis-label">{formatCompact(oiMin)}</text>
+      </>}
       {hoveredIndex !== null && <g className="chart-crosshair">
-        <line x1={xAt(hoveredIndex)} x2={xAt(hoveredIndex)} y1={top} y2={volumeBottom} />
+        <line x1={xAt(hoveredIndex)} x2={xAt(hoveredIndex)} y1={top} y2={hasOi ? oiBottom : volumeBottom} />
         <line x1={left} x2={width - right} y1={yAt(points[hoveredIndex].close_price)} y2={yAt(points[hoveredIndex].close_price)} />
       </g>}
     </svg>
@@ -365,6 +436,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
 
 function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => void }) {
   const [data, setData] = useState<DailyKlineResult | null>(null);
+  const [intervalSeconds, setIntervalSeconds] = useState<300 | 900>(300);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -372,7 +444,8 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
     const controller = new AbortController();
     const params = new URLSearchParams({
       symbol: entry.symbol,
-      utc_trade_date: entry.utc_trade_date
+      utc_trade_date: entry.utc_trade_date,
+      interval_seconds: String(intervalSeconds)
     });
     setLoading(true);
     setData(null);
@@ -393,7 +466,7 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [entry.symbol, entry.utc_trade_date]);
+  }, [entry.symbol, entry.utc_trade_date, intervalSeconds]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -414,10 +487,14 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
     <section className="chart-modal" role="dialog" aria-modal="true" aria-labelledby="chart-modal-title">
       <header className="chart-modal-header">
         <div>
-          <p className="eyebrow">UTC 日内走势 · 5分钟</p>
+          <p className="eyebrow">UTC 日内走势 · {intervalSeconds / 60}分钟</p>
           <h2 id="chart-modal-title">{entry.symbol} <span>{entry.utc_trade_date}</span></h2>
         </div>
         <div className="chart-modal-actions">
+          <div className="chart-interval-switch" aria-label="K线周期">
+            <button type="button" className={intervalSeconds === 300 ? "active" : ""} onClick={() => setIntervalSeconds(300)}>5min</button>
+            <button type="button" className={intervalSeconds === 900 ? "active" : ""} onClick={() => setIntervalSeconds(900)}>15min</button>
+          </div>
           {chartChange !== null && <strong className={changeClass(chartChange)}>{chartChange >= 0 ? "+" : ""}{chartChange.toFixed(4)}%</strong>}
           <button type="button" className="chart-close-button" onClick={onClose} aria-label="关闭K线图">×</button>
         </div>
@@ -430,10 +507,12 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
           <span>最高 <strong>{formatNumber(Math.max(...points.map((point) => point.high_price)), 8)}</strong></span>
           <span>最低 <strong>{formatNumber(Math.min(...points.map((point) => point.low_price)), 8)}</strong></span>
           <span>收盘 <strong>{formatNumber(last.close_price, 8)}</strong></span>
-          <span>完整度 <strong>{points.length} / 287</strong></span>
+          <span>完整度 <strong>{points.length} / {intervalSeconds === 300 ? 287 : 96}</strong></span>
+          <span className="ema20-label">━ EMA20</span>
+          <span className="ema240-label">━ EMA240</span>
         </div>
         <CandlestickChart data={data} />
-        <p className="chart-footnote">图表使用本地数据库中 VALID、已闭合的 Trade K 线；时间范围与排行榜一致，为 UTC 00:00 至 23:50 开盘的 287 根五分钟 K 线。</p>
+        <p className="chart-footnote">图表使用本地数据库中 VALID、已闭合的 Trade K 线；15min 由 5min 数据聚合，最后一根按排行榜 23:55 UTC 快照边界形成。EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
       </>}
     </section>
   </div>;
