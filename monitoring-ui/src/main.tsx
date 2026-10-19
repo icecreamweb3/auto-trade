@@ -338,7 +338,8 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const dataKeyRef = useRef(`${data.symbol}-${data.utc_trade_date}-${data.interval_seconds}`);
   dataKeyRef.current = `${data.symbol}-${data.utc_trade_date}-${data.interval_seconds}`;
   const maxViewportStart = Math.max(0, allItems.length - viewportCount);
-  const points = allItems.slice(viewportStart, viewportStart + viewportCount);
+  const safeViewportStart = Math.max(0, Math.min(maxViewportStart, viewportStart));
+  const points = allItems.slice(safeViewportStart, safeViewportStart + viewportCount);
   const hasOi = allItems.some((point) => point.open_interest_value !== null || point.open_interest_qty !== null);
   const width = 1100;
   const height = hasOi ? 650 : 560;
@@ -372,7 +373,9 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const oiRange = oiScaleMax - oiScaleMin;
   const candleSlot = plotWidth / points.length;
   const candleWidth = Math.max(2, Math.min(8, candleSlot * 0.68));
-  const hovered = hoveredIndex === null ? points[points.length - 1] : points[hoveredIndex];
+  const hovered = points[
+    hoveredIndex === null ? points.length - 1 : Math.min(hoveredIndex, points.length - 1)
+  ];
   const candleChangePercent = hovered.price_change_percent;
   const candleAmplitudePercent = hovered.amplitude_percent;
   const xAt = (index: number) => left + candleSlot * (index + 0.5);
@@ -413,6 +416,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       const svgY = (event.clientY - bounds.top) / bounds.height * height;
       if (event.deltaY === 0) return;
       event.preventDefault();
+      setHoveredIndex(null);
       const zoomFactor = Math.exp(-event.deltaY * 0.002);
       const isPriceAxis = svgX >= width - right && svgY >= top && svgY <= priceBottom;
       if (isPriceAxis) {
@@ -426,14 +430,14 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
           allItems.length,
           Math.max(12, Math.round(desiredViewportCount / next))
         );
-        const anchorIndex = viewportStart + Math.round(anchorRatio * (viewportCount - 1));
+        const anchorIndex = safeViewportStart + Math.round(anchorRatio * (viewportCount - 1));
         setViewportStart(Math.max(0, Math.min(allItems.length - nextCount, anchorIndex - Math.round(anchorRatio * (nextCount - 1)))));
         return next;
       });
     };
     chart.addEventListener("wheel", handleWheel, { passive: false });
     return () => chart.removeEventListener("wheel", handleWheel);
-  }, [allItems.length, desiredViewportCount, height, left, plotWidth, priceBottom, right, viewportCount, viewportStart, width]);
+  }, [allItems.length, desiredViewportCount, height, left, plotWidth, priceBottom, right, safeViewportStart, viewportCount, width]);
 
   function handlePointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -524,7 +528,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <span>成交额 <strong>{formatCompact(hovered.quote_volume)}</strong></span>
       {(hovered.open_interest_value !== null || hovered.open_interest_qty !== null) && <span>OI{hovered.open_interest_value !== null ? "价值" : "数量"} <strong>{formatCompact(hovered.open_interest_value ?? hovered.open_interest_qty)}</strong></span>}
       <button type="button" className="chart-axis-reset" onClick={resetZoom} title="恢复横轴和纵轴缩放">横轴 {Math.round(horizontalZoom * 100)}% · 纵轴 {Math.round(verticalZoom * 100)}%</button>
-      <span className={`chart-drag-hint${historyError ? " chart-history-error" : ""}`}>{loadingHistory ? "正在加载更早K线…" : historyError ?? (!hasMoreHistory && viewportStart === 0 ? "已到最早K线" : "向右拖动持续回溯")} · 图表滚轮缩放时间轴 · 右侧价格轴滚轮缩放纵轴 · {viewportStart + 1}–{viewportStart + points.length} / {allItems.length}</span>
+      <span className={`chart-drag-hint${historyError ? " chart-history-error" : ""}`}>{loadingHistory ? "正在加载更早K线…" : historyError ?? (!hasMoreHistory && safeViewportStart === 0 ? "已到最早K线" : "向右拖动持续回溯")} · 图表滚轮缩放时间轴 · 右侧价格轴滚轮缩放纵轴 · {safeViewportStart + 1}–{safeViewportStart + points.length} / {allItems.length}</span>
     </div>
     <svg
       ref={chartRef}
