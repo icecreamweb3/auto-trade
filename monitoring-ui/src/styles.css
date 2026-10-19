@@ -160,17 +160,17 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-grid-line { stroke: #193044; stroke-width: 1; stroke-dasharray: 3 5; }
 .chart-divider { stroke: #284158; stroke-width: 1; }
 .chart-axis-label { fill: #6f879e; font-size: 11px; font-family: Inter, ui-sans-serif, sans-serif; font-variant-numeric: tabular-nums; }
-.chart-up .candle-wick, .chart-up .candle-body { stroke: #ff7182; fill: #ff7182; }
-.chart-down .candle-wick, .chart-down .candle-body { stroke: #41c9aa; fill: #41c9aa; }
-.chart-up .volume-bar { fill: rgba(255,113,130,.4); }
-.chart-down .volume-bar { fill: rgba(65,201,170,.4); }
+.chart-up .candle-wick, .chart-up .candle-body { stroke: #41c9aa; fill: #41c9aa; }
+.chart-down .candle-wick, .chart-down .candle-body { stroke: #ff7182; fill: #ff7182; }
+.chart-up .volume-bar { fill: rgba(65,201,170,.4); }
+.chart-down .volume-bar { fill: rgba(255,113,130,.4); }
 .candle-wick { stroke-width: 1; }
 .ema-line { fill: none; stroke-width: 1.8; pointer-events: none; }
 .ema20-line { stroke: #a98cff; }
 .ema240-line { stroke: #38a34a; }
 .oi-bar { opacity: .72; }
-.oi-bar-up { fill: #ff7182; }
-.oi-bar-down { fill: #41c9aa; }
+.oi-bar-up { fill: #41c9aa; }
+.oi-bar-down { fill: #ff7182; }
 .chart-crosshair { pointer-events: none; }
 .chart-crosshair line { stroke: #93aabd; stroke-width: 1; stroke-dasharray: 4 4; opacity: .72; }
 .chart-state { display: grid; min-height: 460px; place-items: center; border: 1px dashed #29455e; border-radius: 11px; color: #8da4ba; background: #071522; }
