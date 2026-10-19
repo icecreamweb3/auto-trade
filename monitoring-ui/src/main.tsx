@@ -158,6 +158,8 @@ interface KlinePoint {
   open_interest_value: number | null;
   ema20: number;
   ema240: number;
+  price_change_percent: number;
+  amplitude_percent: number;
 }
 
 interface DailyKlineResult {
@@ -366,6 +368,8 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const candleSlot = plotWidth / points.length;
   const candleWidth = Math.max(2, Math.min(8, candleSlot * 0.68));
   const hovered = hoveredIndex === null ? points[points.length - 1] : points[hoveredIndex];
+  const candleChangePercent = hovered.price_change_percent;
+  const candleAmplitudePercent = hovered.amplitude_percent;
   const xAt = (index: number) => left + candleSlot * (index + 0.5);
   const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
   const oiYAt = (value: number) => oiTop + (oiScaleMax - value) / oiRange * (oiBottom - oiTop);
@@ -484,7 +488,9 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <span>开 <strong>{formatNumber(hovered.open_price, 8)}</strong></span>
       <span>高 <strong>{formatNumber(hovered.high_price, 8)}</strong></span>
       <span>低 <strong>{formatNumber(hovered.low_price, 8)}</strong></span>
-      <span>收 <strong className={changeClass(hovered.close_price - hovered.open_price)}>{formatNumber(hovered.close_price, 8)}</strong></span>
+      <span>收 <strong className={candleChangePercent >= 0 ? "candle-change-up" : "candle-change-down"}>{formatNumber(hovered.close_price, 8)}</strong></span>
+      <span>涨跌幅 <strong className={candleChangePercent >= 0 ? "candle-change-up" : "candle-change-down"}>{candleChangePercent >= 0 ? "+" : ""}{formatNumber(candleChangePercent, 4)}%</strong></span>
+      <span>振幅 <strong>{formatNumber(candleAmplitudePercent, 4)}%</strong></span>
       <span className="ema20-label">EMA20 <strong>{formatNumber(hovered.ema20, 8)}</strong></span>
       <span className="ema240-label">EMA240 <strong>{formatNumber(hovered.ema240, 8)}</strong></span>
       <span>成交额 <strong>{formatCompact(hovered.quote_volume)}</strong></span>

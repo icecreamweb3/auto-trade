@@ -144,6 +144,8 @@ class KlinePointRow:
     open_interest_value: float | None = None
     ema20: float = 0
     ema240: float = 0
+    price_change_percent: float = 0
+    amplitude_percent: float = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +202,16 @@ def attach_precomputed_ema(
         cast(datetime, row["open_time"]): (
             float(str(row["ema20"])),
             float(str(row["ema240"])),
+            (
+                float(str(row["price_change_percent"]))
+                if row.get("price_change_percent") is not None
+                else None
+            ),
+            (
+                float(str(row["amplitude_percent"]))
+                if row.get("amplitude_percent") is not None
+                else None
+            ),
         )
         for row in rows
     }
@@ -211,7 +223,12 @@ def attach_precomputed_ema(
         stored = indicators.get(point.open_time)
         is_partial_15m = interval_seconds == 900 and point.source_bar_count < 3
         if stored is not None and not is_partial_15m:
-            point.ema20, point.ema240 = stored
+            (
+                point.ema20,
+                point.ema240,
+                stored_price_change_percent,
+                stored_amplitude_percent,
+            ) = stored
         elif previous_ema20 is not None and previous_ema240 is not None:
             # The realtime K-line writer can commit a closed candle just before
             # the EMA worker reaches the same instrument. Continue from the last
@@ -227,6 +244,20 @@ def attach_precomputed_ema(
                 "EMA indicators are not ready for "
                 f"{point.open_time.isoformat()} interval={interval_seconds}"
             )
+        point.price_change_percent = (
+            stored_price_change_percent
+            if stored is not None
+            and not is_partial_15m
+            and stored_price_change_percent is not None
+            else (point.close_price / point.open_price - 1) * 100
+        )
+        point.amplitude_percent = (
+            stored_amplitude_percent
+            if stored is not None
+            and not is_partial_15m
+            and stored_amplitude_percent is not None
+            else (point.high_price - point.low_price) / point.open_price * 100
+        )
         previous_ema20 = point.ema20
         previous_ema240 = point.ema240
 
@@ -750,7 +781,8 @@ class MonitoringRepository:
                 await connection.execute(
                     text(
                         """
-                        SELECT e.open_time, e.ema20, e.ema240
+                        SELECT e.open_time, e.ema20, e.ema240,
+                               e.price_change_percent, e.amplitude_percent
                         FROM market.kline_ema_indicators e
                         JOIN core.instruments i USING (instrument_id)
                         WHERE upper(i.symbol) = :symbol
@@ -874,7 +906,8 @@ class MonitoringRepository:
                     await connection.execute(
                         text(
                             """
-                            SELECT e.open_time, e.ema20, e.ema240
+                            SELECT e.open_time, e.ema20, e.ema240,
+                                   e.price_change_percent, e.amplitude_percent
                             FROM market.kline_ema_indicators e
                             JOIN core.instruments i USING (instrument_id)
                             WHERE upper(i.symbol) = :symbol

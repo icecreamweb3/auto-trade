@@ -17,7 +17,7 @@ from auto_trade.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
-CALCULATION_VERSION = "ema-close-v1"
+CALCULATION_VERSION = "ema-close-v2-change-amplitude"
 SUPPORTED_INTERVALS = (300, 900)
 
 
@@ -25,6 +25,9 @@ SUPPORTED_INTERVALS = (300, 900)
 class SourceBar:
     open_time: datetime
     close_time: datetime
+    open_price: Decimal
+    high_price: Decimal
+    low_price: Decimal
     close_price: Decimal
     source_bar_count: int
 
@@ -36,6 +39,8 @@ class IndicatorBar:
     close_price: Decimal
     ema20: Decimal
     ema240: Decimal
+    price_change_percent: Decimal
+    amplitude_percent: Decimal
     source_bar_count: int
 
 
@@ -56,6 +61,9 @@ def aggregate_source_bars(
             SourceBar(
                 open_time=cast(datetime, row["open_time"]),
                 close_time=cast(datetime, row["close_time"]),
+                open_price=Decimal(str(row["open_price"])),
+                high_price=Decimal(str(row["high_price"])),
+                low_price=Decimal(str(row["low_price"])),
                 close_price=Decimal(str(row["close_price"])),
                 source_bar_count=1,
             )
@@ -82,6 +90,9 @@ def aggregate_source_bars(
             SourceBar(
                 open_time=bucket,
                 close_time=cast(datetime, last["close_time"]),
+                open_price=Decimal(str(bucket_rows[0]["open_price"])),
+                high_price=max(Decimal(str(row["high_price"])) for row in bucket_rows),
+                low_price=min(Decimal(str(row["low_price"])) for row in bucket_rows),
                 close_price=Decimal(str(last["close_price"])),
                 source_bar_count=3,
             )
@@ -118,6 +129,8 @@ def calculate_indicators(
                 close_price=bar.close_price,
                 ema20=ema20,
                 ema240=ema240,
+                price_change_percent=(bar.close_price / bar.open_price - Decimal(1)) * Decimal(100),
+                amplitude_percent=(bar.high_price - bar.low_price) / bar.open_price * Decimal(100),
                 source_bar_count=bar.source_bar_count,
             )
         )
@@ -254,7 +267,8 @@ async def _recompute_interval(
     source_result = await connection.execute(
         text(
             """
-                SELECT k.open_time, k.close_time, k.close_price
+                SELECT k.open_time, k.close_time, k.open_price, k.high_price,
+                       k.low_price, k.close_price
                 FROM market.klines k
                 WHERE k.instrument_id = :instrument_id
                   AND k.price_type = 'TRADE'
@@ -299,10 +313,12 @@ async def _recompute_interval(
         INSERT INTO market.kline_ema_indicators (
             instrument_id, price_type, interval_seconds,
             open_time, close_time, close_price, ema20, ema240,
+            price_change_percent, amplitude_percent,
             source_bar_count, calculation_version, computed_at
         ) VALUES (
             :instrument_id, 'TRADE', :interval_seconds,
             :open_time, :close_time, :close_price, :ema20, :ema240,
+            :price_change_percent, :amplitude_percent,
             :source_bar_count, :calculation_version, clock_timestamp()
         )
         """
@@ -316,6 +332,8 @@ async def _recompute_interval(
             "close_price": item.close_price,
             "ema20": item.ema20,
             "ema240": item.ema240,
+            "price_change_percent": item.price_change_percent,
+            "amplitude_percent": item.amplitude_percent,
             "source_bar_count": item.source_bar_count,
             "calculation_version": CALCULATION_VERSION,
         }

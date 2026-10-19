@@ -148,6 +148,8 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-summary strong { margin-left: 5px; color: #cbdbea; font-variant-numeric: tabular-nums; }
 .chart-readout { display: flex; flex-wrap: wrap; min-height: 35px; gap: 7px 17px; padding: 7px 12px; color: #7790a8; font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart-readout strong { margin-left: 3px; color: #c8d7e6; }
+.chart-readout strong.candle-change-up { color: #41c9aa; }
+.chart-readout strong.candle-change-down { color: #ff7182; }
 .chart-readout .ema20-label, .chart-summary .ema20-label { color: #a98cff; }
 .chart-readout .ema240-label, .chart-summary .ema240-label { color: #38a34a; }
 .chart-axis-reset { border-color: #29455e; padding: 3px 8px; color: #70cbbb; background: #0b1d2d; font-size: 10px; }

@@ -225,6 +225,8 @@ class KlinePoint(BaseModel):
     open_interest_value: float | None = None
     ema20: float
     ema240: float
+    price_change_percent: float = 0
+    amplitude_percent: float = 0
 
 
 class DailyKlineResult(BaseModel):
