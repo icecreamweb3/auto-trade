@@ -706,13 +706,17 @@ class MonitoringRepository:
         utc_trade_date: date,
         interval_seconds: int = 300,
     ) -> tuple[KlinePointRow, ...]:
-        """Return 5m/15m candles and database-precomputed, warmed EMAs."""
+        """Return candles from the ranking day through the latest closed boundary."""
         if interval_seconds not in (300, 900):
             raise ValueError("interval_seconds must be 300 or 900")
         normalized_symbol = symbol.strip().upper()
         range_start = datetime.combine(utc_trade_date, datetime.min.time(), tzinfo=UTC)
-        # The ranking snapshot is the close of the 23:50 candle at 23:55 UTC.
-        range_end = range_start + timedelta(days=1) - timedelta(minutes=5)
+        # Keep the selected ranking day as chart context, but do not freeze the
+        # chart at its 23:55 UTC snapshot. Closed/VALID filters below ensure only
+        # stable locally collected candles are returned up to the live boundary.
+        range_end = websocket_sync_range_end(
+            datetime.now(UTC), 300, self._data_safety_delay_seconds
+        )
         async with self._engine.connect() as connection:
             kline_rows = (
                 await connection.execute(

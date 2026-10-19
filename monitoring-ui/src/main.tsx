@@ -232,6 +232,13 @@ function formatKlineTradeWindow(utcTradeDate: string): string {
   return `${start.slice(0, 10)} ${start.slice(11, 16)} – ${end.slice(0, 10)} ${end.slice(11, 16)}`;
 }
 
+function formatLoadedKlineWindow(points: KlinePoint[], utcTradeDate: string): string {
+  if (points.length === 0) return formatKlineTradeWindow(utcTradeDate);
+  const start = utc8Iso(points[0].open_time);
+  const end = utc8Iso(points[points.length - 1].close_time);
+  return `${start.slice(0, 10)} ${start.slice(11, 16)} – ${end.slice(0, 10)} ${end.slice(11, 16)}`;
+}
+
 function formatRankingDataRange(firstDate: string | null, lastDate: string | null): string {
   if (!firstDate || !lastDate) return "—";
   const start = utc8Iso(`${firstDate}T00:00:00Z`);
@@ -602,20 +609,19 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
   const points = data?.items ?? [];
   const first = points[0];
   const last = points[points.length - 1];
-  const chartChange = first && last ? (last.close_price / first.open_price - 1) * 100 : null;
   return <div className="chart-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="chart-modal" role="dialog" aria-modal="true" aria-labelledby="chart-modal-title">
       <header className="chart-modal-header">
         <div>
           <p className="eyebrow">本地时间 UTC+8 · {intervalSeconds / 60}分钟</p>
-          <h2 id="chart-modal-title">{entry.symbol} <span>{formatKlineTradeWindow(entry.utc_trade_date)}</span></h2>
+          <h2 id="chart-modal-title">{entry.symbol} <span>{formatLoadedKlineWindow(points, entry.utc_trade_date)}</span></h2>
         </div>
         <div className="chart-modal-actions">
           <div className="chart-interval-switch" aria-label="K线周期">
             <button type="button" className={intervalSeconds === 300 ? "active" : ""} onClick={() => setIntervalSeconds(300)}>5min</button>
             <button type="button" className={intervalSeconds === 900 ? "active" : ""} onClick={() => setIntervalSeconds(900)}>15min</button>
           </div>
-          {chartChange !== null && <strong className={changeClass(chartChange)}>{chartChange >= 0 ? "+" : ""}{chartChange.toFixed(4)}%</strong>}
+          <strong className={changeClass(entry.price_change)}>{entry.price_change >= 0 ? "+" : ""}{entry.price_change.toFixed(4)}%</strong>
           <button type="button" className="chart-close-button" onClick={onClose} aria-label="关闭K线图">×</button>
         </div>
       </header>
@@ -628,12 +634,12 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
             <span>最高 <strong>{formatNumber(Math.max(...points.map((point) => point.high_price)), 8)}</strong></span>
             <span>最低 <strong>{formatNumber(Math.min(...points.map((point) => point.low_price)), 8)}</strong></span>
             <span>收盘 <strong>{formatNumber(last.close_price, 8)}</strong></span>
-            <span>完整度 <strong>{points.length} / {intervalSeconds === 300 ? 287 : 96}</strong></span>
+            <span>K线数量 <strong>{points.length}</strong></span>
             <span className="ema20-label">━ EMA20</span>
             <span className="ema240-label">━ EMA240</span>
           </div>
           <CandlestickChart data={data} />
-          <p className="chart-footnote">图表时间统一显示为 UTC+8；使用本地数据库中 VALID、已闭合的 Trade K 线。15min 由 5min 数据聚合，最后一根按排行榜次日 07:55（UTC+8）快照边界形成。EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
+          <p className="chart-footnote">图表时间统一显示为 UTC+8；从排行榜交易日开始展示本地数据库中最新的 VALID、已闭合 Trade K 线。15min 由 5min 数据聚合；EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
         </div>
       </>}
     </section>

@@ -394,7 +394,7 @@ def test_kline_point_serializes_repository_row() -> None:
     assert payload.close_time == open_time + timedelta(minutes=5)
 
 
-async def test_daily_klines_uses_ranking_day_window() -> None:
+async def test_daily_klines_uses_ranking_day_through_latest_closed_window() -> None:
     rows_result = MagicMock()
     rows_result.mappings.return_value.all.return_value = []
     connection = MagicMock()
@@ -405,9 +405,11 @@ async def test_daily_klines_uses_ranking_day_window() -> None:
     engine.connect.return_value = context
     repository = MonitoringRepository(engine)
 
+    before_call = datetime.now(UTC)
     await repository.daily_klines(
         symbol=" btcusdt ", utc_trade_date=date(2026, 10, 18)
     )
+    after_call = datetime.now(UTC)
 
     statement = str(connection.execute.await_args_list[0].args[0])
     parameters = connection.execute.await_args_list[0].args[1]
@@ -416,7 +418,10 @@ async def test_daily_klines_uses_ranking_day_window() -> None:
     assert "i.market = 'USD_M_FUTURES'" in statement
     assert parameters["symbol"] == "BTCUSDT"
     assert parameters["range_start"] == datetime(2026, 10, 18, tzinfo=UTC)
-    assert parameters["range_end"] == datetime(2026, 10, 18, 23, 55, tzinfo=UTC)
+    assert parameters["range_end"] > datetime(2026, 10, 18, 23, 55, tzinfo=UTC)
+    assert parameters["range_end"].second == 0
+    assert parameters["range_end"].microsecond == 0
+    assert before_call - timedelta(minutes=5) <= parameters["range_end"] <= after_call
     ema_statement = str(connection.execute.await_args_list[1].args[0])
     assert "market.kline_ema_indicators" in ema_statement
 
