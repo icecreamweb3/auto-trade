@@ -178,6 +178,12 @@ interface KlineHistoryResult {
   items: KlinePoint[];
 }
 
+interface LoadedKlineRange {
+  firstOpenTime: string;
+  lastCloseTime: string;
+  count: number;
+}
+
 interface RankingFilters {
   dateFrom: string;
   dateTo: string;
@@ -236,8 +242,12 @@ function formatKlineTradeWindow(utcTradeDate: string): string {
 
 function formatLoadedKlineWindow(points: KlinePoint[], utcTradeDate: string): string {
   if (points.length === 0) return formatKlineTradeWindow(utcTradeDate);
-  const start = utc8Iso(points[0].open_time);
-  const end = utc8Iso(points[points.length - 1].close_time);
+  return formatKlineWindow(points[0].open_time, points[points.length - 1].close_time);
+}
+
+function formatKlineWindow(firstOpenTime: string, lastCloseTime: string): string {
+  const start = utc8Iso(firstOpenTime);
+  const end = utc8Iso(lastCloseTime);
   return `${start.slice(0, 10)} ${start.slice(11, 16)} – ${end.slice(0, 10)} ${end.slice(11, 16)}`;
 }
 
@@ -317,7 +327,10 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
   );
 }
 
-function CandlestickChart({ data }: { data: DailyKlineResult }) {
+function CandlestickChart({ data, onLoadedRangeChange }: {
+  data: DailyKlineResult;
+  onLoadedRangeChange: (range: LoadedKlineRange) => void;
+}) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [verticalZoom, setVerticalZoom] = useState(1);
   const [horizontalZoom, setHorizontalZoom] = useState(1);
@@ -373,9 +386,10 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   const oiRange = oiScaleMax - oiScaleMin;
   const candleSlot = plotWidth / points.length;
   const candleWidth = Math.max(2, Math.min(8, candleSlot * 0.68));
-  const hovered = points[
-    hoveredIndex === null ? points.length - 1 : Math.min(hoveredIndex, points.length - 1)
-  ];
+  const safeHoveredIndex = hoveredIndex === null
+    ? null
+    : Math.min(hoveredIndex, points.length - 1);
+  const hovered = points[safeHoveredIndex ?? points.length - 1];
   const candleChangePercent = hovered.price_change_percent;
   const candleAmplitudePercent = hovered.amplitude_percent;
   const xAt = (index: number) => left + candleSlot * (index + 0.5);
@@ -408,6 +422,15 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
   }, [data, desiredViewportCount]);
 
   useEffect(() => {
+    if (allItems.length === 0) return;
+    onLoadedRangeChange({
+      firstOpenTime: allItems[0].open_time,
+      lastCloseTime: allItems[allItems.length - 1].close_time,
+      count: allItems.length,
+    });
+  }, [allItems, onLoadedRangeChange]);
+
+  useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     const handleWheel = (event: WheelEvent) => {
@@ -432,6 +455,9 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
         );
         const anchorIndex = safeViewportStart + Math.round(anchorRatio * (viewportCount - 1));
         setViewportStart(Math.max(0, Math.min(allItems.length - nextCount, anchorIndex - Math.round(anchorRatio * (nextCount - 1)))));
+        if (safeViewportStart === 0 && Math.round(desiredViewportCount / next) > allItems.length) {
+          void loadEarlier(false);
+        }
         return next;
       });
     };
@@ -468,7 +494,7 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
     }
   }
 
-  async function loadEarlier() {
+  async function loadEarlier(preserveViewport = true) {
     if (loadingHistoryRef.current || !hasMoreHistory || allItems.length === 0) return;
     const requestKey = `${data.symbol}-${data.utc_trade_date}-${data.interval_seconds}`;
     const before = allItems[0].open_time;
@@ -493,8 +519,8 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
         return;
       }
       setAllItems([...earlier, ...allItems]);
-      setViewportStart((currentStart) => currentStart + earlier.length);
-      if (dragRef.current) dragRef.current.viewportStart += earlier.length;
+      setViewportStart((currentStart) => preserveViewport ? currentStart + earlier.length : 0);
+      if (dragRef.current && preserveViewport) dragRef.current.viewportStart += earlier.length;
       setHasMoreHistory(result.has_more);
     } catch {
       if (dataKeyRef.current === requestKey) {
@@ -530,9 +556,10 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       <button type="button" className="chart-axis-reset" onClick={resetZoom} title="恢复横轴和纵轴缩放">横轴 {Math.round(horizontalZoom * 100)}% · 纵轴 {Math.round(verticalZoom * 100)}%</button>
       <span className={`chart-drag-hint${historyError ? " chart-history-error" : ""}`}>{loadingHistory ? "正在加载更早K线…" : historyError ?? (!hasMoreHistory && safeViewportStart === 0 ? "已到最早K线" : "向右拖动持续回溯")} · 图表滚轮缩放时间轴 · 右侧价格轴滚轮缩放纵轴 · {safeViewportStart + 1}–{safeViewportStart + points.length} / {allItems.length}</span>
     </div>
-    <svg
-      ref={chartRef}
-      className="candlestick-chart"
+    <div className="candlestick-chart-wrap">
+      <svg
+        ref={chartRef}
+        className="candlestick-chart"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
       aria-label={`${data.symbol} ${formatKlineTradeWindow(data.utc_trade_date)} UTC+8 ${data.interval_seconds / 60}分钟K线图`}
@@ -540,8 +567,8 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
-      onPointerLeave={() => { if (!dragRef.current) setHoveredIndex(null); }}
-    >
+        onPointerLeave={() => { if (!dragRef.current) setHoveredIndex(null); }}
+      >
       <rect x="0" y="0" width={width} height={height} rx="10" className="chart-background" />
       {priceTicks.map((price) => {
         const y = yAt(price);
@@ -591,16 +618,22 @@ function CandlestickChart({ data }: { data: DailyKlineResult }) {
         <text x={width - right + 10} y={oiTop + 4} className="chart-axis-label">{formatCompact(oiScaleMax)}</text>
         <text x={width - right + 10} y={oiBottom + 4} className="chart-axis-label">{formatCompact(oiScaleMin)}</text>
       </>}
-      {hoveredIndex !== null && <g className="chart-crosshair">
-        <line x1={xAt(hoveredIndex)} x2={xAt(hoveredIndex)} y1={top} y2={hasOi ? oiBottom : volumeBottom} />
-        <line x1={left} x2={width - right} y1={yAt(points[hoveredIndex].close_price)} y2={yAt(points[hoveredIndex].close_price)} />
+      {safeHoveredIndex !== null && <g className="chart-crosshair">
+        <line x1={xAt(safeHoveredIndex)} x2={xAt(safeHoveredIndex)} y1={top} y2={hasOi ? oiBottom : volumeBottom} />
+        <line x1={left} x2={width - right} y1={yAt(points[safeHoveredIndex].close_price)} y2={yAt(points[safeHoveredIndex].close_price)} />
       </g>}
-    </svg>
+      </svg>
+      {loadingHistory && <div className="chart-history-loader" role="status" aria-live="polite">
+        <span className="chart-history-spinner" aria-hidden="true" />
+        正在加载更早 K 线…
+      </div>}
+    </div>
   </>;
 }
 
 function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => void }) {
   const [data, setData] = useState<DailyKlineResult | null>(null);
+  const [loadedRange, setLoadedRange] = useState<LoadedKlineRange | null>(null);
   const [intervalSeconds, setIntervalSeconds] = useState<300 | 900>(300);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -614,6 +647,7 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
     });
     setLoading(true);
     setData(null);
+    setLoadedRange(null);
     setError(null);
     void fetch(`/api/market/klines/day?${params}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
@@ -647,12 +681,15 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
   const points = data?.items ?? [];
   const first = points[0];
   const last = points[points.length - 1];
+  const chartWindow = loadedRange
+    ? formatKlineWindow(loadedRange.firstOpenTime, loadedRange.lastCloseTime)
+    : formatLoadedKlineWindow(points, entry.utc_trade_date);
   return <div className="chart-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="chart-modal" role="dialog" aria-modal="true" aria-labelledby="chart-modal-title">
       <header className="chart-modal-header">
         <div>
           <p className="eyebrow">本地时间 UTC+8 · {intervalSeconds / 60}分钟</p>
-          <h2 id="chart-modal-title">{entry.symbol} <span>{formatLoadedKlineWindow(points, entry.utc_trade_date)}</span></h2>
+          <h2 id="chart-modal-title">{entry.symbol} <span>{chartWindow}</span></h2>
         </div>
         <div className="chart-modal-actions">
           <div className="chart-interval-switch" aria-label="K线周期">
@@ -672,11 +709,11 @@ function KlineModal({ entry, onClose }: { entry: RankingEntry; onClose: () => vo
             <span>最高 <strong>{formatNumber(Math.max(...points.map((point) => point.high_price)), 8)}</strong></span>
             <span>最低 <strong>{formatNumber(Math.min(...points.map((point) => point.low_price)), 8)}</strong></span>
             <span>收盘 <strong>{formatNumber(last.close_price, 8)}</strong></span>
-            <span>K线数量 <strong>{points.length}</strong></span>
+            <span>K线数量 <strong>{loadedRange?.count ?? points.length}</strong></span>
             <span className="ema20-label">━ EMA20</span>
             <span className="ema240-label">━ EMA240</span>
           </div>
-          <CandlestickChart data={data} />
+          <CandlestickChart data={data} onLoadedRangeChange={setLoadedRange} />
           <p className="chart-footnote">图表时间统一显示为 UTC+8；从排行榜交易日开始展示本地数据库中最新的 VALID、已闭合 Trade K 线。15min 由 5min 数据聚合；EMA20/EMA240 使用前置数据预热；仅在本地存在有效观测时展示 OI。</p>
         </div>
       </>}

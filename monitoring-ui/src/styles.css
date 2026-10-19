@@ -156,8 +156,12 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-axis-reset:hover { background: #153047; }
 .chart-drag-hint { margin-left: auto; color: #58a99c; }
 .chart-history-error { color: #ff9aa6; }
-.candlestick-chart { display: block; flex: 1; width: 100%; height: 100%; min-width: 720px; min-height: 0; border: 1px solid #173047; border-radius: 11px; cursor: grab; overscroll-behavior: contain; touch-action: none; user-select: none; }
+.candlestick-chart-wrap { position: relative; display: flex; flex: 1; min-width: 720px; min-height: 0; }
+.candlestick-chart { display: block; width: 100%; height: 100%; min-height: 0; border: 1px solid #173047; border-radius: 11px; cursor: grab; overscroll-behavior: contain; touch-action: none; user-select: none; }
 .candlestick-chart:active { cursor: grabbing; }
+.chart-history-loader { position: absolute; top: 14px; left: 50%; display: inline-flex; align-items: center; gap: 8px; transform: translateX(-50%); padding: 7px 12px; border: 1px solid #2e6d72; border-radius: 999px; color: #93f0e2; background: rgba(7, 21, 34, .92); box-shadow: 0 8px 24px rgba(0, 0, 0, .24); font-size: 12px; font-variant-numeric: tabular-nums; pointer-events: none; }
+.chart-history-spinner { width: 13px; height: 13px; border: 2px solid rgba(88, 214, 194, .28); border-top-color: #58d6c2; border-radius: 50%; animation: chart-history-spin .7s linear infinite; }
+@keyframes chart-history-spin { to { transform: rotate(360deg); } }
 .chart-background { fill: #071522; }
 .chart-grid-line { stroke: #193044; stroke-width: 1; stroke-dasharray: 3 5; }
 .chart-divider { stroke: #284158; stroke-width: 1; }
