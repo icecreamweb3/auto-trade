@@ -7,7 +7,11 @@ import pytest
 from pydantic import ValidationError
 
 import auto_trade.backtesting.service as backtest_service
-from auto_trade.backtesting.models import BacktestCreateRequest, BacktestParameters
+from auto_trade.backtesting.models import (
+    BacktestCreateRequest,
+    BacktestParameters,
+    BacktestStrategyWrite,
+)
 from auto_trade.backtesting.service import BacktestManager
 from auto_trade.strategies.feature_scan import (
     ALL_FACTORS,
@@ -46,6 +50,29 @@ def test_request_normalizes_tickers_and_requires_aware_time() -> None:
             end_at=datetime(2026, 10, 2, tzinfo=UTC),
             interval_seconds=600,  # type: ignore[arg-type]
         )
+
+
+def test_saved_strategy_normalizes_metadata_and_serializes_parameters() -> None:
+    strategy = BacktestStrategyWrite(
+        name="  BR 提前突破 v1  ",
+        description="  连续强势阳线与 EMA 临近金叉  ",
+        interval_seconds=900,
+        parameters=BacktestParameters(
+            single_bar_price_rise_percent=Decimal("3.25"),
+            required_factors=("single_bar_price_rise", "ema_bullish_setup"),
+        ),
+    )
+
+    assert strategy.name == "BR 提前突破 v1"
+    assert strategy.description == "连续强势阳线与 EMA 临近金叉"
+    values = BacktestManager._strategy_values(strategy)
+    assert '"single_bar_price_rise_percent": "3.25"' in str(values["parameters"])
+    assert '"required_factors": ["single_bar_price_rise", "ema_bullish_setup"]' in str(
+        values["parameters"]
+    )
+
+    with pytest.raises(ValidationError, match="strategy name must not be blank"):
+        BacktestStrategyWrite(name="   ")
 
 
 async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.MonkeyPatch) -> None:

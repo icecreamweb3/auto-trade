@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import cast
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 
 from auto_trade.backtesting.models import (
     BacktestCreated,
@@ -12,6 +14,8 @@ from auto_trade.backtesting.models import (
     BacktestJobResult,
     BacktestKlineResult,
     BacktestMetadata,
+    BacktestStrategy,
+    BacktestStrategyWrite,
 )
 from auto_trade.backtesting.service import BacktestManager
 
@@ -41,6 +45,51 @@ async def create_backtest(
             status_code=429, detail="too many backtests are already running"
         ) from error
     return BacktestCreated(job_id=job.job_id, status=job.status)
+
+
+@router.get("/strategies", response_model=tuple[BacktestStrategy, ...])
+async def list_strategies(request: Request) -> tuple[BacktestStrategy, ...]:
+    try:
+        return await _manager(request).list_strategies()
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="已保存策略暂时不可用") from error
+
+
+@router.post("/strategies", response_model=BacktestStrategy, status_code=201)
+async def create_strategy(
+    body: BacktestStrategyWrite, request: Request
+) -> BacktestStrategy:
+    try:
+        return await _manager(request).create_strategy(body)
+    except IntegrityError as error:
+        raise HTTPException(status_code=409, detail="策略名称已存在") from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="无法保存策略") from error
+
+
+@router.put("/strategies/{strategy_id}", response_model=BacktestStrategy)
+async def update_strategy(
+    strategy_id: UUID, body: BacktestStrategyWrite, request: Request
+) -> BacktestStrategy:
+    try:
+        strategy = await _manager(request).update_strategy(strategy_id, body)
+    except IntegrityError as error:
+        raise HTTPException(status_code=409, detail="策略名称已存在") from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="无法更新策略") from error
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return strategy
+
+
+@router.delete("/strategies/{strategy_id}", status_code=204)
+async def delete_strategy(strategy_id: UUID, request: Request) -> None:
+    try:
+        deleted = await _manager(request).delete_strategy(strategy_id)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="无法删除策略") from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="策略不存在")
 
 
 @router.get("/klines", response_model=BacktestKlineResult)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -9,7 +10,7 @@ from decimal import Decimal
 from html import escape
 from pathlib import Path
 from typing import IO, Literal, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -23,6 +24,8 @@ from auto_trade.backtesting.models import (
     BacktestMetadata,
     BacktestSignal,
     BacktestStatus,
+    BacktestStrategy,
+    BacktestStrategyWrite,
 )
 from auto_trade.monitoring.models import KlinePoint
 from auto_trade.strategies.feature_scan import (
@@ -290,6 +293,72 @@ class BacktestManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def list_strategies(self) -> tuple[BacktestStrategy, ...]:
+        sql = """
+            SELECT strategy_id, name, description, interval_seconds, parameters,
+                   created_at, updated_at
+            FROM config.backtest_strategies
+            ORDER BY updated_at DESC, name
+        """
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(text(sql))).mappings().all()
+        return tuple(BacktestStrategy.model_validate(dict(row)) for row in rows)
+
+    async def create_strategy(self, strategy: BacktestStrategyWrite) -> BacktestStrategy:
+        sql = """
+            INSERT INTO config.backtest_strategies (
+                name, description, interval_seconds, parameters
+            )
+            VALUES (
+                :name, :description, :interval_seconds, CAST(:parameters AS jsonb)
+            )
+            RETURNING strategy_id, name, description, interval_seconds, parameters,
+                      created_at, updated_at
+        """
+        values = self._strategy_values(strategy)
+        async with self.engine.begin() as connection:
+            row = (await connection.execute(text(sql), values)).mappings().one()
+        return BacktestStrategy.model_validate(dict(row))
+
+    async def update_strategy(
+        self, strategy_id: UUID, strategy: BacktestStrategyWrite
+    ) -> BacktestStrategy | None:
+        sql = """
+            UPDATE config.backtest_strategies
+            SET name = :name,
+                description = :description,
+                interval_seconds = :interval_seconds,
+                parameters = CAST(:parameters AS jsonb)
+            WHERE strategy_id = CAST(:strategy_id AS uuid)
+            RETURNING strategy_id, name, description, interval_seconds, parameters,
+                      created_at, updated_at
+        """
+        values = self._strategy_values(strategy) | {"strategy_id": str(strategy_id)}
+        async with self.engine.begin() as connection:
+            row = (await connection.execute(text(sql), values)).mappings().one_or_none()
+        return BacktestStrategy.model_validate(dict(row)) if row is not None else None
+
+    async def delete_strategy(self, strategy_id: UUID) -> bool:
+        sql = """
+            DELETE FROM config.backtest_strategies
+            WHERE strategy_id = CAST(:strategy_id AS uuid)
+            RETURNING strategy_id
+        """
+        async with self.engine.begin() as connection:
+            deleted = (
+                await connection.execute(text(sql), {"strategy_id": str(strategy_id)})
+            ).scalar_one_or_none()
+        return deleted is not None
+
+    @staticmethod
+    def _strategy_values(strategy: BacktestStrategyWrite) -> dict[str, object]:
+        return {
+            "name": strategy.name,
+            "description": strategy.description,
+            "interval_seconds": strategy.interval_seconds,
+            "parameters": json.dumps(strategy.parameters.model_dump(mode="json")),
+        }
 
     def log_path(self, job: _Job) -> Path | None:
         if job.log_path is None or not job.log_path.is_file():

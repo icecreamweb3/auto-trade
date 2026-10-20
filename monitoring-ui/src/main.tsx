@@ -245,6 +245,40 @@ interface BacktestKlineResult {
   items: KlinePoint[];
 }
 
+interface BacktestParameterPayload {
+  average_days: number;
+  bullish_sequence_bars: number;
+  bullish_min_close_position_percent: number;
+  bullish_last_close_position_percent: number;
+  bullish_last_max_upper_shadow_percent: number;
+  single_bar_price_rise_percent: number;
+  volume_acceleration_average_bars: number;
+  volume_acceleration_average_multiple: number;
+  volume_acceleration_previous_multiple: number;
+  ema_near_cross_gap_percent: number;
+  ema_gap_shrink_min_percent: number;
+  ema_cross_lookback_bars: number;
+  rapid_price_window_bars: number;
+  rapid_price_rise_percent: number;
+  open_interest_window_bars: number;
+  open_interest_rise_percent: number;
+  volume_surge_multiple: number;
+  amplitude_spike_multiple: number;
+  amplitude_consecutive_bars: number;
+  average_amplitude_max_percent: number;
+  required_factors: FactorName[];
+}
+
+interface SavedBacktestStrategy {
+  strategy_id: string;
+  name: string;
+  description: string;
+  interval_seconds: BacktestInterval;
+  parameters: BacktestParameterPayload;
+  created_at: string;
+  updated_at: string;
+}
+
 type BacktestNumericInput = number | "";
 
 interface BacktestParameterValues {
@@ -315,6 +349,95 @@ const backtestParameterLabels: Record<keyof BacktestParameterValues, string> = {
   amplitudeConsecutiveBars: "连续 K 线数量",
   averageAmplitudeMaxPercent: "平均振幅上限"
 };
+
+function requiredBacktestParameterKeys(selectedFactors: FactorName[]): Set<keyof BacktestParameterValues> {
+  const keys = new Set<keyof BacktestParameterValues>();
+  if (selectedFactors.includes("bullish_candle_sequence")) {
+    keys.add("bullishSequenceBars");
+    keys.add("bullishMinClosePositionPercent");
+    keys.add("bullishLastClosePositionPercent");
+    keys.add("bullishLastMaxUpperShadowPercent");
+  }
+  if (selectedFactors.includes("single_bar_price_rise")) keys.add("singleBarPriceRisePercent");
+  if (selectedFactors.includes("volume_acceleration")) {
+    keys.add("volumeAccelerationAverageBars");
+    keys.add("volumeAccelerationAverageMultiple");
+    keys.add("volumeAccelerationPreviousMultiple");
+  }
+  if (selectedFactors.includes("ema_bullish_setup")) {
+    keys.add("emaNearCrossGapPercent");
+    keys.add("emaGapShrinkMinPercent");
+  }
+  if (selectedFactors.includes("ema_bullish_cross")) keys.add("emaCrossBars");
+  if (selectedFactors.includes("rapid_price_rise")) {
+    keys.add("priceWindowBars");
+    keys.add("priceRisePercent");
+  }
+  if (selectedFactors.includes("open_interest_rise")) {
+    keys.add("oiWindowBars");
+    keys.add("oiRisePercent");
+  }
+  if (selectedFactors.includes("volume_surge")) keys.add("volumeMultiple");
+  if (selectedFactors.includes("amplitude_spike_streak")) {
+    keys.add("amplitudeMultiple");
+    keys.add("amplitudeConsecutiveBars");
+  }
+  if (selectedFactors.includes("low_average_amplitude")) keys.add("averageAmplitudeMaxPercent");
+  if (selectedFactors.some((name) => name === "volume_surge" || name === "amplitude_spike_streak" || name === "low_average_amplitude")) keys.add("averageDays");
+  return keys;
+}
+
+function buildBacktestParameterPayload(parameters: BacktestParameterValues, selectedFactors: FactorName[]): BacktestParameterPayload {
+  const value = (key: keyof BacktestParameterValues): number => parameters[key] === "" ? defaultBacktestParameters[key] : parameters[key];
+  return {
+    average_days: value("averageDays"),
+    bullish_sequence_bars: value("bullishSequenceBars"),
+    bullish_min_close_position_percent: value("bullishMinClosePositionPercent"),
+    bullish_last_close_position_percent: value("bullishLastClosePositionPercent"),
+    bullish_last_max_upper_shadow_percent: value("bullishLastMaxUpperShadowPercent"),
+    single_bar_price_rise_percent: value("singleBarPriceRisePercent"),
+    volume_acceleration_average_bars: value("volumeAccelerationAverageBars"),
+    volume_acceleration_average_multiple: value("volumeAccelerationAverageMultiple"),
+    volume_acceleration_previous_multiple: value("volumeAccelerationPreviousMultiple"),
+    ema_near_cross_gap_percent: value("emaNearCrossGapPercent"),
+    ema_gap_shrink_min_percent: value("emaGapShrinkMinPercent"),
+    ema_cross_lookback_bars: value("emaCrossBars"),
+    rapid_price_window_bars: value("priceWindowBars"),
+    rapid_price_rise_percent: value("priceRisePercent"),
+    open_interest_window_bars: value("oiWindowBars"),
+    open_interest_rise_percent: value("oiRisePercent"),
+    volume_surge_multiple: value("volumeMultiple"),
+    amplitude_spike_multiple: value("amplitudeMultiple"),
+    amplitude_consecutive_bars: value("amplitudeConsecutiveBars"),
+    average_amplitude_max_percent: value("averageAmplitudeMaxPercent"),
+    required_factors: selectedFactors
+  };
+}
+
+function parameterValuesFromPayload(value: BacktestParameterPayload): BacktestParameterValues {
+  return {
+    averageDays: Number(value.average_days),
+    bullishSequenceBars: Number(value.bullish_sequence_bars),
+    bullishMinClosePositionPercent: Number(value.bullish_min_close_position_percent),
+    bullishLastClosePositionPercent: Number(value.bullish_last_close_position_percent),
+    bullishLastMaxUpperShadowPercent: Number(value.bullish_last_max_upper_shadow_percent),
+    singleBarPriceRisePercent: Number(value.single_bar_price_rise_percent),
+    volumeAccelerationAverageBars: Number(value.volume_acceleration_average_bars),
+    volumeAccelerationAverageMultiple: Number(value.volume_acceleration_average_multiple),
+    volumeAccelerationPreviousMultiple: Number(value.volume_acceleration_previous_multiple),
+    emaNearCrossGapPercent: Number(value.ema_near_cross_gap_percent),
+    emaGapShrinkMinPercent: Number(value.ema_gap_shrink_min_percent),
+    emaCrossBars: Number(value.ema_cross_lookback_bars),
+    priceWindowBars: Number(value.rapid_price_window_bars),
+    priceRisePercent: Number(value.rapid_price_rise_percent),
+    oiWindowBars: Number(value.open_interest_window_bars),
+    oiRisePercent: Number(value.open_interest_rise_percent),
+    volumeMultiple: Number(value.volume_surge_multiple),
+    amplitudeMultiple: Number(value.amplitude_spike_multiple),
+    amplitudeConsecutiveBars: Number(value.amplitude_consecutive_bars),
+    averageAmplitudeMaxPercent: Number(value.average_amplitude_max_percent)
+  };
+}
 
 const statusText: Record<HealthStatus, string> = {
   HEALTHY: "健康",
@@ -1346,6 +1469,12 @@ function SignalKlineModal({ signal, intervalSeconds, onClose }: { signal: Backte
 
 function BacktestWorkspace() {
   const [metadata, setMetadata] = useState<BacktestMetadata | null>(null);
+  const [savedStrategies, setSavedStrategies] = useState<SavedBacktestStrategy[]>([]);
+  const [selectedStrategyId, setSelectedStrategyId] = useState("");
+  const [strategyName, setStrategyName] = useState("");
+  const [strategyDescription, setStrategyDescription] = useState("");
+  const [savingStrategy, setSavingStrategy] = useState(false);
+  const [strategyMessage, setStrategyMessage] = useState<string | null>(null);
   const [intervalSeconds, setIntervalSeconds] = useState<BacktestInterval>(900);
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
@@ -1370,6 +1499,16 @@ function BacktestWorkspace() {
       })
       .then(setMetadata)
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取回测数据范围"));
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/backtests/strategies", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<SavedBacktestStrategy[]>;
+      })
+      .then(setSavedStrategies)
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取已保存策略"));
   }, []);
 
   useEffect(() => {
@@ -1424,50 +1563,98 @@ function BacktestWorkspace() {
     setSelectedSymbols((current) => current.includes(symbol) ? current.filter((item) => item !== symbol) : [...current, symbol]);
   }
 
+  function configurationError(): string | null {
+    if (selectedFactors.length === 0) return "请至少选择一个策略因子";
+    const missingParameter = [...requiredBacktestParameterKeys(selectedFactors)].find((key) => parameters[key] === "");
+    return missingParameter ? `请填写${backtestParameterLabels[missingParameter]}` : null;
+  }
+
+  function loadStrategy(strategyId: string) {
+    setSelectedStrategyId(strategyId);
+    setError(null);
+    setStrategyMessage(null);
+    if (!strategyId) {
+      setStrategyName("");
+      setStrategyDescription("");
+      return;
+    }
+    const strategy = savedStrategies.find((item) => item.strategy_id === strategyId);
+    if (!strategy) return;
+    setStrategyName(strategy.name);
+    setStrategyDescription(strategy.description);
+    setIntervalSeconds(strategy.interval_seconds);
+    setSelectedFactors([...strategy.parameters.required_factors]);
+    setParameters(parameterValuesFromPayload(strategy.parameters));
+    setStrategyMessage(`已加载策略“${strategy.name}”`);
+  }
+
+  async function saveStrategy() {
+    const normalizedName = strategyName.trim();
+    if (!normalizedName) { setError("请填写策略名称"); return; }
+    const invalidConfiguration = configurationError();
+    if (invalidConfiguration) { setError(invalidConfiguration); return; }
+    setSavingStrategy(true);
+    setError(null);
+    setStrategyMessage(null);
+    try {
+      const response = await fetch(selectedStrategyId ? `/api/backtests/strategies/${selectedStrategyId}` : "/api/backtests/strategies", {
+        method: selectedStrategyId ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: normalizedName,
+          description: strategyDescription,
+          interval_seconds: intervalSeconds,
+          parameters: buildBacktestParameterPayload(parameters, selectedFactors)
+        })
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { detail?: string } | null;
+        throw new Error(payload?.detail ?? `HTTP ${response.status}`);
+      }
+      const saved = await response.json() as SavedBacktestStrategy;
+      setSavedStrategies((current) => [saved, ...current.filter((item) => item.strategy_id !== saved.strategy_id)]);
+      setSelectedStrategyId(saved.strategy_id);
+      setStrategyName(saved.name);
+      setStrategyDescription(saved.description);
+      setStrategyMessage(`策略“${saved.name}”已保存`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法保存策略");
+    } finally {
+      setSavingStrategy(false);
+    }
+  }
+
+  async function deleteStrategy() {
+    if (!selectedStrategyId) return;
+    const strategy = savedStrategies.find((item) => item.strategy_id === selectedStrategyId);
+    if (!strategy || !window.confirm(`确认删除策略“${strategy.name}”？`)) return;
+    setSavingStrategy(true);
+    setError(null);
+    setStrategyMessage(null);
+    try {
+      const response = await fetch(`/api/backtests/strategies/${selectedStrategyId}`, { method: "DELETE" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { detail?: string } | null;
+        throw new Error(payload?.detail ?? `HTTP ${response.status}`);
+      }
+      setSavedStrategies((current) => current.filter((item) => item.strategy_id !== selectedStrategyId));
+      setSelectedStrategyId("");
+      setStrategyName("");
+      setStrategyDescription("");
+      setStrategyMessage(`策略“${strategy.name}”已删除`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法删除策略");
+    } finally {
+      setSavingStrategy(false);
+    }
+  }
+
   async function runBacktest(event: React.FormEvent) {
     event.preventDefault();
     if (!startAt || !endAt) { setError("请选择回测开始和结束时间"); return; }
-    if (selectedFactors.length === 0) { setError("请至少选择一个策略因子"); return; }
+    const invalidConfiguration = configurationError();
+    if (invalidConfiguration) { setError(invalidConfiguration); return; }
     if (!allSymbols && selectedSymbols.length === 0) { setError("请选择至少一个 Ticker，或选择全部 Tickers"); return; }
-    const requiredParameterKeys = new Set<keyof BacktestParameterValues>();
-    if (selectedFactors.includes("bullish_candle_sequence")) {
-      requiredParameterKeys.add("bullishSequenceBars");
-      requiredParameterKeys.add("bullishMinClosePositionPercent");
-      requiredParameterKeys.add("bullishLastClosePositionPercent");
-      requiredParameterKeys.add("bullishLastMaxUpperShadowPercent");
-    }
-    if (selectedFactors.includes("single_bar_price_rise")) requiredParameterKeys.add("singleBarPriceRisePercent");
-    if (selectedFactors.includes("volume_acceleration")) {
-      requiredParameterKeys.add("volumeAccelerationAverageBars");
-      requiredParameterKeys.add("volumeAccelerationAverageMultiple");
-      requiredParameterKeys.add("volumeAccelerationPreviousMultiple");
-    }
-    if (selectedFactors.includes("ema_bullish_setup")) {
-      requiredParameterKeys.add("emaNearCrossGapPercent");
-      requiredParameterKeys.add("emaGapShrinkMinPercent");
-    }
-    if (selectedFactors.includes("ema_bullish_cross")) requiredParameterKeys.add("emaCrossBars");
-    if (selectedFactors.includes("rapid_price_rise")) {
-      requiredParameterKeys.add("priceWindowBars");
-      requiredParameterKeys.add("priceRisePercent");
-    }
-    if (selectedFactors.includes("open_interest_rise")) {
-      requiredParameterKeys.add("oiWindowBars");
-      requiredParameterKeys.add("oiRisePercent");
-    }
-    if (selectedFactors.includes("volume_surge")) requiredParameterKeys.add("volumeMultiple");
-    if (selectedFactors.includes("amplitude_spike_streak")) {
-      requiredParameterKeys.add("amplitudeMultiple");
-      requiredParameterKeys.add("amplitudeConsecutiveBars");
-    }
-    if (selectedFactors.includes("low_average_amplitude")) requiredParameterKeys.add("averageAmplitudeMaxPercent");
-    if (selectedFactors.some((name) => name === "volume_surge" || name === "amplitude_spike_streak" || name === "low_average_amplitude")) requiredParameterKeys.add("averageDays");
-    const missingParameter = [...requiredParameterKeys].find((key) => parameters[key] === "");
-    if (missingParameter) { setError(`请填写${backtestParameterLabels[missingParameter]}`); return; }
-    const parameterValue = (key: keyof BacktestParameterValues): number => {
-      const value = parameters[key];
-      return value === "" ? defaultBacktestParameters[key] : value;
-    };
     setSubmitting(true);
     setJob(null);
     setJobId(null);
@@ -1483,29 +1670,7 @@ function BacktestWorkspace() {
           generate_log: generateLog,
           preserve_log_history: preserveLogHistory,
           symbols: allSymbols ? [] : selectedSymbols,
-          parameters: {
-            average_days: parameterValue("averageDays"),
-            bullish_sequence_bars: parameterValue("bullishSequenceBars"),
-            bullish_min_close_position_percent: parameterValue("bullishMinClosePositionPercent"),
-            bullish_last_close_position_percent: parameterValue("bullishLastClosePositionPercent"),
-            bullish_last_max_upper_shadow_percent: parameterValue("bullishLastMaxUpperShadowPercent"),
-            single_bar_price_rise_percent: parameterValue("singleBarPriceRisePercent"),
-            volume_acceleration_average_bars: parameterValue("volumeAccelerationAverageBars"),
-            volume_acceleration_average_multiple: parameterValue("volumeAccelerationAverageMultiple"),
-            volume_acceleration_previous_multiple: parameterValue("volumeAccelerationPreviousMultiple"),
-            ema_near_cross_gap_percent: parameterValue("emaNearCrossGapPercent"),
-            ema_gap_shrink_min_percent: parameterValue("emaGapShrinkMinPercent"),
-            ema_cross_lookback_bars: parameterValue("emaCrossBars"),
-            rapid_price_window_bars: parameterValue("priceWindowBars"),
-            rapid_price_rise_percent: parameterValue("priceRisePercent"),
-            open_interest_window_bars: parameterValue("oiWindowBars"),
-            open_interest_rise_percent: parameterValue("oiRisePercent"),
-            volume_surge_multiple: parameterValue("volumeMultiple"),
-            amplitude_spike_multiple: parameterValue("amplitudeMultiple"),
-            amplitude_consecutive_bars: parameterValue("amplitudeConsecutiveBars"),
-            average_amplitude_max_percent: parameterValue("averageAmplitudeMaxPercent"),
-            required_factors: selectedFactors
-          }
+          parameters: buildBacktestParameterPayload(parameters, selectedFactors)
         })
       });
       if (!response.ok) {
@@ -1535,6 +1700,22 @@ function BacktestWorkspace() {
     <form className="backtest-layout" onSubmit={(event) => void runBacktest(event)}>
       <section className="panel backtest-config">
         <div className="panel-heading"><div><p className="eyebrow">CONFIGURATION</p><h3>回测条件</h3></div><span className="message">时间均为 UTC+8，结束时间不包含在筛选范围内</span></div>
+        <div className="saved-strategy-panel">
+          <div className="saved-strategy-picker">
+            <label><span>已保存策略</span><select value={selectedStrategyId} onChange={(event) => loadStrategy(event.target.value)}><option value="">新建策略（当前配置）</option>{savedStrategies.map((strategy) => <option key={strategy.strategy_id} value={strategy.strategy_id}>{strategy.name}</option>)}</select></label>
+            <button type="button" className="secondary-button" onClick={() => loadStrategy("")} disabled={savingStrategy}>新建</button>
+          </div>
+          <div className="saved-strategy-fields">
+            <label><span>策略名称</span><input type="text" maxLength={120} placeholder="例如：BR 提前突破信号 v1" value={strategyName} onChange={(event) => setStrategyName(event.target.value)} /></label>
+            <label><span>策略描述</span><textarea maxLength={2000} rows={2} placeholder="记录策略目标、适用行情或本次参数调整理由" value={strategyDescription} onChange={(event) => setStrategyDescription(event.target.value)} /></label>
+          </div>
+          <div className="saved-strategy-actions">
+            <button type="button" className="primary-button" onClick={() => void saveStrategy()} disabled={savingStrategy}>{savingStrategy ? "处理中…" : selectedStrategyId ? "更新策略" : "保存策略"}</button>
+            <button type="button" className="danger-button" onClick={() => void deleteStrategy()} disabled={savingStrategy || !selectedStrategyId}>删除策略</button>
+            <small>保存 K 线周期、已选因子及因子参数，不保存时间范围和 Tickers。</small>
+          </div>
+          {strategyMessage && <p className="saved-strategy-message">{strategyMessage}</p>}
+        </div>
         <div className="backtest-interval-row"><span>K 线周期</span><div className="backtest-interval-switch"><button type="button" className={intervalSeconds === 300 ? "active" : ""} onClick={() => setIntervalSeconds(300)}>5min</button><button type="button" className={intervalSeconds === 900 ? "active" : ""} onClick={() => setIntervalSeconds(900)}>15min</button></div><small>所有 EMA、价格、OI、成交量和振幅因子均按所选周期计算</small></div>
         <div className="backtest-time-grid">
           <label><span>开始时间</span><input type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>

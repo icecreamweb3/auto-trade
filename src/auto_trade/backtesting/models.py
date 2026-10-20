@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -96,6 +97,34 @@ class BacktestCreateRequest(BaseModel):
         if self.end_at - self.start_at > timedelta(days=366):
             raise ValueError("backtest range must not exceed 366 days")
         return self
+
+
+class BacktestStrategyWrite(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    interval_seconds: Literal[300, 900] = 900
+    parameters: BacktestParameters = Field(default_factory=BacktestParameters)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("strategy name must not be blank")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str) -> str:
+        return value.strip()
+
+
+class BacktestStrategy(BacktestStrategyWrite):
+    strategy_id: UUID
+    created_at: datetime
+    updated_at: datetime
 
 
 class BacktestFactorResult(BaseModel):
