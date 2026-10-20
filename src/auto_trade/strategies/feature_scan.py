@@ -5,7 +5,7 @@ import asyncio
 import csv
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -118,6 +118,14 @@ class StrategySignal:
     open_time: datetime
     close_price: Decimal
     factors: Mapping[FactorName, FactorResult]
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseScanResult:
+    signals: tuple[StrategySignal, ...]
+    scanned_instruments: int
+    total_instruments: int
+    truncated: bool = False
 
 
 class SeriesContext:
@@ -406,16 +414,47 @@ async def scan_database(
     parameters: StrategyParameters,
     *,
     symbols: Sequence[str] | None = None,
+    start: datetime | None = None,
     end: datetime | None = None,
 ) -> tuple[StrategySignal, ...]:
+    result = await scan_database_detailed(
+        engine,
+        parameters,
+        symbols=symbols,
+        start=start,
+        end=end,
+    )
+    return result.signals
+
+
+async def scan_database_detailed(
+    engine: AsyncEngine,
+    parameters: StrategyParameters,
+    *,
+    symbols: Sequence[str] | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    max_signals: int | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    signals_callback: Callable[[tuple[StrategySignal, ...]], None] | None = None,
+) -> DatabaseScanResult:
     scan_end = end or datetime.now(UTC)
     scan_end = scan_end.replace(tzinfo=UTC) if scan_end.tzinfo is None else scan_end.astimezone(UTC)
     scan_end = datetime.fromtimestamp(
         int(scan_end.timestamp()) // INTERVAL_SECONDS * INTERVAL_SECONDS, tz=UTC
     )
-    scan_start = scan_end - timedelta(days=parameters.lookback_days)
+    scan_start = start or (scan_end - timedelta(days=parameters.lookback_days))
+    scan_start = (
+        scan_start.replace(tzinfo=UTC)
+        if scan_start.tzinfo is None
+        else scan_start.astimezone(UTC)
+    )
+    if scan_start >= scan_end:
+        raise ValueError("scan start must be earlier than scan end")
     query_start = scan_start - timedelta(seconds=parameters.warmup_bars * INTERVAL_SECONDS)
     signals: list[StrategySignal] = []
+    scanned_instruments = 0
+    truncated = False
     async with engine.connect() as connection:
         instruments = await _instrument_rows(connection, symbols)
         for instrument in instruments:
@@ -425,10 +464,31 @@ async def scan_database(
                 query_start,
                 scan_end,
             )
-            signals.extend(
-                evaluate_series(cast(str, instrument["symbol"]), bars, parameters, scan_start)
+            instrument_signals = evaluate_series(
+                cast(str, instrument["symbol"]), bars, parameters, scan_start
             )
-    return tuple(sorted(signals, key=lambda signal: (signal.open_time, signal.symbol)))
+            if max_signals is not None:
+                remaining = max_signals - len(signals)
+                emitted_signals = instrument_signals[: max(0, remaining)]
+                signals.extend(emitted_signals)
+                truncated = len(instrument_signals) > remaining
+            else:
+                emitted_signals = instrument_signals
+                signals.extend(instrument_signals)
+            if signals_callback is not None and emitted_signals:
+                signals_callback(emitted_signals)
+            scanned_instruments += 1
+            if progress_callback is not None:
+                progress_callback(scanned_instruments, len(instruments))
+            if truncated or (max_signals is not None and len(signals) >= max_signals):
+                truncated = scanned_instruments < len(instruments) or truncated
+                break
+    return DatabaseScanResult(
+        signals=tuple(sorted(signals, key=lambda signal: (signal.open_time, signal.symbol))),
+        scanned_instruments=scanned_instruments,
+        total_instruments=len(instruments),
+        truncated=truncated,
+    )
 
 
 def _serialize_value(value: Decimal | int | None) -> str | int | None:

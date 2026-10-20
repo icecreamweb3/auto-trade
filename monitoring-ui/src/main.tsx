@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -192,6 +192,62 @@ interface RankingFilters {
   rankTo: number;
 }
 
+type FactorName = "ema_bullish_cross" | "rapid_price_rise" | "open_interest_rise" | "volume_surge" | "amplitude_spike_streak" | "low_average_amplitude";
+type BacktestStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+
+interface BacktestMetadata {
+  available_from: string | null;
+  available_to: string | null;
+  symbols: string[];
+}
+
+interface BacktestFactorResult {
+  passed: boolean;
+  value: number | null;
+  threshold: string;
+  reason: string | null;
+}
+
+interface BacktestSignal {
+  symbol: string;
+  open_time: string;
+  close_price: number;
+  factors: Record<FactorName, BacktestFactorResult>;
+}
+
+interface BacktestJob {
+  job_id: string;
+  status: BacktestStatus;
+  scanned_instruments: number;
+  total_instruments: number;
+  signal_count: number;
+  truncated: boolean;
+  max_signals: number;
+  error: string | null;
+  request: { parameters: { required_factors: FactorName[] } };
+  signals: BacktestSignal[];
+}
+
+interface BacktestKlineResult {
+  symbol: string;
+  signal_time: string;
+  interval_seconds: number;
+  items: KlinePoint[];
+}
+
+interface BacktestParameterValues {
+  averageDays: number;
+  emaCrossBars: number;
+  priceWindowBars: number;
+  priceRisePercent: number;
+  oiWindowBars: number;
+  oiRisePercent: number;
+  volumeMultiple: number;
+  amplitudeMultiple: number;
+  amplitudeConsecutiveBars: number;
+  averageAmplitudeMaxPercent: number;
+}
+
 const statusText: Record<HealthStatus, string> = {
   HEALTHY: "健康",
   WARNING: "注意",
@@ -249,6 +305,22 @@ function formatKlineWindow(firstOpenTime: string, lastCloseTime: string): string
   const start = utc8Iso(firstOpenTime);
   const end = utc8Iso(lastCloseTime);
   return `${start.slice(0, 10)} ${start.slice(11, 16)} – ${end.slice(0, 10)} ${end.slice(11, 16)}`;
+}
+
+function toUtc8Input(value: string): string {
+  return utc8Iso(value).slice(0, 16);
+}
+
+function utc8InputToIso(value: string): string {
+  return new Date(`${value}:00+08:00`).toISOString();
+}
+
+function chartViewportStart(items: KlinePoint[], count: number, focusTime?: string): number {
+  if (!focusTime) return Math.max(0, items.length - count);
+  const target = new Date(focusTime).getTime();
+  const index = items.findIndex((item) => new Date(item.open_time).getTime() === target);
+  if (index < 0) return Math.max(0, items.length - count);
+  return Math.max(0, Math.min(items.length - count, index - Math.floor(count / 2)));
 }
 
 function formatRankingDataRange(firstDate: string | null, lastDate: string | null): string {
@@ -327,9 +399,10 @@ function CoverageCard({ metric }: { metric: CoverageMetric }) {
   );
 }
 
-function CandlestickChart({ data, onLoadedRangeChange }: {
+function CandlestickChart({ data, onLoadedRangeChange, signalTime }: {
   data: DailyKlineResult;
   onLoadedRangeChange: (range: LoadedKlineRange) => void;
+  signalTime?: string;
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [verticalZoom, setVerticalZoom] = useState(1);
@@ -344,7 +417,7 @@ function CandlestickChart({ data, onLoadedRangeChange }: {
     Math.round(desiredViewportCount / horizontalZoom)
   );
   const viewportCount = Math.min(allItems.length, requestedViewportCount);
-  const [viewportStart, setViewportStart] = useState(() => Math.max(0, allItems.length - viewportCount));
+  const [viewportStart, setViewportStart] = useState(() => chartViewportStart(allItems, viewportCount, signalTime));
   const dragRef = useRef<{ clientX: number; viewportStart: number } | null>(null);
   const chartRef = useRef<SVGSVGElement>(null);
   const loadingHistoryRef = useRef(false);
@@ -411,7 +484,7 @@ function CandlestickChart({ data, onLoadedRangeChange }: {
 
   useEffect(() => {
     setAllItems(data.items);
-    setViewportStart(Math.max(0, data.items.length - Math.min(data.items.length, desiredViewportCount)));
+    setViewportStart(chartViewportStart(data.items, Math.min(data.items.length, desiredViewportCount), signalTime));
     setHasMoreHistory(true);
     setLoadingHistory(false);
     setHistoryError(null);
@@ -419,7 +492,7 @@ function CandlestickChart({ data, onLoadedRangeChange }: {
     setHoveredIndex(null);
     setVerticalZoom(1);
     setHorizontalZoom(1);
-  }, [data, desiredViewportCount]);
+  }, [data, desiredViewportCount, signalTime]);
 
   useEffect(() => {
     if (allItems.length === 0) return;
@@ -537,7 +610,7 @@ function CandlestickChart({ data, onLoadedRangeChange }: {
   function resetZoom() {
     setVerticalZoom(1);
     setHorizontalZoom(1);
-    setViewportStart(Math.max(0, allItems.length - Math.min(allItems.length, desiredViewportCount)));
+    setViewportStart(chartViewportStart(allItems, Math.min(allItems.length, desiredViewportCount), signalTime));
   }
 
   return <>
@@ -598,6 +671,17 @@ function CandlestickChart({ data, onLoadedRangeChange }: {
       })}
       <polyline points={ema20Path} className="ema-line ema20-line" />
       <polyline points={ema240Path} className="ema-line ema240-line" />
+      {signalTime && points.map((point, index) => {
+        if (new Date(point.open_time).getTime() !== new Date(signalTime).getTime()) return null;
+        const x = xAt(index);
+        const tipY = Math.max(top + 20, yAt(point.high_price) - 3);
+        const markerY = Math.max(top + 3, tipY - 28);
+        return <g key={`signal-${point.open_time}`} className="chart-signal-marker" pointerEvents="none">
+          <text x={x} y={markerY - 3} textAnchor="middle">命中</text>
+          <line x1={x} x2={x} y1={markerY} y2={tipY - 7} />
+          <polygon points={`${x - 6},${tipY - 8} ${x + 6},${tipY - 8} ${x},${tipY}`} />
+        </g>;
+      })}
       {timeTicks.map((index) => <text key={index} x={xAt(index)} y={height - 16} textAnchor="middle" className="chart-axis-label">
         {formatKlineTime(points[index].open_time, true)}
       </text>)}
@@ -1104,14 +1188,279 @@ function MonitoringDashboard() {
   );
 }
 
+const factorLabels: Record<FactorName, string> = {
+  ema_bullish_cross: "EMA20 上穿 EMA240",
+  rapid_price_rise: "价格快速拉升",
+  open_interest_rise: "OI 价值快速提升",
+  volume_surge: "成交量暴涨",
+  amplitude_spike_streak: "连续振幅异常",
+  low_average_amplitude: "7日平均振幅低"
+};
+
+const allFactorNames = Object.keys(factorLabels) as FactorName[];
+
+function factorValue(name: FactorName, value: number | null): string {
+  if (value === null) return "—";
+  if (name === "ema_bullish_cross") return `${value} 根前`;
+  if (name === "rapid_price_rise" || name === "open_interest_rise" || name === "low_average_amplitude") return `${value.toFixed(3)}%`;
+  return `${value.toFixed(3)}×`;
+}
+
+function SignalKlineModal({ signal, onClose }: { signal: BacktestSignal; onClose: () => void }) {
+  const [result, setResult] = useState<BacktestKlineResult | null>(null);
+  const [loadedRange, setLoadedRange] = useState<LoadedKlineRange | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({ symbol: signal.symbol, signal_time: signal.open_time });
+    void fetch(`/api/backtests/klines?${params}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => null) as { detail?: string } | null;
+          throw new Error(payload?.detail ?? `HTTP ${response.status}`);
+        }
+        return response.json() as Promise<BacktestKlineResult>;
+      })
+      .then(setResult)
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "无法读取信号 K 线");
+      });
+    return () => controller.abort();
+  }, [signal]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onClose]);
+
+  const chartData = useMemo<DailyKlineResult | null>(() => result ? {
+      symbol: result.symbol,
+      utc_trade_date: result.signal_time.slice(0, 10),
+      price_type: "TRADE",
+      interval_seconds: 900,
+      items: result.items
+    } : null,
+  [result]);
+  const rangeText = loadedRange
+    ? formatKlineWindow(loadedRange.firstOpenTime, loadedRange.lastCloseTime)
+    : result && result.items.length > 0
+      ? formatKlineWindow(result.items[0].open_time, result.items[result.items.length - 1].close_time)
+      : "读取中…";
+
+  return <div className="chart-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="chart-modal" role="dialog" aria-modal="true" aria-labelledby="signal-chart-title">
+      <header className="chart-modal-header">
+        <div><p className="eyebrow">策略信号 · UTC+8 · 15分钟</p><h2 id="signal-chart-title">{signal.symbol} <span>{rangeText}</span></h2></div>
+        <div className="chart-modal-actions"><strong className="signal-time-badge">命中 {formatKlineTime(signal.open_time)}</strong><button type="button" className="chart-close-button" onClick={onClose} aria-label="关闭K线图">×</button></div>
+      </header>
+      {!result && !error && <div className="chart-state">正在读取持久化 15min K 线…</div>}
+      {error && <div className="chart-state chart-state-error">K 线加载失败：{error}</div>}
+      {chartData && chartData.items.length > 0 && <div className="chart-modal-body">
+        <div className="chart-summary"><span>命中时间 <strong>{formatKlineTime(signal.open_time)}</strong></span><span>命中收盘价 <strong>{formatNumber(signal.close_price, 8)}</strong></span><span>K线数量 <strong>{loadedRange?.count ?? chartData.items.length}</strong></span><span className="ema20-label">━ EMA20</span><span className="ema240-label">━ EMA240</span></div>
+        <CandlestickChart data={chartData} signalTime={signal.open_time} onLoadedRangeChange={setLoadedRange} />
+        <p className="chart-footnote">橙色箭头标记命中 K 线；数据直接读取持久化 15min K 线和 EMA 指标，图表时间统一显示为 UTC+8。</p>
+      </div>}
+    </section>
+  </div>;
+}
+
+function BacktestWorkspace() {
+  const [metadata, setMetadata] = useState<BacktestMetadata | null>(null);
+  const [startAt, setStartAt] = useState("");
+  const [endAt, setEndAt] = useState("");
+  const [allSymbols, setAllSymbols] = useState(true);
+  const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
+  const [symbolSearch, setSymbolSearch] = useState("");
+  const [selectedFactors, setSelectedFactors] = useState<FactorName[]>(allFactorNames);
+  const [parameters, setParameters] = useState<BacktestParameterValues>({
+    averageDays: 7,
+    emaCrossBars: 4,
+    priceWindowBars: 4,
+    priceRisePercent: 3,
+    oiWindowBars: 4,
+    oiRisePercent: 5,
+    volumeMultiple: 5,
+    amplitudeMultiple: 5,
+    amplitudeConsecutiveBars: 2,
+    averageAmplitudeMaxPercent: 2
+  });
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<BacktestJob | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [chartSignal, setChartSignal] = useState<BacktestSignal | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/backtests/metadata", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<BacktestMetadata>;
+      })
+      .then((value) => {
+        setMetadata(value);
+        if (!value.available_to) return;
+        const availableEnd = new Date(value.available_to);
+        const exclusiveEnd = new Date(availableEnd.getTime() + 15 * 60 * 1000);
+        const candidateStart = new Date(exclusiveEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const minimumStart = value.available_from ? new Date(value.available_from) : candidateStart;
+        setStartAt(toUtc8Input((candidateStart < minimumStart ? minimumStart : candidateStart).toISOString()));
+        setEndAt(toUtc8Input(exclusiveEnd.toISOString()));
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取回测数据范围"));
+  }, []);
+
+  useEffect(() => {
+    if (!jobId) return;
+    let stopped = false;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/backtests/${jobId}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const value = await response.json() as BacktestJob;
+        if (stopped) return;
+        setJob(value);
+        if (value.status === "QUEUED" || value.status === "RUNNING") {
+          timer = window.setTimeout(() => void poll(), 1200);
+        } else {
+          setSubmitting(false);
+          if (value.status === "FAILED") setError(value.error ?? "回测失败");
+        }
+      } catch (reason) {
+        if (!stopped) {
+          setSubmitting(false);
+          setError(reason instanceof Error ? reason.message : "无法读取回测进度");
+        }
+      }
+    };
+    void poll();
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [jobId]);
+
+  function setNumeric<Key extends keyof BacktestParameterValues>(key: Key, value: string) {
+    setParameters((current) => ({ ...current, [key]: Number(value) }));
+  }
+
+  function toggleFactor(name: FactorName) {
+    setSelectedFactors((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
+  }
+
+  function toggleSymbol(symbol: string) {
+    setSelectedSymbols((current) => current.includes(symbol) ? current.filter((item) => item !== symbol) : [...current, symbol]);
+  }
+
+  async function runBacktest(event: React.FormEvent) {
+    event.preventDefault();
+    if (!startAt || !endAt) { setError("请选择回测开始和结束时间"); return; }
+    if (selectedFactors.length === 0) { setError("请至少选择一个策略因子"); return; }
+    if (!allSymbols && selectedSymbols.length === 0) { setError("请选择至少一个 Ticker，或选择全部 Tickers"); return; }
+    setSubmitting(true);
+    setJob(null);
+    setJobId(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/backtests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          start_at: utc8InputToIso(startAt),
+          end_at: utc8InputToIso(endAt),
+          symbols: allSymbols ? [] : selectedSymbols,
+          parameters: {
+            average_days: parameters.averageDays,
+            ema_cross_lookback_bars: parameters.emaCrossBars,
+            rapid_price_window_bars: parameters.priceWindowBars,
+            rapid_price_rise_percent: parameters.priceRisePercent,
+            open_interest_window_bars: parameters.oiWindowBars,
+            open_interest_rise_percent: parameters.oiRisePercent,
+            volume_surge_multiple: parameters.volumeMultiple,
+            amplitude_spike_multiple: parameters.amplitudeMultiple,
+            amplitude_consecutive_bars: parameters.amplitudeConsecutiveBars,
+            average_amplitude_max_percent: parameters.averageAmplitudeMaxPercent,
+            required_factors: selectedFactors
+          }
+        })
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { detail?: string | Array<{ msg: string }> } | null;
+        const detail = Array.isArray(payload?.detail) ? payload.detail.map((item) => item.msg).join("；") : payload?.detail;
+        throw new Error(detail ?? `HTTP ${response.status}`);
+      }
+      const created = await response.json() as { job_id: string };
+      setJobId(created.job_id);
+    } catch (reason) {
+      setSubmitting(false);
+      setError(reason instanceof Error ? reason.message : "无法启动回测");
+    }
+  }
+
+  const filteredSymbols = metadata?.symbols.filter((symbol) => symbol.includes(symbolSearch.trim().toUpperCase())) ?? [];
+  const progress = job?.total_instruments ? job.scanned_instruments / job.total_instruments * 100 : 0;
+  const visibleFactors = job?.request.parameters.required_factors ?? selectedFactors;
+
+  return <main className="backtest-page">
+    <header className="topbar ranking-header">
+      <div><p className="brand-mark">STRATEGY LAB</p><h1>15min 策略配置回测</h1><p className="subtitle">组合策略因子 · 指定 Tickers 与时间范围 · 双击信号定位命中 K 线</p></div>
+      <div className="data-range-badge"><span>持久化 15min 数据范围</span><strong>{metadata?.available_from && metadata.available_to ? `${formatKlineTime(metadata.available_from)} → ${formatKlineTime(metadata.available_to)}` : "读取中…"}</strong></div>
+    </header>
+    {error && <div className="alert alert-critical">{error}</div>}
+    <form className="backtest-layout" onSubmit={(event) => void runBacktest(event)}>
+      <section className="panel backtest-config">
+        <div className="panel-heading"><div><p className="eyebrow">CONFIGURATION</p><h3>回测条件</h3></div><span className="message">时间均为 UTC+8，结束时间不包含在筛选范围内</span></div>
+        <div className="backtest-time-grid">
+          <label><span>开始时间</span><input type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>
+          <label><span>结束时间（不含）</span><input type="datetime-local" value={endAt} onChange={(event) => setEndAt(event.target.value)} /></label>
+          <label><span>均值周期（天）</span><input type="number" min="1" max="30" value={parameters.averageDays} onChange={(event) => setNumeric("averageDays", event.target.value)} /></label>
+        </div>
+        <div className="factor-grid">
+          <fieldset className={selectedFactors.includes("ema_bullish_cross") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("ema_bullish_cross")} onChange={() => toggleFactor("ema_bullish_cross")} /><strong>{factorLabels.ema_bullish_cross}</strong></label><label><span>上穿发生于最近 K 根</span><input type="number" min="1" max="96" value={parameters.emaCrossBars} onChange={(event) => setNumeric("emaCrossBars", event.target.value)} /></label></fieldset>
+          <fieldset className={selectedFactors.includes("rapid_price_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("rapid_price_rise")} onChange={() => toggleFactor("rapid_price_rise")} /><strong>{factorLabels.rapid_price_rise}</strong></label><div className="factor-params"><label><span>窗口 K 根</span><input type="number" min="1" max="96" value={parameters.priceWindowBars} onChange={(event) => setNumeric("priceWindowBars", event.target.value)} /></label><label><span>涨幅 ≥ %</span><input type="number" min="0" step="0.1" value={parameters.priceRisePercent} onChange={(event) => setNumeric("priceRisePercent", event.target.value)} /></label></div></fieldset>
+          <fieldset className={selectedFactors.includes("open_interest_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("open_interest_rise")} onChange={() => toggleFactor("open_interest_rise")} /><strong>{factorLabels.open_interest_rise}</strong></label><div className="factor-params"><label><span>窗口 K 根</span><input type="number" min="1" max="96" value={parameters.oiWindowBars} onChange={(event) => setNumeric("oiWindowBars", event.target.value)} /></label><label><span>涨幅 ≥ %</span><input type="number" min="0" step="0.1" value={parameters.oiRisePercent} onChange={(event) => setNumeric("oiRisePercent", event.target.value)} /></label></div></fieldset>
+          <fieldset className={selectedFactors.includes("volume_surge") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("volume_surge")} onChange={() => toggleFactor("volume_surge")} /><strong>{factorLabels.volume_surge}</strong></label><label><span>当前成交额 ≥ 均值倍数</span><input type="number" min="0" step="0.1" value={parameters.volumeMultiple} onChange={(event) => setNumeric("volumeMultiple", event.target.value)} /></label></fieldset>
+          <fieldset className={selectedFactors.includes("amplitude_spike_streak") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("amplitude_spike_streak")} onChange={() => toggleFactor("amplitude_spike_streak")} /><strong>{factorLabels.amplitude_spike_streak}</strong></label><div className="factor-params"><label><span>振幅 ≥ 均值倍数</span><input type="number" min="0" step="0.1" value={parameters.amplitudeMultiple} onChange={(event) => setNumeric("amplitudeMultiple", event.target.value)} /></label><label><span>连续 K 根</span><input type="number" min="1" max="96" value={parameters.amplitudeConsecutiveBars} onChange={(event) => setNumeric("amplitudeConsecutiveBars", event.target.value)} /></label></div></fieldset>
+          <fieldset className={selectedFactors.includes("low_average_amplitude") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("low_average_amplitude")} onChange={() => toggleFactor("low_average_amplitude")} /><strong>{factorLabels.low_average_amplitude}</strong></label><label><span>周期均值 &lt; %</span><input type="number" min="0" step="0.1" value={parameters.averageAmplitudeMaxPercent} onChange={(event) => setNumeric("averageAmplitudeMaxPercent", event.target.value)} /></label></fieldset>
+        </div>
+      </section>
+      <aside className="panel ticker-picker">
+        <div className="panel-heading"><div><p className="eyebrow">UNIVERSE</p><h3>Tickers</h3></div><strong>{allSymbols ? `全部 ${metadata?.symbols.length ?? 0}` : `已选 ${selectedSymbols.length}`}</strong></div>
+        <label className="ticker-all"><input type="checkbox" checked={allSymbols} onChange={(event) => setAllSymbols(event.target.checked)} /><span>全部 Tickers</span></label>
+        <input type="search" placeholder="搜索 BTCUSDT" value={symbolSearch} onChange={(event) => setSymbolSearch(event.target.value)} disabled={allSymbols} />
+        <div className="ticker-list" aria-disabled={allSymbols}>{filteredSymbols.map((symbol) => <label key={symbol}><input type="checkbox" checked={selectedSymbols.includes(symbol)} disabled={allSymbols} onChange={() => toggleSymbol(symbol)} /><span>{symbol}</span></label>)}</div>
+        <button className="primary-button backtest-run" type="submit" disabled={submitting || !metadata}>{submitting ? "回测运行中…" : "开始回测"}</button>
+        <p className="message">选择的因子采用 AND 关系。单因子和宽阈值可能产生大量结果，单次最多返回 10,000 条信号。</p>
+      </aside>
+    </form>
+    <section className="panel backtest-results">
+      <div className="panel-heading"><div><p className="eyebrow">SIGNALS</p><h3>命中信号</h3></div><div className="backtest-result-meta"><strong>{job?.signal_count.toLocaleString() ?? 0} 条</strong><span>{job?.status === "COMPLETED" ? "回测完成" : job?.status === "FAILED" ? "回测失败" : job ? `${job.scanned_instruments} / ${job.total_instruments} Tickers` : "等待回测"}</span></div></div>
+      {job && (job.status === "QUEUED" || job.status === "RUNNING") && <div className="backtest-progress"><span style={{ width: `${progress}%` }} /></div>}
+      {job?.truncated && <div className="alert">结果已达到 {job.max_signals.toLocaleString()} 条上限，请缩短时间范围、收紧参数或减少 Tickers。</div>}
+      <p className="backtest-list-hint">双击任一信号，在 15min K 线图中查看橙色箭头标记。</p>
+      <div className="table-scroll backtest-signal-scroll"><table className="storage-table backtest-signal-table"><thead><tr><th>信号时间 UTC+8</th><th>Ticker</th><th>收盘价</th>{visibleFactors.map((name) => <th key={name}>{factorLabels[name]}</th>)}</tr></thead><tbody>
+        {job?.signals.map((signal) => <tr key={`${signal.symbol}-${signal.open_time}`} tabIndex={0} onDoubleClick={() => setChartSignal(signal)} onKeyDown={(event) => { if (event.key === "Enter") setChartSignal(signal); }}><td>{formatKlineTime(signal.open_time)}</td><td><strong>{signal.symbol}</strong></td><td>{formatNumber(signal.close_price, 8)}</td>{visibleFactors.map((name) => <td key={name} title={signal.factors[name].threshold}>{factorValue(name, signal.factors[name].value)}</td>)}</tr>)}
+        {!submitting && (!job || job.signals.length === 0) && <tr><td className="empty-cell" colSpan={3 + visibleFactors.length}>{job?.status === "COMPLETED" ? "当前配置没有命中信号" : "配置策略后点击“开始回测”"}</td></tr>}
+      </tbody></table></div>
+    </section>
+    {chartSignal && <SignalKlineModal signal={chartSignal} onClose={() => setChartSignal(null)} />}
+  </main>;
+}
+
 function App() {
-  const [view, setView] = useState<"rankings" | "monitoring">("rankings");
+  const [view, setView] = useState<"rankings" | "backtest" | "monitoring">("rankings");
   return <>
     <nav className="workspace-tabs" aria-label="工具导航">
       <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>
+      <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>
       <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>
     </nav>
-    {view === "rankings" ? <RankingExplorer /> : <MonitoringDashboard />}
+    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : <MonitoringDashboard />}
   </>;
 }
 

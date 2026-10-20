@@ -7,6 +7,8 @@ from datetime import date, datetime
 from fastapi import FastAPI, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from auto_trade.backtesting.router import router as backtest_router
+from auto_trade.backtesting.service import BacktestManager
 from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import check_database, create_database_engine
 from auto_trade.logging_config import configure_logging
@@ -29,6 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings, "monitor-api")
     engine = create_database_engine(settings)
     app.state.database_engine = engine
+    app.state.backtest_manager = BacktestManager(engine)
     app.state.monitoring_service = MonitoringService(
         MonitoringRepository(
             engine,
@@ -40,6 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         NatsProbe(settings),
     )
     yield
+    await app.state.backtest_manager.close()
     await engine.dispose()
 
 
@@ -48,6 +52,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(backtest_router)
 
 
 @app.get("/health/live")
