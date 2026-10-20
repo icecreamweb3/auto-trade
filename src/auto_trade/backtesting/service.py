@@ -173,10 +173,11 @@ pre {{
   overflow: auto; padding: 12px; border-radius: 8px;
   background: #0b1a2a; white-space: pre-wrap;
 }}
-main {{ padding: 14px 24px 40px; }}
+main {{ padding: 14px 24px 40px; overflow-x: auto; }}
 .line {{
   padding: 5px 9px; border-bottom: 1px solid #13283a;
-  white-space: pre-wrap; overflow-wrap: anywhere;
+  box-sizing: border-box; width: max-content; min-width: 100%;
+  white-space: pre; overflow-wrap: normal;
 }}
 .line:hover {{ background: #10263a; }}
 .hit {{ color: #ffd27a; background: #182618; }}

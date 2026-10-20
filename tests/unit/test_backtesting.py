@@ -146,6 +146,8 @@ async def test_optional_html_log_is_generated_and_resolvable(
     assert path is not None
     html = path.read_text(encoding="utf-8")
     assert "<!doctype html>" in html
+    assert "overflow-x: auto" in html
+    assert "white-space: pre; overflow-wrap: normal" in html
     assert "🚀 BRUSDT | 5min | K线 #37" in html
     assert "2026-10-03 09:00:00" in html
     assert "2026-10-03T09:00:00" not in html
