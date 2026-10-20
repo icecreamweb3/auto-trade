@@ -24,3 +24,5 @@ artifacts/logs-*/
 # Local development environment files
 Macmini_login
 Macmini_login.pub
+
+artifacts/*
