@@ -128,9 +128,8 @@ def _format_price(value: Decimal, price_precision: int | None) -> str:
 def format_evaluation_log_line(
     evaluation: StrategyEvaluation, interval_seconds: int
 ) -> str:
-    timestamp = (
-        evaluation.open_time.astimezone(UTC_PLUS_8).strftime("%Y-%m-%dT%H:%M:%S.%f")
-        + "000+08:00"
+    timestamp = evaluation.open_time.astimezone(UTC_PLUS_8).strftime(
+        "%Y-%m-%d %H:%M:%S"
     )
     close_price = _format_price(evaluation.close_price, evaluation.price_precision)
     ema20 = _format_price(evaluation.ema20, evaluation.price_precision)
