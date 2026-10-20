@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from auto_trade.strategies.feature_scan import (
     ALL_FACTORS,
     DatabaseScanResult,
     FactorResult,
+    StrategyEvaluation,
     StrategySignal,
 )
 
@@ -84,3 +86,55 @@ async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.Monkey
     assert received["start"] == request.start_at
     assert received["end"] == request.end_at
     assert received["parameters"].interval_seconds == 300
+    assert response.log_available is False
+
+
+async def test_optional_html_log_is_generated_and_resolvable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    request = _request().model_copy(update={"generate_log": True})
+    factors = {
+        name: FactorResult(
+            passed=name == "rapid_price_rise",
+            value=Decimal("4.2") if name == "rapid_price_rise" else None,
+            threshold="test threshold",
+            reason=None if name == "rapid_price_rise" else "not matched",
+        )
+        for name in ALL_FACTORS
+    }
+    evaluation = StrategyEvaluation(
+        symbol="BRUSDT",
+        bar_number=37,
+        open_time=datetime(2026, 10, 3, 1, tzinfo=UTC),
+        close_price=Decimal("108749.60"),
+        base_volume=Decimal("18788.707"),
+        quote_volume=Decimal("2043370000"),
+        factors=factors,
+        matched=True,
+    )
+
+    async def fake_scan(*args: Any, **kwargs: Any) -> DatabaseScanResult:
+        kwargs["evaluation_callback"](evaluation)
+        kwargs["progress_callback"](1, 1)
+        return DatabaseScanResult((), 1, 1)
+
+    monkeypatch.setattr(backtest_service, "scan_database_detailed", fake_scan)
+    manager = BacktestManager(None, tmp_path)  # type: ignore[arg-type]
+
+    job = manager.create(request)
+    assert job.task is not None
+    await job.task
+    response = manager.response(job)
+
+    assert response.log_available is True
+    assert response.log_line_count == 1
+    assert response.log_url == f"/api/backtests/logs/backtest-{job.job_id}.html"
+    assert response.log_url is not None
+    path = manager.resolve_log(response.log_url.rsplit("/", 1)[-1])
+    assert path is not None
+    html = path.read_text(encoding="utf-8")
+    assert "<!doctype html>" in html
+    assert "🚀 BRUSDT | 5min | K线 #37" in html
+    assert '<span class="pass">✓</span>' in html
+    assert "test threshold" in html
+    assert "</html>" in html

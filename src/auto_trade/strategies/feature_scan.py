@@ -101,6 +101,7 @@ class FeatureBar:
     close_price: Decimal
     ema20: Decimal
     ema240: Decimal
+    base_volume: Decimal
     quote_volume: Decimal
     amplitude_percent: Decimal
     open_interest_value: Decimal | None
@@ -120,6 +121,18 @@ class StrategySignal:
     open_time: datetime
     close_price: Decimal
     factors: Mapping[FactorName, FactorResult]
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyEvaluation:
+    symbol: str
+    bar_number: int
+    open_time: datetime
+    close_price: Decimal
+    base_volume: Decimal
+    quote_volume: Decimal
+    factors: Mapping[FactorName, FactorResult]
+    matched: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,16 +334,33 @@ def evaluate_series(
     bars: Sequence[FeatureBar],
     parameters: StrategyParameters,
     scan_start: datetime,
+    evaluation_callback: Callable[[StrategyEvaluation], None] | None = None,
 ) -> tuple[StrategySignal, ...]:
     context = SeriesContext(bars, parameters.interval_seconds)
     signals: list[StrategySignal] = []
+    bar_number = 0
     for index, bar in enumerate(bars):
         if bar.open_time < scan_start:
             continue
+        bar_number += 1
         factors = {
             name: FACTOR_EVALUATORS[name](context, index, parameters) for name in ALL_FACTORS
         }
-        if all(factors[name].passed for name in parameters.required_factors):
+        matched = all(factors[name].passed for name in parameters.required_factors)
+        if evaluation_callback is not None:
+            evaluation_callback(
+                StrategyEvaluation(
+                    symbol=symbol,
+                    bar_number=bar_number,
+                    open_time=bar.open_time,
+                    close_price=bar.close_price,
+                    base_volume=bar.base_volume,
+                    quote_volume=bar.quote_volume,
+                    factors=factors,
+                    matched=matched,
+                )
+            )
+        if matched:
             signals.append(StrategySignal(symbol, bar.open_time, bar.close_price, factors))
     return tuple(signals)
 
@@ -395,7 +425,8 @@ async def _load_feature_bars(
     if interval_seconds == 900:
         source_sql = """
             SELECT e.open_time, e.close_price, e.ema20, e.ema240,
-                   k.quote_volume, e.amplitude_percent, k.open_interest_value
+                   k.base_volume, k.quote_volume,
+                   e.amplitude_percent, k.open_interest_value
             FROM market.kline_ema_indicators e
             JOIN market.klines_15m k
               ON k.instrument_id = e.instrument_id
@@ -413,7 +444,8 @@ async def _load_feature_bars(
     else:
         source_sql = """
             SELECT e.open_time, e.close_price, e.ema20, e.ema240,
-                   k.quote_volume, e.amplitude_percent, oi.open_interest_value
+                   k.base_volume, k.quote_volume,
+                   e.amplitude_percent, oi.open_interest_value
             FROM market.kline_ema_indicators e
             JOIN market.klines k
               ON k.instrument_id = e.instrument_id
@@ -456,6 +488,7 @@ async def _load_feature_bars(
             close_price=Decimal(str(row["close_price"])),
             ema20=Decimal(str(row["ema20"])),
             ema240=Decimal(str(row["ema240"])),
+            base_volume=Decimal(str(row["base_volume"])),
             quote_volume=Decimal(str(row["quote_volume"])),
             amplitude_percent=Decimal(str(row["amplitude_percent"])),
             open_interest_value=(
@@ -496,6 +529,7 @@ async def scan_database_detailed(
     max_signals: int | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     signals_callback: Callable[[tuple[StrategySignal, ...]], None] | None = None,
+    evaluation_callback: Callable[[StrategyEvaluation], None] | None = None,
 ) -> DatabaseScanResult:
     scan_end = end or datetime.now(UTC)
     scan_end = scan_end.replace(tzinfo=UTC) if scan_end.tzinfo is None else scan_end.astimezone(UTC)
@@ -530,7 +564,11 @@ async def scan_database_detailed(
                 parameters.interval_seconds,
             )
             instrument_signals = evaluate_series(
-                cast(str, instrument["symbol"]), bars, parameters, scan_start
+                cast(str, instrument["symbol"]),
+                bars,
+                parameters,
+                scan_start,
+                evaluation_callback,
             )
             if max_signals is not None:
                 remaining = max_signals - len(signals)

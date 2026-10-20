@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from auto_trade.backtesting.models import (
     BacktestCreated,
@@ -69,6 +70,21 @@ async def signal_klines(
     if not result.items:
         raise HTTPException(status_code=404, detail="no kline data around signal")
     return result
+
+
+@router.get("/logs/{filename}", response_class=FileResponse)
+async def view_backtest_log(filename: str, request: Request) -> FileResponse:
+    path = _manager(request).resolve_log(filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="backtest log not found")
+    return FileResponse(
+        path,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/{job_id}", response_model=BacktestJobResult)

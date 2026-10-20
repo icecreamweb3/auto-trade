@@ -228,8 +228,13 @@ interface BacktestJob {
   signal_count: number;
   truncated: boolean;
   max_signals: number;
+  log_line_count: number;
+  log_truncated: boolean;
+  log_available: boolean;
+  log_url: string | null;
+  max_log_lines: number;
   error: string | null;
-  request: { interval_seconds: BacktestInterval; parameters: { required_factors: FactorName[] } };
+  request: { interval_seconds: BacktestInterval; generate_log: boolean; parameters: { required_factors: FactorName[] } };
   signals: BacktestSignal[];
 }
 
@@ -1313,6 +1318,7 @@ function BacktestWorkspace() {
   const [allSymbols, setAllSymbols] = useState(true);
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
   const [symbolSearch, setSymbolSearch] = useState("");
+  const [generateLog, setGenerateLog] = useState(false);
   const [selectedFactors, setSelectedFactors] = useState<FactorName[]>(allFactorNames);
   const [parameters, setParameters] = useState<BacktestParameterValues>({ ...defaultBacktestParameters });
   const [jobId, setJobId] = useState<string | null>(null);
@@ -1423,6 +1429,7 @@ function BacktestWorkspace() {
           start_at: utc8InputToIso(startAt),
           end_at: utc8InputToIso(endAt),
           interval_seconds: intervalSeconds,
+          generate_log: generateLog,
           symbols: allSymbols ? [] : selectedSymbols,
           parameters: {
             average_days: parameterValue("averageDays"),
@@ -1486,14 +1493,16 @@ function BacktestWorkspace() {
         <label className="ticker-all"><input type="checkbox" checked={allSymbols} onChange={(event) => setAllSymbols(event.target.checked)} /><span>全部 Tickers</span></label>
         <input type="search" placeholder="搜索 BTCUSDT" value={symbolSearch} onChange={(event) => setSymbolSearch(event.target.value)} disabled={allSymbols} />
         <div className="ticker-list" aria-disabled={allSymbols}>{filteredSymbols.map((symbol) => <label key={symbol}><input type="checkbox" checked={selectedSymbols.includes(symbol)} disabled={allSymbols} onChange={() => toggleSymbol(symbol)} /><span>{symbol}</span></label>)}</div>
+        <label className="backtest-log-option"><input type="checkbox" checked={generateLog} onChange={(event) => setGenerateLog(event.target.checked)} /><span>生成逐 K 线 HTML 日志</span></label>
         <button className="primary-button backtest-run" type="submit" disabled={submitting || !metadata}>{submitting ? "回测运行中…" : "开始回测"}</button>
-        <p className="message">选择的因子采用 AND 关系。单因子和宽阈值可能产生大量结果，单次最多返回 10,000 条信号。</p>
+        <p className="message">日志默认不生成。勾选后写入测试机日志卷，最多记录 100,000 根 K 线；选择的因子采用 AND 关系。</p>
       </aside>
     </form>
     <section className="panel backtest-results">
       <div className="panel-heading"><div><p className="eyebrow">SIGNALS</p><h3>命中信号</h3></div><div className="backtest-result-meta"><strong>{job?.signal_count.toLocaleString() ?? 0} 条</strong><span>{job?.status === "COMPLETED" ? "回测完成" : job?.status === "FAILED" ? "回测失败" : job ? `${job.scanned_instruments} / ${job.total_instruments} Tickers` : "等待回测"}</span></div></div>
       {job && (job.status === "QUEUED" || job.status === "RUNNING") && <div className="backtest-progress"><span style={{ width: `${progress}%` }} /></div>}
       {job?.truncated && <div className="alert">结果已达到 {job.max_signals.toLocaleString()} 条上限，请缩短时间范围、收紧参数或减少 Tickers。</div>}
+      {job?.request.generate_log && <div className={`backtest-log-status${job.log_truncated ? " truncated" : ""}`}><span>诊断日志：{job.log_line_count.toLocaleString()} 根 K 线{job.log_truncated ? `（已达到 ${job.max_log_lines.toLocaleString()} 条上限）` : ""}</span>{job.log_available && job.log_url && (job.status === "COMPLETED" || job.status === "FAILED") && <a href={job.log_url} target="_blank" rel="noopener noreferrer">浏览 HTML 日志 ↗</a>}</div>}
       <p className="backtest-list-hint">双击任一信号，在 {job ? job.request.interval_seconds / 60 : intervalSeconds / 60}min K 线图中查看橙色箭头标记。</p>
       <div className="table-scroll backtest-signal-scroll"><table className="storage-table backtest-signal-table"><thead><tr><th>信号时间 UTC+8</th><th>Ticker</th><th>收盘价</th>{visibleFactors.map((name) => <th key={name}>{factorLabels[name]}</th>)}</tr></thead><tbody>
         {job?.signals.map((signal) => <tr key={`${signal.symbol}-${signal.open_time}`} tabIndex={0} onDoubleClick={() => setChartSignal({ signal, intervalSeconds: job.request.interval_seconds })} onKeyDown={(event) => { if (event.key === "Enter") setChartSignal({ signal, intervalSeconds: job.request.interval_seconds }); }}><td>{formatKlineTime(signal.open_time)}</td><td><strong>{signal.symbol}</strong></td><td>{formatNumber(signal.close_price, 8)}</td>{visibleFactors.map((name) => <td key={name} title={signal.factors[name].threshold}>{factorValue(name, signal.factors[name].value)}</td>)}</tr>)}

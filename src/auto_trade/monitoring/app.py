@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -31,7 +32,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings, "monitor-api")
     engine = create_database_engine(settings)
     app.state.database_engine = engine
-    app.state.backtest_manager = BacktestManager(engine)
+    app.state.backtest_manager = BacktestManager(
+        engine,
+        Path(settings.file_log_directory) / "backtests",
+        settings.file_log_retention_days,
+    )
     app.state.monitoring_service = MonitoringService(
         MonitoringRepository(
             engine,

@@ -210,6 +210,8 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .ticker-list label { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
 .ticker-list label:hover { background: #11283a; }
 .ticker-list label span { margin: 0; color: #b9cad9; font-size: 11px; font-variant-numeric: tabular-nums; }
+.ticker-picker .backtest-log-option { display: flex; align-items: center; gap: 9px; margin: 0 0 12px; padding: 10px 11px; border: 1px solid #23435a; border-radius: 9px; background: #0b1b2a; cursor: pointer; }
+.ticker-picker .backtest-log-option span { margin: 0; color: #c9d8e7; }
 .backtest-run { width: 100%; margin-bottom: 12px; }
 .backtest-results { min-width: 0; }
 .backtest-result-meta { display: flex; align-items: baseline; gap: 12px; }
@@ -218,6 +220,10 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .backtest-progress { height: 6px; overflow: hidden; margin: 16px 0 8px; border-radius: 999px; background: #14283a; }
 .backtest-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #41b7d7, #58d6c2); transition: width .3s ease; }
 .backtest-list-hint { margin: 12px 0 8px; color: #7891a8; font-size: 11px; }
+.backtest-log-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 12px; border: 1px solid #29524f; border-radius: 9px; color: #9bcfc7; background: #0b2427; font-size: 12px; }
+.backtest-log-status.truncated { color: #ffd378; border-color: #765c2d; background: #292313; }
+.backtest-log-status a { color: #58d6c2; font-weight: 800; text-decoration: none; white-space: nowrap; }
+.backtest-log-status a:hover { text-decoration: underline; }
 .backtest-signal-scroll { max-height: 650px; margin-bottom: 0; }
 .backtest-signal-table { min-width: 1040px; }
 .backtest-signal-table thead { position: sticky; z-index: 2; top: 0; background: #0a1827; }

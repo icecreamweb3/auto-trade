@@ -24,6 +24,7 @@ def _bar(
         close_price=close,
         ema20=ema20,
         ema240=ema240,
+        base_volume=volume,
         quote_volume=volume,
         amplitude_percent=amplitude,
         open_interest_value=oi,
@@ -101,3 +102,23 @@ def test_required_factor_subset_can_be_used_for_factor_inspection() -> None:
 def test_average_window_uses_selected_kline_interval() -> None:
     assert StrategyParameters(interval_seconds=300, average_days=7).average_bars == 2016
     assert StrategyParameters(interval_seconds=900, average_days=7).average_bars == 672
+
+
+def test_evaluation_callback_receives_every_scanned_bar() -> None:
+    parameters = StrategyParameters(
+        interval_seconds=300,
+        required_factors=("rapid_price_rise",),
+    )
+    bars = [_bar(0), _bar(1), _bar(2)]
+    evaluations = []
+
+    evaluate_series(
+        "BRUSDT",
+        bars,
+        parameters,
+        bars[1].open_time,
+        evaluations.append,
+    )
+
+    assert [evaluation.bar_number for evaluation in evaluations] == [1, 2]
+    assert all(evaluation.symbol == "BRUSDT" for evaluation in evaluations)

@@ -45,6 +45,7 @@ class BacktestCreateRequest(BaseModel):
     start_at: datetime
     end_at: datetime
     interval_seconds: Literal[300, 900] = 900
+    generate_log: bool = False
     symbols: tuple[str, ...] = ()
     parameters: BacktestParameters = Field(default_factory=BacktestParameters)
 
@@ -105,6 +106,11 @@ class BacktestJobResult(BaseModel):
     signal_count: int = 0
     truncated: bool = False
     max_signals: int
+    log_line_count: int = 0
+    log_truncated: bool = False
+    log_available: bool = False
+    log_url: str | None = None
+    max_log_lines: int
     error: str | None = None
     request: BacktestCreateRequest
     signals: tuple[BacktestSignal, ...] = ()

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal, cast
+from html import escape
+from pathlib import Path
+from typing import IO, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -23,6 +26,9 @@ from auto_trade.backtesting.models import (
 )
 from auto_trade.monitoring.models import KlinePoint
 from auto_trade.strategies.feature_scan import (
+    ALL_FACTORS,
+    FactorResult,
+    StrategyEvaluation,
     StrategyParameters,
     StrategySignal,
     scan_database_detailed,
@@ -31,6 +37,16 @@ from auto_trade.strategies.feature_scan import (
 MAX_SIGNALS = 10_000
 MAX_RETAINED_JOBS = 20
 MAX_ACTIVE_JOBS = 2
+MAX_LOG_LINES = 100_000
+
+FACTOR_LOG_LABELS = {
+    "ema_bullish_cross": "EMA20上穿EMA240",
+    "rapid_price_rise": "价格快速拉升",
+    "open_interest_rise": "OI价值快速提升",
+    "volume_surge": "成交量暴涨",
+    "amplitude_spike_streak": "连续振幅异常",
+    "low_average_amplitude": "平均振幅低",
+}
 
 
 @dataclass(slots=True)
@@ -44,6 +60,9 @@ class _Job:
     scanned_instruments: int = 0
     total_instruments: int = 0
     truncated: bool = False
+    log_line_count: int = 0
+    log_truncated: bool = False
+    log_path: Path | None = None
     error: str | None = None
     signals: tuple[BacktestSignal, ...] = ()
     task: asyncio.Task[None] | None = field(default=None, repr=False)
@@ -70,12 +89,120 @@ def _signal_model(signal: StrategySignal) -> BacktestSignal:
     )
 
 
+def _log_value(value: Decimal | int | None) -> str:
+    if value is None:
+        return "无"
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return str(value)
+
+
+def _factor_log(name: str, result: FactorResult) -> str:
+    status = "✓" if result.passed else "✗"
+    detail = (
+        f"{FACTOR_LOG_LABELS[name]}: {status}"
+        f" (实际值: {_log_value(result.value)}, 阈值: {result.threshold}"
+    )
+    if result.reason:
+        detail += f", 原因: {result.reason}"
+    return detail + ")"
+
+
+def format_evaluation_log_line(
+    evaluation: StrategyEvaluation, interval_seconds: int
+) -> str:
+    timestamp = (
+        evaluation.open_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")
+        + "000Z"
+    )
+    prefix = "🚀" if evaluation.matched else " "
+    factors = " | ".join(
+        _factor_log(name, evaluation.factors[name]) for name in ALL_FACTORS
+    )
+    return (
+        f"{prefix} {evaluation.symbol} | {interval_seconds // 60}min"
+        f" | K线 #{evaluation.bar_number} | {timestamp}"
+        f" | 收盘价: {evaluation.close_price:f}"
+        f" | 成交量: {evaluation.base_volume:f}"
+        f" | 成交额: {evaluation.quote_volume:f} | {factors}"
+    )
+
+
+def _html_log_header(job: _Job) -> str:
+    request = job.request
+    config = escape(request.model_dump_json(indent=2))
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>策略回测日志 {job.job_id}</title>
+<style>
+body {{
+  margin: 0; color: #d9e7f5; background: #07101d;
+  font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+}}
+header {{
+  position: sticky; top: 0; z-index: 2; padding: 18px 24px;
+  border-bottom: 1px solid #29455e; background: rgba(7,16,29,.96);
+}}
+h1 {{ margin: 0 0 8px; color: #58d6c2; font: 700 22px/1.3 system-ui, sans-serif; }}
+.meta {{ color: #8da4ba; }}
+details {{ margin-top: 10px; }}
+pre {{
+  overflow: auto; padding: 12px; border-radius: 8px;
+  background: #0b1a2a; white-space: pre-wrap;
+}}
+main {{ padding: 14px 24px 40px; }}
+.line {{
+  padding: 5px 9px; border-bottom: 1px solid #13283a;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}}
+.line:hover {{ background: #10263a; }}
+.hit {{ color: #ffd27a; background: #182618; }}
+.pass {{ color: #58d6c2; font-weight: 700; }}
+.fail {{ color: #ff8a97; font-weight: 700; }}
+.summary {{
+  margin-top: 18px; padding: 12px; border: 1px solid #29455e;
+  border-radius: 8px; color: #a9bed1;
+}}
+</style>
+</head>
+<body>
+<header>
+<h1>策略回测逐 K 线诊断日志</h1>
+<div class="meta">
+任务 {job.job_id} · {request.interval_seconds // 60}min
+· 日志上限 {MAX_LOG_LINES:,} 根 K 线
+</div>
+<details><summary>查看回测配置</summary><pre>{config}</pre></details>
+</header>
+<main>
+"""
+
+
+def _html_evaluation_line(evaluation: StrategyEvaluation, interval_seconds: int) -> str:
+    line = escape(format_evaluation_log_line(evaluation, interval_seconds))
+    line = line.replace("✓", '<span class="pass">✓</span>')
+    line = line.replace("✗", '<span class="fail">✗</span>')
+    css_class = "line hit" if evaluation.matched else "line"
+    return f'<div class="{css_class}">{line}</div>\n'
+
+
 class BacktestManager:
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        log_directory: Path | None = None,
+        log_retention_days: int = 14,
+    ) -> None:
         self.engine = engine
         self.jobs: OrderedDict[str, _Job] = OrderedDict()
+        self.log_directory = log_directory or Path("/tmp/auto-trade-backtests")
+        self.log_retention_days = log_retention_days
 
     def create(self, request: BacktestCreateRequest) -> _Job:
+        self._cleanup_expired_logs()
         active_jobs = sum(
             job.status in ("QUEUED", "RUNNING") for job in self.jobs.values()
         )
@@ -95,6 +222,7 @@ class BacktestManager:
         return self.jobs.get(job_id)
 
     def response(self, job: _Job) -> BacktestJobResult:
+        log_path = self.log_path(job)
         return BacktestJobResult(
             job_id=job.job_id,
             status=job.status,
@@ -106,6 +234,15 @@ class BacktestManager:
             signal_count=len(job.signals),
             truncated=job.truncated,
             max_signals=MAX_SIGNALS,
+            log_line_count=job.log_line_count,
+            log_truncated=job.log_truncated,
+            log_available=log_path is not None,
+            log_url=(
+                f"/api/backtests/logs/{log_path.name}"
+                if log_path is not None
+                else None
+            ),
+            max_log_lines=MAX_LOG_LINES,
             error=job.error,
             request=job.request,
             signals=job.signals,
@@ -117,6 +254,32 @@ class BacktestManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def log_path(self, job: _Job) -> Path | None:
+        if job.log_path is None or not job.log_path.is_file():
+            return None
+        return job.log_path
+
+    def resolve_log(self, filename: str) -> Path | None:
+        if not filename.startswith("backtest-") or not filename.endswith(".html"):
+            return None
+        stem = filename.removeprefix("backtest-").removesuffix(".html")
+        is_hex = all(character in "0123456789abcdef" for character in stem)
+        if len(stem) != 32 or not is_hex:
+            return None
+        path = self.log_directory / filename
+        return path if path.is_file() else None
+
+    def _cleanup_expired_logs(self) -> None:
+        if not self.log_directory.is_dir():
+            return
+        cutoff = time.time() - self.log_retention_days * 24 * 60 * 60
+        for path in self.log_directory.glob("backtest-*.html"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     async def metadata(self) -> BacktestMetadata:
         intervals: dict[str, BacktestIntervalMetadata] = {}
@@ -284,15 +447,33 @@ class BacktestManager:
             average_amplitude_max_percent=parameters.average_amplitude_max_percent,
             required_factors=parameters.required_factors,
         )
+        log_file: IO[str] | None = None
 
         def update_progress(scanned: int, total: int) -> None:
             job.scanned_instruments = scanned
             job.total_instruments = total
+            if log_file is not None:
+                log_file.flush()
 
         def emit_signals(signals: tuple[StrategySignal, ...]) -> None:
             job.signals = (*job.signals, *(_signal_model(signal) for signal in signals))
 
+        def emit_evaluation(evaluation: StrategyEvaluation) -> None:
+            if log_file is None:
+                return
+            if job.log_line_count >= MAX_LOG_LINES:
+                job.log_truncated = True
+                return
+            log_file.write(_html_evaluation_line(evaluation, request.interval_seconds))
+            job.log_line_count += 1
+
         try:
+            if request.generate_log:
+                self.log_directory.mkdir(parents=True, exist_ok=True)
+                log_path = self.log_directory / f"backtest-{job.job_id}.html"
+                log_file = log_path.open("x", encoding="utf-8")
+                job.log_path = log_path
+                log_file.write(_html_log_header(job))
             result = await scan_database_detailed(
                 self.engine,
                 strategy_parameters,
@@ -302,6 +483,7 @@ class BacktestManager:
                 max_signals=MAX_SIGNALS,
                 progress_callback=update_progress,
                 signals_callback=emit_signals,
+                evaluation_callback=emit_evaluation if request.generate_log else None,
             )
             job.scanned_instruments = result.scanned_instruments
             job.total_instruments = result.total_instruments
@@ -315,6 +497,19 @@ class BacktestManager:
             job.error = str(error) or error.__class__.__name__
         finally:
             job.completed_at = datetime.now(UTC)
+            if log_file is not None:
+                if job.log_truncated:
+                    log_file.write(
+                        f'<div class="summary">日志已在 {MAX_LOG_LINES:,} 条 K 线记录处截断; '
+                        "请缩短时间范围或减少 Tickers。</div>\n"
+                    )
+                log_file.write(
+                    f'<div class="summary">回测结束: 状态={job.status}, '
+                    f"信号数={len(job.signals)}, 扫描 Tickers="
+                    f"{job.scanned_instruments}/{job.total_instruments}</div>\n"
+                    "</main></body></html>\n"
+                )
+                log_file.close()
 
     def _discard_old_jobs(self) -> None:
         removable = [
