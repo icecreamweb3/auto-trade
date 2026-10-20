@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import IO, Literal, cast
 
@@ -36,6 +36,7 @@ ALL_FACTORS: tuple[FactorName, ...] = (
     "low_average_amplitude",
 )
 SUPPORTED_INTERVALS = (300, 900)
+PERCENT_QUANTUM = Decimal("0.01")
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +204,15 @@ def _ema_bullish_cross(
 def _percent_change(current: Decimal, previous: Decimal) -> Decimal | None:
     if previous <= 0:
         return None
-    return (current / previous - Decimal(1)) * Decimal(100)
+    return _percent_2((current / previous - Decimal(1)) * Decimal(100))
+
+
+def _percent_2(value: Decimal) -> Decimal:
+    return value.quantize(PERCENT_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def _percent_threshold(operator: str, value: Decimal) -> str:
+    return f"{operator} {_percent_2(value):.2f}%"
 
 
 def _rapid_price_rise(
@@ -214,16 +223,18 @@ def _rapid_price_rise(
         return FactorResult(
             False,
             None,
-            f">= {parameters.rapid_price_rise_percent}%",
+            _percent_threshold(">=", parameters.rapid_price_rise_percent),
             "missing continuous price history",
         )
     value = _percent_change(
         context.bars[index].close_price, context.bars[index - window].close_price
     )
+    threshold = _percent_2(parameters.rapid_price_rise_percent)
     return FactorResult(
-        value is not None and value >= parameters.rapid_price_rise_percent,
+        value is not None and value >= threshold,
         value,
-        f">= {parameters.rapid_price_rise_percent}% over {window} bars",
+        f"{_percent_threshold('>=', parameters.rapid_price_rise_percent)} "
+        f"over {window} bars",
     )
 
 
@@ -235,7 +246,7 @@ def _open_interest_rise(
         return FactorResult(
             False,
             None,
-            f">= {parameters.open_interest_rise_percent}%",
+            _percent_threshold(">=", parameters.open_interest_rise_percent),
             "missing continuous OI history",
         )
     current = context.bars[index].open_interest_value
@@ -244,14 +255,16 @@ def _open_interest_rise(
         return FactorResult(
             False,
             None,
-            f">= {parameters.open_interest_rise_percent}%",
+            _percent_threshold(">=", parameters.open_interest_rise_percent),
             "OI value is unavailable",
         )
     value = _percent_change(current, previous)
+    threshold = _percent_2(parameters.open_interest_rise_percent)
     return FactorResult(
-        value is not None and value >= parameters.open_interest_rise_percent,
+        value is not None and value >= threshold,
         value,
-        f">= {parameters.open_interest_rise_percent}% over {window} bars",
+        f"{_percent_threshold('>=', parameters.open_interest_rise_percent)} "
+        f"over {window} bars",
     )
 
 
@@ -315,10 +328,13 @@ def _low_average_amplitude(
     context: SeriesContext, index: int, parameters: StrategyParameters
 ) -> FactorResult:
     value = _average_amplitude(context, index, parameters)
+    value = _percent_2(value) if value is not None else None
+    threshold = _percent_2(parameters.average_amplitude_max_percent)
     return FactorResult(
-        value is not None and value < parameters.average_amplitude_max_percent,
+        value is not None and value < threshold,
         value,
-        f"< {parameters.average_amplitude_max_percent}% over prior {parameters.average_days}d",
+        f"{_percent_threshold('<', parameters.average_amplitude_max_percent)} "
+        f"over prior {parameters.average_days}d",
         None if value is not None else "missing prior amplitude average",
     )
 

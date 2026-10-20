@@ -61,8 +61,14 @@ def test_all_six_factors_produce_one_signal() -> None:
     assert all(signals[0].factors[name].passed for name in ALL_FACTORS)
     assert signals[0].factors["ema_bullish_cross"].value == 1
     assert signals[0].factors["rapid_price_rise"].value == Decimal("4")
+    assert signals[0].factors["rapid_price_rise"].threshold == ">= 3.00% over 4 bars"
     assert signals[0].factors["open_interest_rise"].value == Decimal("6.00")
+    assert signals[0].factors["open_interest_rise"].threshold == ">= 5.00% over 4 bars"
     assert signals[0].factors["volume_surge"].value > Decimal("5")
+    assert (
+        signals[0].factors["low_average_amplitude"].threshold
+        == "< 2.00% over prior 1d"
+    )
 
 
 def test_missing_oi_does_not_become_zero_or_pass() -> None:
@@ -98,6 +104,22 @@ def test_required_factor_subset_can_be_used_for_factor_inspection() -> None:
     assert len(signals) == 1
     assert signals[0].factors["rapid_price_rise"].passed
     assert not signals[0].factors["volume_surge"].passed
+
+
+def test_percentage_comparison_uses_two_decimal_places() -> None:
+    parameters = StrategyParameters(
+        rapid_price_window_bars=1,
+        rapid_price_rise_percent=Decimal("3.004"),
+        required_factors=("rapid_price_rise",),
+    )
+    bars = [_bar(0, close=Decimal("100")), _bar(1, close=Decimal("102.999"))]
+
+    signals = evaluate_series("BRUSDT", bars, parameters, bars[1].open_time)
+
+    assert len(signals) == 1
+    result = signals[0].factors["rapid_price_rise"]
+    assert result.value == Decimal("3.00")
+    assert result.threshold == ">= 3.00% over 1 bars"
 
 
 def test_average_window_uses_selected_kline_interval() -> None:

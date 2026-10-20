@@ -49,6 +49,9 @@ FACTOR_LOG_LABELS = {
     "amplitude_spike_streak": "连续振幅异常",
     "low_average_amplitude": "平均振幅低",
 }
+PERCENT_FACTORS = frozenset(
+    {"rapid_price_rise", "open_interest_rise", "low_average_amplitude"}
+)
 
 
 @dataclass(slots=True)
@@ -91,10 +94,12 @@ def _signal_model(signal: StrategySignal) -> BacktestSignal:
     )
 
 
-def _log_value(value: Decimal | int | None) -> str:
+def _log_value(name: str, value: Decimal | int | None) -> str:
     if value is None:
         return "无"
     if isinstance(value, Decimal):
+        if name in PERCENT_FACTORS:
+            return f"{value:.2f}%"
         return format(value, "f")
     return str(value)
 
@@ -103,7 +108,7 @@ def _factor_log(name: str, result: FactorResult) -> str:
     status = "✓" if result.passed else "✗"
     detail = (
         f"{FACTOR_LOG_LABELS[name]}: {status}"
-        f" (实际值: {_log_value(result.value)}, 阈值: {result.threshold}"
+        f" (实际值: {_log_value(name, result.value)}, 阈值: {result.threshold}"
     )
     if result.reason:
         detail += f", 原因: {result.reason}"

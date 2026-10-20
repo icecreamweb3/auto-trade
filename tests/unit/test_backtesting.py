@@ -143,6 +143,7 @@ async def test_optional_html_log_is_generated_and_resolvable(
     assert "EMA20: 108700.12 | EMA240: 108650.57" in html
     assert "成交量: 18788.71" in html
     assert "成交额: 2043370000.00" in html
+    assert "实际值: 4.20%" in html
     assert '<span class="pass">✓</span>' in html
     assert "test threshold" in html
     assert "</html>" in html
