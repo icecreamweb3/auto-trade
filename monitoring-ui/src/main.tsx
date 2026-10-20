@@ -240,18 +240,46 @@ interface BacktestKlineResult {
   items: KlinePoint[];
 }
 
+type BacktestNumericInput = number | "";
+
 interface BacktestParameterValues {
-  averageDays: number;
-  emaCrossBars: number;
-  priceWindowBars: number;
-  priceRisePercent: number;
-  oiWindowBars: number;
-  oiRisePercent: number;
-  volumeMultiple: number;
-  amplitudeMultiple: number;
-  amplitudeConsecutiveBars: number;
-  averageAmplitudeMaxPercent: number;
+  averageDays: BacktestNumericInput;
+  emaCrossBars: BacktestNumericInput;
+  priceWindowBars: BacktestNumericInput;
+  priceRisePercent: BacktestNumericInput;
+  oiWindowBars: BacktestNumericInput;
+  oiRisePercent: BacktestNumericInput;
+  volumeMultiple: BacktestNumericInput;
+  amplitudeMultiple: BacktestNumericInput;
+  amplitudeConsecutiveBars: BacktestNumericInput;
+  averageAmplitudeMaxPercent: BacktestNumericInput;
 }
+
+const defaultBacktestParameters: Record<keyof BacktestParameterValues, number> = {
+  averageDays: 7,
+  emaCrossBars: 4,
+  priceWindowBars: 4,
+  priceRisePercent: 3,
+  oiWindowBars: 4,
+  oiRisePercent: 5,
+  volumeMultiple: 5,
+  amplitudeMultiple: 5,
+  amplitudeConsecutiveBars: 2,
+  averageAmplitudeMaxPercent: 2
+};
+
+const backtestParameterLabels: Record<keyof BacktestParameterValues, string> = {
+  averageDays: "均值周期",
+  emaCrossBars: "EMA 上穿窗口",
+  priceWindowBars: "价格窗口",
+  priceRisePercent: "价格涨幅",
+  oiWindowBars: "OI 窗口",
+  oiRisePercent: "OI 涨幅",
+  volumeMultiple: "成交量倍数",
+  amplitudeMultiple: "振幅倍数",
+  amplitudeConsecutiveBars: "连续 K 线数量",
+  averageAmplitudeMaxPercent: "平均振幅上限"
+};
 
 const statusText: Record<HealthStatus, string> = {
   HEALTHY: "健康",
@@ -1286,18 +1314,7 @@ function BacktestWorkspace() {
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
   const [symbolSearch, setSymbolSearch] = useState("");
   const [selectedFactors, setSelectedFactors] = useState<FactorName[]>(allFactorNames);
-  const [parameters, setParameters] = useState<BacktestParameterValues>({
-    averageDays: 7,
-    emaCrossBars: 4,
-    priceWindowBars: 4,
-    priceRisePercent: 3,
-    oiWindowBars: 4,
-    oiRisePercent: 5,
-    volumeMultiple: 5,
-    amplitudeMultiple: 5,
-    amplitudeConsecutiveBars: 2,
-    averageAmplitudeMaxPercent: 2
-  });
+  const [parameters, setParameters] = useState<BacktestParameterValues>({ ...defaultBacktestParameters });
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<BacktestJob | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -1355,7 +1372,7 @@ function BacktestWorkspace() {
   }, [jobId]);
 
   function setNumeric<Key extends keyof BacktestParameterValues>(key: Key, value: string) {
-    setParameters((current) => ({ ...current, [key]: Number(value) }));
+    setParameters((current) => ({ ...current, [key]: value === "" ? "" : Number(value) }));
   }
 
   function toggleFactor(name: FactorName) {
@@ -1371,6 +1388,29 @@ function BacktestWorkspace() {
     if (!startAt || !endAt) { setError("请选择回测开始和结束时间"); return; }
     if (selectedFactors.length === 0) { setError("请至少选择一个策略因子"); return; }
     if (!allSymbols && selectedSymbols.length === 0) { setError("请选择至少一个 Ticker，或选择全部 Tickers"); return; }
+    const requiredParameterKeys = new Set<keyof BacktestParameterValues>();
+    if (selectedFactors.includes("ema_bullish_cross")) requiredParameterKeys.add("emaCrossBars");
+    if (selectedFactors.includes("rapid_price_rise")) {
+      requiredParameterKeys.add("priceWindowBars");
+      requiredParameterKeys.add("priceRisePercent");
+    }
+    if (selectedFactors.includes("open_interest_rise")) {
+      requiredParameterKeys.add("oiWindowBars");
+      requiredParameterKeys.add("oiRisePercent");
+    }
+    if (selectedFactors.includes("volume_surge")) requiredParameterKeys.add("volumeMultiple");
+    if (selectedFactors.includes("amplitude_spike_streak")) {
+      requiredParameterKeys.add("amplitudeMultiple");
+      requiredParameterKeys.add("amplitudeConsecutiveBars");
+    }
+    if (selectedFactors.includes("low_average_amplitude")) requiredParameterKeys.add("averageAmplitudeMaxPercent");
+    if (selectedFactors.some((name) => name === "volume_surge" || name === "amplitude_spike_streak" || name === "low_average_amplitude")) requiredParameterKeys.add("averageDays");
+    const missingParameter = [...requiredParameterKeys].find((key) => parameters[key] === "");
+    if (missingParameter) { setError(`请填写${backtestParameterLabels[missingParameter]}`); return; }
+    const parameterValue = (key: keyof BacktestParameterValues): number => {
+      const value = parameters[key];
+      return value === "" ? defaultBacktestParameters[key] : value;
+    };
     setSubmitting(true);
     setJob(null);
     setJobId(null);
@@ -1385,16 +1425,16 @@ function BacktestWorkspace() {
           interval_seconds: intervalSeconds,
           symbols: allSymbols ? [] : selectedSymbols,
           parameters: {
-            average_days: parameters.averageDays,
-            ema_cross_lookback_bars: parameters.emaCrossBars,
-            rapid_price_window_bars: parameters.priceWindowBars,
-            rapid_price_rise_percent: parameters.priceRisePercent,
-            open_interest_window_bars: parameters.oiWindowBars,
-            open_interest_rise_percent: parameters.oiRisePercent,
-            volume_surge_multiple: parameters.volumeMultiple,
-            amplitude_spike_multiple: parameters.amplitudeMultiple,
-            amplitude_consecutive_bars: parameters.amplitudeConsecutiveBars,
-            average_amplitude_max_percent: parameters.averageAmplitudeMaxPercent,
+            average_days: parameterValue("averageDays"),
+            ema_cross_lookback_bars: parameterValue("emaCrossBars"),
+            rapid_price_window_bars: parameterValue("priceWindowBars"),
+            rapid_price_rise_percent: parameterValue("priceRisePercent"),
+            open_interest_window_bars: parameterValue("oiWindowBars"),
+            open_interest_rise_percent: parameterValue("oiRisePercent"),
+            volume_surge_multiple: parameterValue("volumeMultiple"),
+            amplitude_spike_multiple: parameterValue("amplitudeMultiple"),
+            amplitude_consecutive_bars: parameterValue("amplitudeConsecutiveBars"),
+            average_amplitude_max_percent: parameterValue("averageAmplitudeMaxPercent"),
             required_factors: selectedFactors
           }
         })
