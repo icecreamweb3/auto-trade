@@ -1315,7 +1315,7 @@ function BacktestWorkspace() {
   const [intervalSeconds, setIntervalSeconds] = useState<BacktestInterval>(900);
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
-  const [allSymbols, setAllSymbols] = useState(true);
+  const [allSymbols, setAllSymbols] = useState(false);
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
   const [symbolSearch, setSymbolSearch] = useState("");
   const [generateLog, setGenerateLog] = useState(false);
