@@ -99,6 +99,24 @@ services:
         condition: service_healthy
     network_mode: host
 
+  feature-scan:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      TZ: UTC
+    entrypoint: ["python", "-m", "auto_trade.strategies.feature_scan"]
+    depends_on:
+      database:
+        condition: service_healthy
+    network_mode: host
+
   market-writer:
     profiles: ["runtime"]
     build:

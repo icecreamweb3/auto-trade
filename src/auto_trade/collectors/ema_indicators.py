@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
@@ -11,6 +12,7 @@ from typing import cast
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from auto_trade.collectors.kline_15m import update_15m_klines
 from auto_trade.config import Settings, get_settings
 from auto_trade.infrastructure.database import create_database_engine
 from auto_trade.logging_config import configure_logging
@@ -428,17 +430,52 @@ async def run_forever(settings: Settings) -> None:
     engine = create_database_engine(settings)
     try:
         while True:
-            updated = await update_ema_indicators(engine, settings)
-            logger.info("EMA indicator cycle completed updated_rows=%d", updated)
+            checked_until = datetime.now(UTC)
+            kline_rows = await update_15m_klines(
+                engine,
+                checked_until=checked_until,
+                batch_size=settings.ema_indicator_write_batch_size,
+            )
+            ema_rows = await update_ema_indicators(engine, settings)
+            logger.info(
+                "Indicator cycle completed kline_15m_rows=%d ema_rows=%d",
+                kline_rows,
+                ema_rows,
+            )
             await asyncio.sleep(settings.ema_indicator_scan_interval_seconds)
     finally:
         await engine.dispose()
 
 
+async def run_once(settings: Settings) -> tuple[int, int]:
+    engine = create_database_engine(settings)
+    try:
+        kline_rows = await update_15m_klines(
+            engine,
+            checked_until=datetime.now(UTC),
+            batch_size=settings.ema_indicator_write_batch_size,
+        )
+        ema_rows = await update_ema_indicators(engine, settings)
+        return kline_rows, ema_rows
+    finally:
+        await engine.dispose()
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Precompute EMA and K-line indicators")
+    parser.add_argument("mode", choices=("run", "once"), nargs="?", default="run")
+    args = parser.parse_args()
     settings = get_settings()
     configure_logging(settings, "ema-indicators")
-    asyncio.run(run_forever(settings))
+    if args.mode == "once":
+        kline_rows, ema_rows = asyncio.run(run_once(settings))
+        logger.info(
+            "Indicator one-shot completed kline_15m_rows=%d ema_rows=%d",
+            kline_rows,
+            ema_rows,
+        )
+    else:
+        asyncio.run(run_forever(settings))
 
 
 if __name__ == "__main__":

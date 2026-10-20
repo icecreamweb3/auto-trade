@@ -1,4 +1,4 @@
-.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs logs-export monitor-up monitor-logs repair-once history-rankings-3m history-rankings-status test lint typecheck \
+.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs logs-export monitor-up monitor-logs repair-once history-rankings-3m history-rankings-status feature-scan-3m test lint typecheck \
 	db-up db-down db-status db-logs db-migrate db-shell db-verify db-storage-verify db-columnstore-poc db-poc db-poc-clean \
 	nats-up nats-logs nats-init nats-verify nats-smoke collector-smoke writer-drain
 
@@ -43,6 +43,9 @@ history-rankings-3m:
 
 history-rankings-status:
 	docker compose exec -T database sh -ec 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" --set=ON_ERROR_STOP=1 -c "SELECT min(utc_trade_date) AS first_day, max(utc_trade_date) AS last_day, count(*) AS daily_metrics, count(*) FILTER (WHERE quality_status = '\''VALID'\'') AS valid_metrics FROM market.utc_daily_metrics;" -c "SELECT min(utc_trade_date) AS first_day, max(utc_trade_date) AS last_day, count(*) AS ranking_days, sum(item_count) AS ranking_entries FROM market.ranking_snapshots WHERE ranking_type = '\''UTC_DAILY_2355'\'';"'
+
+feature-scan-3m:
+	docker compose --profile tools run --rm --build feature-scan --days 90
 
 test:
 	docker run --rm -v "$(CURDIR):/workspace:ro" -w /workspace \

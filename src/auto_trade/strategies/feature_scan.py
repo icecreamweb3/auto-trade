@@ -1,0 +1,548 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import csv
+import json
+import sys
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import IO, Literal, cast
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+
+from auto_trade.config import get_settings
+from auto_trade.infrastructure.database import create_database_engine
+
+FactorName = Literal[
+    "ema_bullish_cross",
+    "rapid_price_rise",
+    "open_interest_rise",
+    "volume_surge",
+    "amplitude_spike_streak",
+    "low_average_amplitude",
+]
+
+ALL_FACTORS: tuple[FactorName, ...] = (
+    "ema_bullish_cross",
+    "rapid_price_rise",
+    "open_interest_rise",
+    "volume_surge",
+    "amplitude_spike_streak",
+    "low_average_amplitude",
+)
+INTERVAL_SECONDS = 900
+BARS_PER_DAY = 24 * 60 * 60 // INTERVAL_SECONDS
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyParameters:
+    lookback_days: int = 90
+    average_days: int = 7
+    ema_cross_lookback_bars: int = 4
+    rapid_price_window_bars: int = 4
+    rapid_price_rise_percent: Decimal = Decimal("3")
+    open_interest_window_bars: int = 4
+    open_interest_rise_percent: Decimal = Decimal("5")
+    volume_surge_multiple: Decimal = Decimal("5")
+    amplitude_spike_multiple: Decimal = Decimal("5")
+    amplitude_consecutive_bars: int = 2
+    average_amplitude_max_percent: Decimal = Decimal("2")
+    required_factors: tuple[FactorName, ...] = ALL_FACTORS
+
+    def __post_init__(self) -> None:
+        positive_integers = (
+            self.lookback_days,
+            self.average_days,
+            self.ema_cross_lookback_bars,
+            self.rapid_price_window_bars,
+            self.open_interest_window_bars,
+            self.amplitude_consecutive_bars,
+        )
+        if any(value <= 0 for value in positive_integers):
+            raise ValueError("day and bar parameters must be positive")
+        nonnegative_decimals = (
+            self.rapid_price_rise_percent,
+            self.open_interest_rise_percent,
+            self.volume_surge_multiple,
+            self.amplitude_spike_multiple,
+            self.average_amplitude_max_percent,
+        )
+        if any(value < 0 for value in nonnegative_decimals):
+            raise ValueError("factor thresholds must be nonnegative")
+        if not self.required_factors:
+            raise ValueError("at least one required factor is needed")
+        if len(set(self.required_factors)) != len(self.required_factors):
+            raise ValueError("required factors must not contain duplicates")
+
+    @property
+    def average_bars(self) -> int:
+        return self.average_days * BARS_PER_DAY
+
+    @property
+    def warmup_bars(self) -> int:
+        return self.average_bars + max(
+            self.ema_cross_lookback_bars,
+            self.rapid_price_window_bars,
+            self.open_interest_window_bars,
+            self.amplitude_consecutive_bars,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureBar:
+    open_time: datetime
+    close_price: Decimal
+    ema20: Decimal
+    ema240: Decimal
+    quote_volume: Decimal
+    amplitude_percent: Decimal
+    open_interest_value: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class FactorResult:
+    passed: bool
+    value: Decimal | int | None
+    threshold: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StrategySignal:
+    symbol: str
+    open_time: datetime
+    close_price: Decimal
+    factors: Mapping[FactorName, FactorResult]
+
+
+class SeriesContext:
+    def __init__(self, bars: Sequence[FeatureBar]) -> None:
+        self.bars = bars
+        self.volume_prefix = self._prefix("quote_volume")
+        self.amplitude_prefix = self._prefix("amplitude_percent")
+        self.contiguous_count: list[int] = []
+        expected_delta = timedelta(seconds=INTERVAL_SECONDS)
+        for index, bar in enumerate(bars):
+            if index and bar.open_time - bars[index - 1].open_time == expected_delta:
+                self.contiguous_count.append(self.contiguous_count[-1] + 1)
+            else:
+                self.contiguous_count.append(1)
+
+    def _prefix(self, attribute: str) -> list[Decimal]:
+        result = [Decimal(0)]
+        for bar in self.bars:
+            result.append(result[-1] + cast(Decimal, getattr(bar, attribute)))
+        return result
+
+    def average_before(self, index: int, count: int, attribute: str) -> Decimal | None:
+        if index < count or self.contiguous_count[index] < count + 1:
+            return None
+        prefix = self.volume_prefix if attribute == "quote_volume" else self.amplitude_prefix
+        return (prefix[index] - prefix[index - count]) / Decimal(count)
+
+    def is_contiguous(self, index: int, required_count: int) -> bool:
+        return index >= 0 and self.contiguous_count[index] >= required_count
+
+
+def _ema_bullish_cross(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    first = max(1, index - parameters.ema_cross_lookback_bars + 1)
+    for cross_index in range(index, first - 1, -1):
+        current = context.bars[cross_index]
+        previous = context.bars[cross_index - 1]
+        bars_ago = index - cross_index
+        if not context.is_contiguous(index, bars_ago + 2):
+            continue
+        if current.ema20 > current.ema240 and previous.ema20 <= previous.ema240:
+            return FactorResult(
+                True,
+                bars_ago,
+                f"bars_since_cross < {parameters.ema_cross_lookback_bars}",
+            )
+    return FactorResult(
+        False,
+        None,
+        f"bars_since_cross < {parameters.ema_cross_lookback_bars}",
+        "no bullish EMA20/EMA240 cross in the configured window",
+    )
+
+
+def _percent_change(current: Decimal, previous: Decimal) -> Decimal | None:
+    if previous <= 0:
+        return None
+    return (current / previous - Decimal(1)) * Decimal(100)
+
+
+def _rapid_price_rise(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    window = parameters.rapid_price_window_bars
+    if index < window or not context.is_contiguous(index, window + 1):
+        return FactorResult(
+            False,
+            None,
+            f">= {parameters.rapid_price_rise_percent}%",
+            "missing continuous price history",
+        )
+    value = _percent_change(
+        context.bars[index].close_price, context.bars[index - window].close_price
+    )
+    return FactorResult(
+        value is not None and value >= parameters.rapid_price_rise_percent,
+        value,
+        f">= {parameters.rapid_price_rise_percent}% over {window} bars",
+    )
+
+
+def _open_interest_rise(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    window = parameters.open_interest_window_bars
+    if index < window or not context.is_contiguous(index, window + 1):
+        return FactorResult(
+            False,
+            None,
+            f">= {parameters.open_interest_rise_percent}%",
+            "missing continuous OI history",
+        )
+    current = context.bars[index].open_interest_value
+    previous = context.bars[index - window].open_interest_value
+    if current is None or previous is None:
+        return FactorResult(
+            False,
+            None,
+            f">= {parameters.open_interest_rise_percent}%",
+            "OI value is unavailable",
+        )
+    value = _percent_change(current, previous)
+    return FactorResult(
+        value is not None and value >= parameters.open_interest_rise_percent,
+        value,
+        f">= {parameters.open_interest_rise_percent}% over {window} bars",
+    )
+
+
+def _volume_surge(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    average = context.average_before(index, parameters.average_bars, "quote_volume")
+    if average is None or average <= 0:
+        return FactorResult(
+            False,
+            None,
+            f">= {parameters.volume_surge_multiple}x",
+            "missing prior volume average",
+        )
+    value = context.bars[index].quote_volume / average
+    return FactorResult(
+        value >= parameters.volume_surge_multiple,
+        value,
+        f">= {parameters.volume_surge_multiple}x prior {parameters.average_days}d average",
+    )
+
+
+def _average_amplitude(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> Decimal | None:
+    return context.average_before(index, parameters.average_bars, "amplitude_percent")
+
+
+def _amplitude_spike_streak(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    start = index - parameters.amplitude_consecutive_bars + 1
+    if start < 0 or not context.is_contiguous(index, parameters.amplitude_consecutive_bars):
+        return FactorResult(
+            False,
+            None,
+            f">= {parameters.amplitude_spike_multiple}x",
+            "missing consecutive bars",
+        )
+    multiples: list[Decimal] = []
+    for streak_index in range(start, index + 1):
+        average = _average_amplitude(context, streak_index, parameters)
+        if average is None or average <= 0:
+            return FactorResult(
+                False,
+                None,
+                f">= {parameters.amplitude_spike_multiple}x",
+                "missing prior amplitude average",
+            )
+        multiples.append(context.bars[streak_index].amplitude_percent / average)
+    value = min(multiples)
+    return FactorResult(
+        value >= parameters.amplitude_spike_multiple,
+        value,
+        f">= {parameters.amplitude_spike_multiple}x for "
+        f"{parameters.amplitude_consecutive_bars} consecutive bars",
+    )
+
+
+def _low_average_amplitude(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    value = _average_amplitude(context, index, parameters)
+    return FactorResult(
+        value is not None and value < parameters.average_amplitude_max_percent,
+        value,
+        f"< {parameters.average_amplitude_max_percent}% over prior {parameters.average_days}d",
+        None if value is not None else "missing prior amplitude average",
+    )
+
+
+FACTOR_EVALUATORS = {
+    "ema_bullish_cross": _ema_bullish_cross,
+    "rapid_price_rise": _rapid_price_rise,
+    "open_interest_rise": _open_interest_rise,
+    "volume_surge": _volume_surge,
+    "amplitude_spike_streak": _amplitude_spike_streak,
+    "low_average_amplitude": _low_average_amplitude,
+}
+
+
+def evaluate_series(
+    symbol: str,
+    bars: Sequence[FeatureBar],
+    parameters: StrategyParameters,
+    scan_start: datetime,
+) -> tuple[StrategySignal, ...]:
+    context = SeriesContext(bars)
+    signals: list[StrategySignal] = []
+    for index, bar in enumerate(bars):
+        if bar.open_time < scan_start:
+            continue
+        factors = {
+            name: FACTOR_EVALUATORS[name](context, index, parameters) for name in ALL_FACTORS
+        }
+        if all(factors[name].passed for name in parameters.required_factors):
+            signals.append(StrategySignal(symbol, bar.open_time, bar.close_price, factors))
+    return tuple(signals)
+
+
+async def _instrument_rows(
+    connection: AsyncConnection, symbols: Sequence[str] | None
+) -> Sequence[Mapping[str, object]]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT i.instrument_id, i.symbol
+            FROM core.instruments i
+            WHERE i.exchange = 'BINANCE'
+              AND i.market = 'USD_M_FUTURES'
+              AND i.contract_type = 'PERPETUAL'
+              AND (:all_symbols OR upper(i.symbol) = ANY(CAST(:symbols AS text[])))
+              AND EXISTS (
+                  SELECT 1
+                  FROM market.klines_15m k
+                  WHERE k.instrument_id = i.instrument_id
+                    AND k.price_type = 'TRADE'
+                    AND k.interval_seconds = 900
+              )
+            ORDER BY i.symbol
+            """
+        ),
+        {
+            "all_symbols": not symbols,
+            "symbols": [symbol.upper() for symbol in symbols] if symbols else [],
+        },
+    )
+    return [cast(Mapping[str, object], row) for row in result.mappings().all()]
+
+
+async def _load_feature_bars(
+    connection: AsyncConnection,
+    instrument_id: int,
+    start: datetime,
+    end: datetime,
+) -> tuple[FeatureBar, ...]:
+    result = await connection.execute(
+        text(
+            """
+            SELECT e.open_time, e.close_price, e.ema20, e.ema240,
+                   k.quote_volume, e.amplitude_percent, k.open_interest_value
+            FROM market.kline_ema_indicators e
+            JOIN market.klines_15m k
+              ON k.instrument_id = e.instrument_id
+             AND k.price_type = e.price_type
+             AND k.interval_seconds = e.interval_seconds
+             AND k.open_time = e.open_time
+            WHERE e.instrument_id = :instrument_id
+              AND e.price_type = 'TRADE'
+              AND e.interval_seconds = 900
+              AND e.open_time >= CAST(:start AS timestamptz)
+              AND e.open_time < CAST(:end AS timestamptz)
+              AND e.amplitude_percent IS NOT NULL
+            ORDER BY e.open_time
+            """
+        ),
+        {"instrument_id": instrument_id, "start": start, "end": end},
+    )
+    return tuple(
+        FeatureBar(
+            open_time=cast(datetime, row["open_time"]),
+            close_price=Decimal(str(row["close_price"])),
+            ema20=Decimal(str(row["ema20"])),
+            ema240=Decimal(str(row["ema240"])),
+            quote_volume=Decimal(str(row["quote_volume"])),
+            amplitude_percent=Decimal(str(row["amplitude_percent"])),
+            open_interest_value=(
+                Decimal(str(row["open_interest_value"]))
+                if row["open_interest_value"] is not None
+                else None
+            ),
+        )
+        for row in result.mappings()
+    )
+
+
+async def scan_database(
+    engine: AsyncEngine,
+    parameters: StrategyParameters,
+    *,
+    symbols: Sequence[str] | None = None,
+    end: datetime | None = None,
+) -> tuple[StrategySignal, ...]:
+    scan_end = end or datetime.now(UTC)
+    scan_end = scan_end.replace(tzinfo=UTC) if scan_end.tzinfo is None else scan_end.astimezone(UTC)
+    scan_end = datetime.fromtimestamp(
+        int(scan_end.timestamp()) // INTERVAL_SECONDS * INTERVAL_SECONDS, tz=UTC
+    )
+    scan_start = scan_end - timedelta(days=parameters.lookback_days)
+    query_start = scan_start - timedelta(seconds=parameters.warmup_bars * INTERVAL_SECONDS)
+    signals: list[StrategySignal] = []
+    async with engine.connect() as connection:
+        instruments = await _instrument_rows(connection, symbols)
+        for instrument in instruments:
+            bars = await _load_feature_bars(
+                connection,
+                cast(int, instrument["instrument_id"]),
+                query_start,
+                scan_end,
+            )
+            signals.extend(
+                evaluate_series(cast(str, instrument["symbol"]), bars, parameters, scan_start)
+            )
+    return tuple(sorted(signals, key=lambda signal: (signal.open_time, signal.symbol)))
+
+
+def _serialize_value(value: Decimal | int | None) -> str | int | None:
+    return str(value) if isinstance(value, Decimal) else value
+
+
+def signal_record(signal: StrategySignal) -> dict[str, object]:
+    record: dict[str, object] = {
+        "symbol": signal.symbol,
+        "open_time": signal.open_time.isoformat(),
+        "close_price": str(signal.close_price),
+    }
+    for name in ALL_FACTORS:
+        result = signal.factors[name]
+        record[f"{name}_passed"] = result.passed
+        record[f"{name}_value"] = _serialize_value(result.value)
+        record[f"{name}_threshold"] = result.threshold
+        record[f"{name}_reason"] = result.reason
+    return record
+
+
+def write_signals(signals: Sequence[StrategySignal], output: IO[str], output_format: str) -> None:
+    records = [signal_record(signal) for signal in signals]
+    if output_format == "jsonl":
+        for record in records:
+            output.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return
+    fieldnames = (
+        list(signal_record(signals[0]).keys())
+        if signals
+        else [
+            "symbol",
+            "open_time",
+            "close_price",
+        ]
+    )
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(records)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Scan configurable 15m momentum/OI/volume/amplitude factors"
+    )
+    parser.add_argument("--days", type=int, default=90)
+    parser.add_argument("--symbols", nargs="*")
+    parser.add_argument("--end", type=datetime.fromisoformat)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--format", choices=("jsonl", "csv"), default="jsonl")
+    parser.add_argument("--average-days", type=int, default=7)
+    parser.add_argument("--ema-cross-bars", type=int, default=4)
+    parser.add_argument("--price-window-bars", type=int, default=4)
+    parser.add_argument("--price-rise-percent", type=Decimal, default=Decimal("3"))
+    parser.add_argument("--oi-window-bars", type=int, default=4)
+    parser.add_argument("--oi-rise-percent", type=Decimal, default=Decimal("5"))
+    parser.add_argument("--volume-multiple", type=Decimal, default=Decimal("5"))
+    parser.add_argument("--amplitude-multiple", type=Decimal, default=Decimal("5"))
+    parser.add_argument("--amplitude-consecutive-bars", type=int, default=2)
+    parser.add_argument("--average-amplitude-max-percent", type=Decimal, default=Decimal("2"))
+    parser.add_argument(
+        "--require-factor",
+        action="append",
+        choices=ALL_FACTORS,
+        dest="required_factors",
+        help="Repeat to require only selected factors; defaults to all six.",
+    )
+    return parser
+
+
+async def _run(args: argparse.Namespace) -> int:
+    required = tuple(args.required_factors) if args.required_factors else ALL_FACTORS
+    parameters = StrategyParameters(
+        lookback_days=args.days,
+        average_days=args.average_days,
+        ema_cross_lookback_bars=args.ema_cross_bars,
+        rapid_price_window_bars=args.price_window_bars,
+        rapid_price_rise_percent=args.price_rise_percent,
+        open_interest_window_bars=args.oi_window_bars,
+        open_interest_rise_percent=args.oi_rise_percent,
+        volume_surge_multiple=args.volume_multiple,
+        amplitude_spike_multiple=args.amplitude_multiple,
+        amplitude_consecutive_bars=args.amplitude_consecutive_bars,
+        average_amplitude_max_percent=args.average_amplitude_max_percent,
+        required_factors=cast(tuple[FactorName, ...], required),
+    )
+    engine = create_database_engine(get_settings())
+    try:
+        signals = await scan_database(engine, parameters, symbols=args.symbols, end=args.end)
+    finally:
+        await engine.dispose()
+    if args.output:
+        with args.output.open("w", encoding="utf-8", newline="") as output:
+            write_signals(signals, output, args.format)
+    else:
+        write_signals(signals, sys.stdout, args.format)
+    print(
+        json.dumps(
+            {
+                "signal_count": len(signals),
+                "parameters": asdict(parameters),
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+        file=sys.stderr,
+    )
+    return 0
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    raise SystemExit(asyncio.run(_run(args)))
+
+
+if __name__ == "__main__":
+    main()
