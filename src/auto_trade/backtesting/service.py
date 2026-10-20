@@ -229,6 +229,8 @@ class BacktestManager:
         )
         if active_jobs >= MAX_ACTIVE_JOBS:
             raise RuntimeError("too many active backtests")
+        if not request.preserve_log_history:
+            self._delete_historical_logs()
         self._discard_old_jobs()
         job = _Job(
             job_id=uuid4().hex,
@@ -301,6 +303,20 @@ class BacktestManager:
                     path.unlink(missing_ok=True)
             except OSError:
                 continue
+
+    def _delete_historical_logs(self) -> None:
+        active_paths = {
+            job.log_path
+            for job in self.jobs.values()
+            if job.status in ("QUEUED", "RUNNING") and job.log_path is not None
+        }
+        if self.log_directory.is_dir():
+            for path in self.log_directory.glob("backtest-*.html"):
+                if path not in active_paths and path.is_file():
+                    path.unlink(missing_ok=True)
+        for job in self.jobs.values():
+            if job.log_path is not None and not job.log_path.is_file():
+                job.log_path = None
 
     async def metadata(self) -> BacktestMetadata:
         intervals: dict[str, BacktestIntervalMetadata] = {}

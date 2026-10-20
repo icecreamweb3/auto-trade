@@ -234,7 +234,7 @@ interface BacktestJob {
   log_url: string | null;
   max_log_lines: number;
   error: string | null;
-  request: { interval_seconds: BacktestInterval; generate_log: boolean; parameters: { required_factors: FactorName[] } };
+  request: { interval_seconds: BacktestInterval; generate_log: boolean; preserve_log_history: boolean; parameters: { required_factors: FactorName[] } };
   signals: BacktestSignal[];
 }
 
@@ -1319,6 +1319,7 @@ function BacktestWorkspace() {
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>([]);
   const [symbolSearch, setSymbolSearch] = useState("");
   const [generateLog, setGenerateLog] = useState(false);
+  const [preserveLogHistory, setPreserveLogHistory] = useState(false);
   const [selectedFactors, setSelectedFactors] = useState<FactorName[]>(allFactorNames);
   const [parameters, setParameters] = useState<BacktestParameterValues>({ ...defaultBacktestParameters });
   const [jobId, setJobId] = useState<string | null>(null);
@@ -1430,6 +1431,7 @@ function BacktestWorkspace() {
           end_at: utc8InputToIso(endAt),
           interval_seconds: intervalSeconds,
           generate_log: generateLog,
+          preserve_log_history: preserveLogHistory,
           symbols: allSymbols ? [] : selectedSymbols,
           parameters: {
             average_days: parameterValue("averageDays"),
@@ -1494,8 +1496,9 @@ function BacktestWorkspace() {
         <input type="search" placeholder="搜索 BTCUSDT" value={symbolSearch} onChange={(event) => setSymbolSearch(event.target.value)} disabled={allSymbols} />
         <div className="ticker-list" aria-disabled={allSymbols}>{filteredSymbols.map((symbol) => <label key={symbol}><input type="checkbox" checked={selectedSymbols.includes(symbol)} disabled={allSymbols} onChange={() => toggleSymbol(symbol)} /><span>{symbol}</span></label>)}</div>
         <label className="backtest-log-option"><input type="checkbox" checked={generateLog} onChange={(event) => setGenerateLog(event.target.checked)} /><span>生成逐 K 线 HTML 日志</span></label>
+        <label className="backtest-log-option"><input type="checkbox" checked={preserveLogHistory} onChange={(event) => setPreserveLogHistory(event.target.checked)} /><span>不删除历史日志</span></label>
         <button className="primary-button backtest-run" type="submit" disabled={submitting || !metadata}>{submitting ? "回测运行中…" : "开始回测"}</button>
-        <p className="message">日志默认不生成。勾选后写入测试机日志卷，最多记录 100,000 根 K 线；选择的因子采用 AND 关系。</p>
+        <p className="message">日志默认不生成，新回测默认删除历史日志；勾选“不删除历史日志”可保留。单份日志最多记录 100,000 根 K 线；选择的因子采用 AND 关系。</p>
       </aside>
     </form>
     <section className="panel backtest-results">

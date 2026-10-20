@@ -30,6 +30,7 @@ def _request() -> BacktestCreateRequest:
 
 def test_request_normalizes_tickers_and_requires_aware_time() -> None:
     assert _request().symbols == ("BRUSDT", "BTCUSDT")
+    assert _request().preserve_log_history is False
 
     with pytest.raises(ValidationError, match="timezone"):
         BacktestCreateRequest(
@@ -157,3 +158,49 @@ async def test_optional_html_log_is_generated_and_resolvable(
     assert '<span class="pass">✓</span>' in html
     assert "test threshold" in html
     assert "</html>" in html
+
+
+async def test_new_backtest_deletes_previous_log_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_scan(*args: Any, **kwargs: Any) -> DatabaseScanResult:
+        kwargs["progress_callback"](1, 1)
+        return DatabaseScanResult((), 1, 1)
+
+    monkeypatch.setattr(backtest_service, "scan_database_detailed", fake_scan)
+    manager = BacktestManager(None, tmp_path)  # type: ignore[arg-type]
+    first = manager.create(_request().model_copy(update={"generate_log": True}))
+    assert first.task is not None
+    await first.task
+    first_path = first.log_path
+    assert first_path is not None and first_path.is_file()
+
+    second = manager.create(_request())
+    assert not first_path.exists()
+    assert manager.response(first).log_available is False
+    assert second.task is not None
+    await second.task
+
+
+async def test_preserve_log_history_keeps_previous_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_scan(*args: Any, **kwargs: Any) -> DatabaseScanResult:
+        kwargs["progress_callback"](1, 1)
+        return DatabaseScanResult((), 1, 1)
+
+    monkeypatch.setattr(backtest_service, "scan_database_detailed", fake_scan)
+    manager = BacktestManager(None, tmp_path)  # type: ignore[arg-type]
+    first = manager.create(_request().model_copy(update={"generate_log": True}))
+    assert first.task is not None
+    await first.task
+    first_path = first.log_path
+    assert first_path is not None and first_path.is_file()
+
+    second = manager.create(
+        _request().model_copy(update={"preserve_log_history": True})
+    )
+    assert first_path.is_file()
+    assert manager.response(first).log_available is True
+    assert second.task is not None
+    await second.task

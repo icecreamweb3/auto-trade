@@ -46,6 +46,7 @@ class BacktestCreateRequest(BaseModel):
     end_at: datetime
     interval_seconds: Literal[300, 900] = 900
     generate_log: bool = False
+    preserve_log_history: bool = False
     symbols: tuple[str, ...] = ()
     parameters: BacktestParameters = Field(default_factory=BacktestParameters)
 
