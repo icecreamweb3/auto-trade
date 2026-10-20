@@ -107,6 +107,9 @@ async def test_optional_html_log_is_generated_and_resolvable(
         bar_number=37,
         open_time=datetime(2026, 10, 3, 1, tzinfo=UTC),
         close_price=Decimal("108749.60"),
+        price_precision=2,
+        ema20=Decimal("108700.1234"),
+        ema240=Decimal("108650.5678"),
         base_volume=Decimal("18788.707"),
         quote_volume=Decimal("2043370000"),
         factors=factors,
@@ -135,6 +138,11 @@ async def test_optional_html_log_is_generated_and_resolvable(
     html = path.read_text(encoding="utf-8")
     assert "<!doctype html>" in html
     assert "🚀 BRUSDT | 5min | K线 #37" in html
+    assert "2026-10-03T09:00:00.000000000+08:00" in html
+    assert "收盘价: 108749.60" in html
+    assert "EMA20: 108700.12 | EMA240: 108650.57" in html
+    assert "成交量: 18788.71" in html
+    assert "成交额: 2043370000.00" in html
     assert '<span class="pass">✓</span>' in html
     assert "test threshold" in html
     assert "</html>" in html

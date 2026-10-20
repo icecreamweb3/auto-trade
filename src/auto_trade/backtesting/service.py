@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from html import escape
 from pathlib import Path
@@ -38,6 +38,8 @@ MAX_SIGNALS = 10_000
 MAX_RETAINED_JOBS = 20
 MAX_ACTIVE_JOBS = 2
 MAX_LOG_LINES = 100_000
+UTC_PLUS_8 = timezone(timedelta(hours=8))
+DEFAULT_PRICE_PRECISION = 8
 
 FACTOR_LOG_LABELS = {
     "ema_bullish_cross": "EMA20上穿EMA240",
@@ -108,13 +110,23 @@ def _factor_log(name: str, result: FactorResult) -> str:
     return detail + ")"
 
 
+def _format_price(value: Decimal, price_precision: int | None) -> str:
+    precision = (
+        price_precision if price_precision is not None else DEFAULT_PRICE_PRECISION
+    )
+    return f"{value:.{precision}f}"
+
+
 def format_evaluation_log_line(
     evaluation: StrategyEvaluation, interval_seconds: int
 ) -> str:
     timestamp = (
-        evaluation.open_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")
-        + "000Z"
+        evaluation.open_time.astimezone(UTC_PLUS_8).strftime("%Y-%m-%dT%H:%M:%S.%f")
+        + "000+08:00"
     )
+    close_price = _format_price(evaluation.close_price, evaluation.price_precision)
+    ema20 = _format_price(evaluation.ema20, evaluation.price_precision)
+    ema240 = _format_price(evaluation.ema240, evaluation.price_precision)
     prefix = "🚀" if evaluation.matched else " "
     factors = " | ".join(
         _factor_log(name, evaluation.factors[name]) for name in ALL_FACTORS
@@ -122,9 +134,10 @@ def format_evaluation_log_line(
     return (
         f"{prefix} {evaluation.symbol} | {interval_seconds // 60}min"
         f" | K线 #{evaluation.bar_number} | {timestamp}"
-        f" | 收盘价: {evaluation.close_price:f}"
-        f" | 成交量: {evaluation.base_volume:f}"
-        f" | 成交额: {evaluation.quote_volume:f} | {factors}"
+        f" | 收盘价: {close_price}"
+        f" | EMA20: {ema20} | EMA240: {ema240}"
+        f" | 成交量: {evaluation.base_volume:.2f}"
+        f" | 成交额: {evaluation.quote_volume:.2f} | {factors}"
     )
 
 

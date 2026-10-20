@@ -22,6 +22,7 @@ def _bar(
     return FeatureBar(
         open_time=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=15 * index),
         close_price=close,
+        price_precision=2,
         ema20=ema20,
         ema240=ema240,
         base_volume=volume,

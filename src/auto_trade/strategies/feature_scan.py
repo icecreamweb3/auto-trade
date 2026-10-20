@@ -99,6 +99,7 @@ class StrategyParameters:
 class FeatureBar:
     open_time: datetime
     close_price: Decimal
+    price_precision: int | None
     ema20: Decimal
     ema240: Decimal
     base_volume: Decimal
@@ -129,6 +130,9 @@ class StrategyEvaluation:
     bar_number: int
     open_time: datetime
     close_price: Decimal
+    price_precision: int | None
+    ema20: Decimal
+    ema240: Decimal
     base_volume: Decimal
     quote_volume: Decimal
     factors: Mapping[FactorName, FactorResult]
@@ -354,6 +358,9 @@ def evaluate_series(
                     bar_number=bar_number,
                     open_time=bar.open_time,
                     close_price=bar.close_price,
+                    price_precision=bar.price_precision,
+                    ema20=bar.ema20,
+                    ema240=bar.ema240,
                     base_volume=bar.base_volume,
                     quote_volume=bar.quote_volume,
                     factors=factors,
@@ -424,7 +431,8 @@ async def _load_feature_bars(
 ) -> tuple[FeatureBar, ...]:
     if interval_seconds == 900:
         source_sql = """
-            SELECT e.open_time, e.close_price, e.ema20, e.ema240,
+            SELECT e.open_time, e.close_price, rules.price_precision,
+                   e.ema20, e.ema240,
                    k.base_volume, k.quote_volume,
                    e.amplitude_percent, k.open_interest_value
             FROM market.kline_ema_indicators e
@@ -433,6 +441,17 @@ async def _load_feature_bars(
              AND k.price_type = e.price_type
              AND k.interval_seconds = e.interval_seconds
              AND k.open_time = e.open_time
+            LEFT JOIN LATERAL (
+                SELECT r.price_precision
+                FROM core.instrument_rule_versions r
+                WHERE r.instrument_id = e.instrument_id
+                ORDER BY (r.effective_from <= e.open_time) DESC,
+                         CASE WHEN r.effective_from <= e.open_time
+                              THEN r.effective_from END DESC,
+                         CASE WHEN r.effective_from > e.open_time
+                              THEN r.effective_from END ASC
+                LIMIT 1
+            ) rules ON true
             WHERE e.instrument_id = :instrument_id
               AND e.price_type = 'TRADE'
               AND e.interval_seconds = :interval_seconds
@@ -443,7 +462,8 @@ async def _load_feature_bars(
         """
     else:
         source_sql = """
-            SELECT e.open_time, e.close_price, e.ema20, e.ema240,
+            SELECT e.open_time, e.close_price, rules.price_precision,
+                   e.ema20, e.ema240,
                    k.base_volume, k.quote_volume,
                    e.amplitude_percent, oi.open_interest_value
             FROM market.kline_ema_indicators e
@@ -455,6 +475,17 @@ async def _load_feature_bars(
              AND k.is_current
              AND k.is_closed
              AND k.quality_status = 'VALID'
+            LEFT JOIN LATERAL (
+                SELECT r.price_precision
+                FROM core.instrument_rule_versions r
+                WHERE r.instrument_id = e.instrument_id
+                ORDER BY (r.effective_from <= e.open_time) DESC,
+                         CASE WHEN r.effective_from <= e.open_time
+                              THEN r.effective_from END DESC,
+                         CASE WHEN r.effective_from > e.open_time
+                              THEN r.effective_from END ASC
+                LIMIT 1
+            ) rules ON true
             LEFT JOIN LATERAL (
                 SELECT o.open_interest_value
                 FROM market.open_interest_observations o
@@ -486,6 +517,11 @@ async def _load_feature_bars(
         FeatureBar(
             open_time=cast(datetime, row["open_time"]),
             close_price=Decimal(str(row["close_price"])),
+            price_precision=(
+                int(row["price_precision"])
+                if row["price_precision"] is not None
+                else None
+            ),
             ema20=Decimal(str(row["ema20"])),
             ema240=Decimal(str(row["ema240"])),
             base_volume=Decimal(str(row["base_volume"])),
