@@ -192,7 +192,7 @@ interface RankingFilters {
   rankTo: number;
 }
 
-type FactorName = "ema_bullish_cross" | "rapid_price_rise" | "open_interest_rise" | "volume_surge" | "amplitude_spike_streak" | "low_average_amplitude";
+type FactorName = "bullish_candle_sequence" | "single_bar_price_rise" | "volume_acceleration" | "ema_bullish_setup" | "ema_bullish_cross" | "rapid_price_rise" | "open_interest_rise" | "volume_surge" | "amplitude_spike_streak" | "low_average_amplitude";
 type BacktestStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
 type BacktestInterval = 300 | 900;
 
@@ -249,6 +249,16 @@ type BacktestNumericInput = number | "";
 
 interface BacktestParameterValues {
   averageDays: BacktestNumericInput;
+  bullishSequenceBars: BacktestNumericInput;
+  bullishMinClosePositionPercent: BacktestNumericInput;
+  bullishLastClosePositionPercent: BacktestNumericInput;
+  bullishLastMaxUpperShadowPercent: BacktestNumericInput;
+  singleBarPriceRisePercent: BacktestNumericInput;
+  volumeAccelerationAverageBars: BacktestNumericInput;
+  volumeAccelerationAverageMultiple: BacktestNumericInput;
+  volumeAccelerationPreviousMultiple: BacktestNumericInput;
+  emaNearCrossGapPercent: BacktestNumericInput;
+  emaGapShrinkMinPercent: BacktestNumericInput;
   emaCrossBars: BacktestNumericInput;
   priceWindowBars: BacktestNumericInput;
   priceRisePercent: BacktestNumericInput;
@@ -262,6 +272,16 @@ interface BacktestParameterValues {
 
 const defaultBacktestParameters: Record<keyof BacktestParameterValues, number> = {
   averageDays: 7,
+  bullishSequenceBars: 2,
+  bullishMinClosePositionPercent: 50,
+  bullishLastClosePositionPercent: 85,
+  bullishLastMaxUpperShadowPercent: 15,
+  singleBarPriceRisePercent: 3,
+  volumeAccelerationAverageBars: 20,
+  volumeAccelerationAverageMultiple: 2,
+  volumeAccelerationPreviousMultiple: 1.3,
+  emaNearCrossGapPercent: 1,
+  emaGapShrinkMinPercent: 30,
   emaCrossBars: 4,
   priceWindowBars: 4,
   priceRisePercent: 3,
@@ -275,6 +295,16 @@ const defaultBacktestParameters: Record<keyof BacktestParameterValues, number> =
 
 const backtestParameterLabels: Record<keyof BacktestParameterValues, string> = {
   averageDays: "均值周期",
+  bullishSequenceBars: "连续阳线数量",
+  bullishMinClosePositionPercent: "前序阳线最低收盘位置",
+  bullishLastClosePositionPercent: "最后阳线最低收盘位置",
+  bullishLastMaxUpperShadowPercent: "最后阳线最大上影线",
+  singleBarPriceRisePercent: "单根 K 线涨幅",
+  volumeAccelerationAverageBars: "成交量均值窗口",
+  volumeAccelerationAverageMultiple: "成交量均值倍数",
+  volumeAccelerationPreviousMultiple: "上一根成交量倍数",
+  emaNearCrossGapPercent: "EMA 最大临近差距",
+  emaGapShrinkMinPercent: "EMA 差距最小收缩幅度",
   emaCrossBars: "EMA 上穿窗口",
   priceWindowBars: "价格窗口",
   priceRisePercent: "价格涨幅",
@@ -1227,6 +1257,10 @@ function MonitoringDashboard() {
 }
 
 const factorLabels: Record<FactorName, string> = {
+  bullish_candle_sequence: "连续强势阳线",
+  single_bar_price_rise: "单根 K 线快速拉升",
+  volume_acceleration: "短周期成交量加速",
+  ema_bullish_setup: "EMA 金叉/临近金叉",
   ema_bullish_cross: "EMA20 上穿 EMA240",
   rapid_price_rise: "价格快速拉升",
   open_interest_rise: "OI 价值快速提升",
@@ -1235,12 +1269,12 @@ const factorLabels: Record<FactorName, string> = {
   low_average_amplitude: "7日平均振幅低"
 };
 
-const allFactorNames = Object.keys(factorLabels) as FactorName[];
+const earlyBreakoutFactors: FactorName[] = ["bullish_candle_sequence", "single_bar_price_rise", "volume_acceleration", "ema_bullish_setup", "low_average_amplitude"];
 
 function factorValue(name: FactorName, value: number | null): string {
   if (value === null) return "—";
   if (name === "ema_bullish_cross") return `${value} 根前`;
-  if (name === "rapid_price_rise" || name === "open_interest_rise" || name === "low_average_amplitude") return `${value.toFixed(2)}%`;
+  if (name === "bullish_candle_sequence" || name === "single_bar_price_rise" || name === "ema_bullish_setup" || name === "rapid_price_rise" || name === "open_interest_rise" || name === "low_average_amplitude") return `${value.toFixed(2)}%`;
   return `${value.toFixed(2)}×`;
 }
 
@@ -1320,7 +1354,7 @@ function BacktestWorkspace() {
   const [symbolSearch, setSymbolSearch] = useState("");
   const [generateLog, setGenerateLog] = useState(false);
   const [preserveLogHistory, setPreserveLogHistory] = useState(false);
-  const [selectedFactors, setSelectedFactors] = useState<FactorName[]>(allFactorNames);
+  const [selectedFactors, setSelectedFactors] = useState<FactorName[]>(earlyBreakoutFactors);
   const [parameters, setParameters] = useState<BacktestParameterValues>({ ...defaultBacktestParameters });
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<BacktestJob | null>(null);
@@ -1396,6 +1430,22 @@ function BacktestWorkspace() {
     if (selectedFactors.length === 0) { setError("请至少选择一个策略因子"); return; }
     if (!allSymbols && selectedSymbols.length === 0) { setError("请选择至少一个 Ticker，或选择全部 Tickers"); return; }
     const requiredParameterKeys = new Set<keyof BacktestParameterValues>();
+    if (selectedFactors.includes("bullish_candle_sequence")) {
+      requiredParameterKeys.add("bullishSequenceBars");
+      requiredParameterKeys.add("bullishMinClosePositionPercent");
+      requiredParameterKeys.add("bullishLastClosePositionPercent");
+      requiredParameterKeys.add("bullishLastMaxUpperShadowPercent");
+    }
+    if (selectedFactors.includes("single_bar_price_rise")) requiredParameterKeys.add("singleBarPriceRisePercent");
+    if (selectedFactors.includes("volume_acceleration")) {
+      requiredParameterKeys.add("volumeAccelerationAverageBars");
+      requiredParameterKeys.add("volumeAccelerationAverageMultiple");
+      requiredParameterKeys.add("volumeAccelerationPreviousMultiple");
+    }
+    if (selectedFactors.includes("ema_bullish_setup")) {
+      requiredParameterKeys.add("emaNearCrossGapPercent");
+      requiredParameterKeys.add("emaGapShrinkMinPercent");
+    }
     if (selectedFactors.includes("ema_bullish_cross")) requiredParameterKeys.add("emaCrossBars");
     if (selectedFactors.includes("rapid_price_rise")) {
       requiredParameterKeys.add("priceWindowBars");
@@ -1435,6 +1485,16 @@ function BacktestWorkspace() {
           symbols: allSymbols ? [] : selectedSymbols,
           parameters: {
             average_days: parameterValue("averageDays"),
+            bullish_sequence_bars: parameterValue("bullishSequenceBars"),
+            bullish_min_close_position_percent: parameterValue("bullishMinClosePositionPercent"),
+            bullish_last_close_position_percent: parameterValue("bullishLastClosePositionPercent"),
+            bullish_last_max_upper_shadow_percent: parameterValue("bullishLastMaxUpperShadowPercent"),
+            single_bar_price_rise_percent: parameterValue("singleBarPriceRisePercent"),
+            volume_acceleration_average_bars: parameterValue("volumeAccelerationAverageBars"),
+            volume_acceleration_average_multiple: parameterValue("volumeAccelerationAverageMultiple"),
+            volume_acceleration_previous_multiple: parameterValue("volumeAccelerationPreviousMultiple"),
+            ema_near_cross_gap_percent: parameterValue("emaNearCrossGapPercent"),
+            ema_gap_shrink_min_percent: parameterValue("emaGapShrinkMinPercent"),
             ema_cross_lookback_bars: parameterValue("emaCrossBars"),
             rapid_price_window_bars: parameterValue("priceWindowBars"),
             rapid_price_rise_percent: parameterValue("priceRisePercent"),
@@ -1482,6 +1542,10 @@ function BacktestWorkspace() {
           <label><span>均值周期（天）</span><input type="number" min="1" max="30" value={parameters.averageDays} onChange={(event) => setNumeric("averageDays", event.target.value)} /></label>
         </div>
         <div className="factor-grid">
+          <fieldset className={selectedFactors.includes("bullish_candle_sequence") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("bullish_candle_sequence")} onChange={() => toggleFactor("bullish_candle_sequence")} /><strong>{factorLabels.bullish_candle_sequence}</strong></label><div className="factor-params"><label><span>连续阳线</span><input type="number" min="2" max="10" value={parameters.bullishSequenceBars} onChange={(event) => setNumeric("bullishSequenceBars", event.target.value)} /></label><label><span>前序收盘位置 ≥ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.bullishMinClosePositionPercent} onChange={(event) => setNumeric("bullishMinClosePositionPercent", event.target.value)} /></label><label><span>最后收盘位置 ≥ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.bullishLastClosePositionPercent} onChange={(event) => setNumeric("bullishLastClosePositionPercent", event.target.value)} /></label><label><span>最后上影线 ≤ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.bullishLastMaxUpperShadowPercent} onChange={(event) => setNumeric("bullishLastMaxUpperShadowPercent", event.target.value)} /></label></div></fieldset>
+          <fieldset className={selectedFactors.includes("single_bar_price_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("single_bar_price_rise")} onChange={() => toggleFactor("single_bar_price_rise")} /><strong>{factorLabels.single_bar_price_rise}</strong></label><label><span>实体涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.singleBarPriceRisePercent} onChange={(event) => setNumeric("singleBarPriceRisePercent", event.target.value)} /></label></fieldset>
+          <fieldset className={selectedFactors.includes("volume_acceleration") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("volume_acceleration")} onChange={() => toggleFactor("volume_acceleration")} /><strong>{factorLabels.volume_acceleration}</strong></label><div className="factor-params"><label><span>均值窗口 K 根</span><input type="number" min="2" max="2016" value={parameters.volumeAccelerationAverageBars} onChange={(event) => setNumeric("volumeAccelerationAverageBars", event.target.value)} /></label><label><span>均值倍数 ≥</span><input type="number" min="0" step="0.01" value={parameters.volumeAccelerationAverageMultiple} onChange={(event) => setNumeric("volumeAccelerationAverageMultiple", event.target.value)} /></label><label><span>上一根倍数 ≥</span><input type="number" min="0" step="0.01" value={parameters.volumeAccelerationPreviousMultiple} onChange={(event) => setNumeric("volumeAccelerationPreviousMultiple", event.target.value)} /></label></div></fieldset>
+          <fieldset className={selectedFactors.includes("ema_bullish_setup") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("ema_bullish_setup")} onChange={() => toggleFactor("ema_bullish_setup")} /><strong>{factorLabels.ema_bullish_setup}</strong></label><div className="factor-params"><label><span>临近差距 ≤ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.emaNearCrossGapPercent} onChange={(event) => setNumeric("emaNearCrossGapPercent", event.target.value)} /></label><label><span>差距收缩 ≥ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.emaGapShrinkMinPercent} onChange={(event) => setNumeric("emaGapShrinkMinPercent", event.target.value)} /></label></div></fieldset>
           <fieldset className={selectedFactors.includes("ema_bullish_cross") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("ema_bullish_cross")} onChange={() => toggleFactor("ema_bullish_cross")} /><strong>{factorLabels.ema_bullish_cross}</strong></label><label><span>上穿发生于最近 K 根</span><input type="number" min="1" max="96" value={parameters.emaCrossBars} onChange={(event) => setNumeric("emaCrossBars", event.target.value)} /></label></fieldset>
           <fieldset className={selectedFactors.includes("rapid_price_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("rapid_price_rise")} onChange={() => toggleFactor("rapid_price_rise")} /><strong>{factorLabels.rapid_price_rise}</strong></label><div className="factor-params"><label><span>窗口 K 根</span><input type="number" min="1" max="96" value={parameters.priceWindowBars} onChange={(event) => setNumeric("priceWindowBars", event.target.value)} /></label><label><span>涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.priceRisePercent} onChange={(event) => setNumeric("priceRisePercent", event.target.value)} /></label></div></fieldset>
           <fieldset className={selectedFactors.includes("open_interest_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("open_interest_rise")} onChange={() => toggleFactor("open_interest_rise")} /><strong>{factorLabels.open_interest_rise}</strong></label><div className="factor-params"><label><span>窗口 K 根</span><input type="number" min="1" max="96" value={parameters.oiWindowBars} onChange={(event) => setNumeric("oiWindowBars", event.target.value)} /></label><label><span>涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.oiRisePercent} onChange={(event) => setNumeric("oiRisePercent", event.target.value)} /></label></div></fieldset>

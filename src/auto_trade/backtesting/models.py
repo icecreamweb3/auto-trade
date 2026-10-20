@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from auto_trade.monitoring.models import KlinePoint
-from auto_trade.strategies.feature_scan import ALL_FACTORS, FactorName
+from auto_trade.strategies.feature_scan import EARLY_BREAKOUT_FACTORS, FactorName
 
 BacktestStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED"]
 
@@ -16,6 +16,28 @@ class BacktestParameters(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     average_days: int = Field(default=7, ge=1, le=30)
+    bullish_sequence_bars: int = Field(default=2, ge=2, le=10)
+    bullish_min_close_position_percent: Decimal = Field(
+        default=Decimal("50"), ge=0, le=100
+    )
+    bullish_last_close_position_percent: Decimal = Field(
+        default=Decimal("85"), ge=0, le=100
+    )
+    bullish_last_max_upper_shadow_percent: Decimal = Field(
+        default=Decimal("15"), ge=0, le=100
+    )
+    single_bar_price_rise_percent: Decimal = Field(
+        default=Decimal("3"), ge=0, le=1000
+    )
+    volume_acceleration_average_bars: int = Field(default=20, ge=2, le=2016)
+    volume_acceleration_average_multiple: Decimal = Field(
+        default=Decimal("2"), ge=0, le=1000
+    )
+    volume_acceleration_previous_multiple: Decimal = Field(
+        default=Decimal("1.3"), ge=0, le=1000
+    )
+    ema_near_cross_gap_percent: Decimal = Field(default=Decimal("1"), ge=0, le=100)
+    ema_gap_shrink_min_percent: Decimal = Field(default=Decimal("30"), ge=0, le=100)
     ema_cross_lookback_bars: int = Field(default=4, ge=1, le=96)
     rapid_price_window_bars: int = Field(default=4, ge=1, le=96)
     rapid_price_rise_percent: Decimal = Field(default=Decimal("3"), ge=0, le=1000)
@@ -25,7 +47,7 @@ class BacktestParameters(BaseModel):
     amplitude_spike_multiple: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
     amplitude_consecutive_bars: int = Field(default=2, ge=1, le=96)
     average_amplitude_max_percent: Decimal = Field(default=Decimal("2"), ge=0, le=100)
-    required_factors: tuple[FactorName, ...] = ALL_FACTORS
+    required_factors: tuple[FactorName, ...] = EARLY_BREAKOUT_FACTORS
 
     @field_validator("required_factors")
     @classmethod

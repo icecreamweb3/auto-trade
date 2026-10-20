@@ -42,6 +42,10 @@ UTC_PLUS_8 = timezone(timedelta(hours=8))
 DEFAULT_PRICE_PRECISION = 8
 
 FACTOR_LOG_LABELS = {
+    "bullish_candle_sequence": "连续强势阳线",
+    "single_bar_price_rise": "单根K线快速拉升",
+    "volume_acceleration": "短周期成交量加速",
+    "ema_bullish_setup": "EMA金叉/临近金叉",
     "ema_bullish_cross": "EMA20上穿EMA240",
     "rapid_price_rise": "价格快速拉升",
     "open_interest_rise": "OI价值快速提升",
@@ -50,9 +54,18 @@ FACTOR_LOG_LABELS = {
     "low_average_amplitude": "平均振幅低",
 }
 PERCENT_FACTORS = frozenset(
-    {"rapid_price_rise", "open_interest_rise", "low_average_amplitude"}
+    {
+        "bullish_candle_sequence",
+        "single_bar_price_rise",
+        "ema_bullish_setup",
+        "rapid_price_rise",
+        "open_interest_rise",
+        "low_average_amplitude",
+    }
 )
-MULTIPLE_FACTORS = frozenset({"volume_surge", "amplitude_spike_streak"})
+MULTIPLE_FACTORS = frozenset(
+    {"volume_acceleration", "volume_surge", "amplitude_spike_streak"}
+)
 
 
 @dataclass(slots=True)
@@ -473,6 +486,28 @@ class BacktestManager:
             interval_seconds=request.interval_seconds,
             lookback_days=span_days,
             average_days=parameters.average_days,
+            bullish_sequence_bars=parameters.bullish_sequence_bars,
+            bullish_min_close_position_percent=(
+                parameters.bullish_min_close_position_percent
+            ),
+            bullish_last_close_position_percent=(
+                parameters.bullish_last_close_position_percent
+            ),
+            bullish_last_max_upper_shadow_percent=(
+                parameters.bullish_last_max_upper_shadow_percent
+            ),
+            single_bar_price_rise_percent=parameters.single_bar_price_rise_percent,
+            volume_acceleration_average_bars=(
+                parameters.volume_acceleration_average_bars
+            ),
+            volume_acceleration_average_multiple=(
+                parameters.volume_acceleration_average_multiple
+            ),
+            volume_acceleration_previous_multiple=(
+                parameters.volume_acceleration_previous_multiple
+            ),
+            ema_near_cross_gap_percent=parameters.ema_near_cross_gap_percent,
+            ema_gap_shrink_min_percent=parameters.ema_gap_shrink_min_percent,
             ema_cross_lookback_bars=parameters.ema_cross_lookback_bars,
             rapid_price_window_bars=parameters.rapid_price_window_bars,
             rapid_price_rise_percent=parameters.rapid_price_rise_percent,

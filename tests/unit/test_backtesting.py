@@ -11,6 +11,7 @@ from auto_trade.backtesting.models import BacktestCreateRequest, BacktestParamet
 from auto_trade.backtesting.service import BacktestManager
 from auto_trade.strategies.feature_scan import (
     ALL_FACTORS,
+    EARLY_BREAKOUT_FACTORS,
     DatabaseScanResult,
     FactorResult,
     StrategyEvaluation,
@@ -31,6 +32,7 @@ def _request() -> BacktestCreateRequest:
 def test_request_normalizes_tickers_and_requires_aware_time() -> None:
     assert _request().symbols == ("BRUSDT", "BTCUSDT")
     assert _request().preserve_log_history is False
+    assert BacktestParameters().required_factors == EARLY_BREAKOUT_FACTORS
 
     with pytest.raises(ValidationError, match="timezone"):
         BacktestCreateRequest(
@@ -87,6 +89,9 @@ async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.Monkey
     assert received["start"] == request.start_at
     assert received["end"] == request.end_at
     assert received["parameters"].interval_seconds == 300
+    assert received["parameters"].bullish_sequence_bars == 2
+    assert received["parameters"].volume_acceleration_average_bars == 20
+    assert received["parameters"].ema_near_cross_gap_percent == Decimal("1")
     assert response.log_available is False
 
 

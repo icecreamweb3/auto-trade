@@ -19,6 +19,10 @@ from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import create_database_engine
 
 FactorName = Literal[
+    "bullish_candle_sequence",
+    "single_bar_price_rise",
+    "volume_acceleration",
+    "ema_bullish_setup",
     "ema_bullish_cross",
     "rapid_price_rise",
     "open_interest_rise",
@@ -28,11 +32,22 @@ FactorName = Literal[
 ]
 
 ALL_FACTORS: tuple[FactorName, ...] = (
+    "bullish_candle_sequence",
+    "single_bar_price_rise",
+    "volume_acceleration",
+    "ema_bullish_setup",
     "ema_bullish_cross",
     "rapid_price_rise",
     "open_interest_rise",
     "volume_surge",
     "amplitude_spike_streak",
+    "low_average_amplitude",
+)
+EARLY_BREAKOUT_FACTORS: tuple[FactorName, ...] = (
+    "bullish_candle_sequence",
+    "single_bar_price_rise",
+    "volume_acceleration",
+    "ema_bullish_setup",
     "low_average_amplitude",
 )
 SUPPORTED_INTERVALS = (300, 900)
@@ -44,6 +59,16 @@ class StrategyParameters:
     interval_seconds: int = 900
     lookback_days: int = 90
     average_days: int = 7
+    bullish_sequence_bars: int = 2
+    bullish_min_close_position_percent: Decimal = Decimal("50")
+    bullish_last_close_position_percent: Decimal = Decimal("85")
+    bullish_last_max_upper_shadow_percent: Decimal = Decimal("15")
+    single_bar_price_rise_percent: Decimal = Decimal("3")
+    volume_acceleration_average_bars: int = 20
+    volume_acceleration_average_multiple: Decimal = Decimal("2")
+    volume_acceleration_previous_multiple: Decimal = Decimal("1.3")
+    ema_near_cross_gap_percent: Decimal = Decimal("1")
+    ema_gap_shrink_min_percent: Decimal = Decimal("30")
     ema_cross_lookback_bars: int = 4
     rapid_price_window_bars: int = 4
     rapid_price_rise_percent: Decimal = Decimal("3")
@@ -61,6 +86,8 @@ class StrategyParameters:
         positive_integers = (
             self.lookback_days,
             self.average_days,
+            self.bullish_sequence_bars,
+            self.volume_acceleration_average_bars,
             self.ema_cross_lookback_bars,
             self.rapid_price_window_bars,
             self.open_interest_window_bars,
@@ -69,6 +96,14 @@ class StrategyParameters:
         if any(value <= 0 for value in positive_integers):
             raise ValueError("day and bar parameters must be positive")
         nonnegative_decimals = (
+            self.bullish_min_close_position_percent,
+            self.bullish_last_close_position_percent,
+            self.bullish_last_max_upper_shadow_percent,
+            self.single_bar_price_rise_percent,
+            self.volume_acceleration_average_multiple,
+            self.volume_acceleration_previous_multiple,
+            self.ema_near_cross_gap_percent,
+            self.ema_gap_shrink_min_percent,
             self.rapid_price_rise_percent,
             self.open_interest_rise_percent,
             self.volume_surge_multiple,
@@ -77,6 +112,14 @@ class StrategyParameters:
         )
         if any(value < 0 for value in nonnegative_decimals):
             raise ValueError("factor thresholds must be nonnegative")
+        bounded_percentages = (
+            self.bullish_min_close_position_percent,
+            self.bullish_last_close_position_percent,
+            self.bullish_last_max_upper_shadow_percent,
+            self.ema_gap_shrink_min_percent,
+        )
+        if any(value > 100 for value in bounded_percentages):
+            raise ValueError("bounded percentage thresholds must not exceed 100")
         if not self.required_factors:
             raise ValueError("at least one required factor is needed")
         if len(set(self.required_factors)) != len(self.required_factors):
@@ -90,6 +133,8 @@ class StrategyParameters:
     def warmup_bars(self) -> int:
         return self.average_bars + max(
             self.ema_cross_lookback_bars,
+            self.bullish_sequence_bars,
+            self.volume_acceleration_average_bars,
             self.rapid_price_window_bars,
             self.open_interest_window_bars,
             self.amplitude_consecutive_bars,
@@ -99,6 +144,9 @@ class StrategyParameters:
 @dataclass(frozen=True, slots=True)
 class FeatureBar:
     open_time: datetime
+    open_price: Decimal
+    high_price: Decimal
+    low_price: Decimal
     close_price: Decimal
     price_precision: int | None
     ema20: Decimal
@@ -175,6 +223,161 @@ class SeriesContext:
 
     def is_contiguous(self, index: int, required_count: int) -> bool:
         return index >= 0 and self.contiguous_count[index] >= required_count
+
+
+def _candle_percent(numerator: Decimal, bar: FeatureBar) -> Decimal | None:
+    candle_range = bar.high_price - bar.low_price
+    if candle_range <= 0:
+        return None
+    return _percent_2(numerator / candle_range * Decimal(100))
+
+
+def _bullish_candle_sequence(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    count = parameters.bullish_sequence_bars
+    threshold = (
+        f"{count} bullish bars; prior close position >= "
+        f"{parameters.bullish_min_close_position_percent:.2f}%; last >= "
+        f"{parameters.bullish_last_close_position_percent:.2f}%; "
+        f"last upper shadow <= {parameters.bullish_last_max_upper_shadow_percent:.2f}%"
+    )
+    if index < count - 1 or not context.is_contiguous(index, count):
+        return FactorResult(False, None, threshold, "missing consecutive candle history")
+    bars = context.bars[index - count + 1 : index + 1]
+    close_positions: list[Decimal] = []
+    for offset, bar in enumerate(bars):
+        close_position = _candle_percent(bar.close_price - bar.low_price, bar)
+        if close_position is None:
+            return FactorResult(False, None, threshold, "zero-range candle")
+        close_positions.append(close_position)
+        if bar.close_price <= bar.open_price:
+            return FactorResult(
+                False,
+                close_positions[-1],
+                threshold,
+                f"bar {offset + 1} is not bullish",
+            )
+    prior_positions = close_positions[:-1]
+    prior_minimum = _percent_2(parameters.bullish_min_close_position_percent)
+    last_minimum = _percent_2(parameters.bullish_last_close_position_percent)
+    last_bar = bars[-1]
+    last_upper_shadow = _candle_percent(
+        last_bar.high_price - max(last_bar.open_price, last_bar.close_price), last_bar
+    )
+    upper_maximum = _percent_2(parameters.bullish_last_max_upper_shadow_percent)
+    passed = (
+        all(value >= prior_minimum for value in prior_positions)
+        and close_positions[-1] >= last_minimum
+        and last_upper_shadow is not None
+        and last_upper_shadow <= upper_maximum
+    )
+    reason = None
+    if not passed:
+        prior_value = min(prior_positions) if prior_positions else close_positions[-1]
+        upper_value = (
+            f"{last_upper_shadow:.2f}"
+            if last_upper_shadow is not None
+            else "unavailable"
+        )
+        reason = (
+            f"prior minimum={prior_value:.2f}%, "
+            f"last close position={close_positions[-1]:.2f}%, "
+            f"last upper shadow={upper_value}%"
+        )
+    return FactorResult(passed, close_positions[-1], threshold, reason)
+
+
+def _single_bar_price_rise(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    bar = context.bars[index]
+    value = _percent_change(bar.close_price, bar.open_price)
+    threshold_value = _percent_2(parameters.single_bar_price_rise_percent)
+    return FactorResult(
+        value is not None and value >= threshold_value,
+        value,
+        _percent_threshold(">=", parameters.single_bar_price_rise_percent),
+        None if value is not None else "open price is unavailable or nonpositive",
+    )
+
+
+def _volume_acceleration(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    count = parameters.volume_acceleration_average_bars
+    average = context.average_before(index, count, "quote_volume")
+    threshold = (
+        f">= {parameters.volume_acceleration_average_multiple}x prior {count}-bar average "
+        f"and >= {parameters.volume_acceleration_previous_multiple}x previous bar"
+    )
+    if index < 1 or average is None or average <= 0:
+        return FactorResult(False, None, threshold, "missing prior volume history")
+    previous = context.bars[index - 1].quote_volume
+    if previous <= 0:
+        return FactorResult(False, None, threshold, "previous volume is nonpositive")
+    average_ratio = context.bars[index].quote_volume / average
+    previous_ratio = context.bars[index].quote_volume / previous
+    passed = (
+        average_ratio >= parameters.volume_acceleration_average_multiple
+        and previous_ratio >= parameters.volume_acceleration_previous_multiple
+    )
+    reason = (
+        None
+        if passed
+        else f"average ratio={average_ratio:.2f}x, previous ratio={previous_ratio:.2f}x"
+    )
+    return FactorResult(passed, average_ratio, threshold, reason)
+
+
+def _ema_bullish_setup(
+    context: SeriesContext, index: int, parameters: StrategyParameters
+) -> FactorResult:
+    threshold = (
+        f"cross in prior {parameters.ema_cross_lookback_bars} bars or pre-cross gap <= "
+        f"{parameters.ema_near_cross_gap_percent:.2f}% with gap shrink >= "
+        f"{parameters.ema_gap_shrink_min_percent:.2f}%"
+    )
+    current = context.bars[index]
+    if current.ema240 <= 0:
+        return FactorResult(False, None, threshold, "EMA240 is nonpositive")
+    gap = _percent_2(
+        (current.ema240 - current.ema20) / current.ema240 * Decimal(100)
+    )
+    if current.ema20 >= current.ema240:
+        cross = _ema_bullish_cross(context, index, parameters)
+        return FactorResult(
+            cross.passed,
+            gap,
+            threshold,
+            None if cross.passed else "EMA cross is older than the configured window",
+        )
+    if index < 1 or not context.is_contiguous(index, 2):
+        return FactorResult(False, gap, threshold, "missing previous EMA values")
+    previous = context.bars[index - 1]
+    if previous.ema240 <= 0:
+        return FactorResult(False, gap, threshold, "previous EMA240 is nonpositive")
+    previous_gap = _percent_2(
+        (previous.ema240 - previous.ema20) / previous.ema240 * Decimal(100)
+    )
+    gap_shrink = (
+        _percent_2((previous_gap - gap) / previous_gap * Decimal(100))
+        if previous_gap > 0
+        else Decimal(0)
+    )
+    passed = (
+        gap <= _percent_2(parameters.ema_near_cross_gap_percent)
+        and current.ema20 > previous.ema20
+        and previous_gap > gap
+        and gap_shrink >= _percent_2(parameters.ema_gap_shrink_min_percent)
+    )
+    reason = None
+    if not passed:
+        reason = (
+            f"gap={gap:.2f}%, previous gap={previous_gap:.2f}%, "
+            f"gap shrink={gap_shrink:.2f}%, EMA20 rising={current.ema20 > previous.ema20}"
+        )
+    return FactorResult(passed, gap, threshold, reason)
 
 
 def _ema_bullish_cross(
@@ -340,6 +543,10 @@ def _low_average_amplitude(
 
 
 FACTOR_EVALUATORS = {
+    "bullish_candle_sequence": _bullish_candle_sequence,
+    "single_bar_price_rise": _single_bar_price_rise,
+    "volume_acceleration": _volume_acceleration,
+    "ema_bullish_setup": _ema_bullish_setup,
     "ema_bullish_cross": _ema_bullish_cross,
     "rapid_price_rise": _rapid_price_rise,
     "open_interest_rise": _open_interest_rise,
@@ -447,7 +654,8 @@ async def _load_feature_bars(
 ) -> tuple[FeatureBar, ...]:
     if interval_seconds == 900:
         source_sql = """
-            SELECT e.open_time, e.close_price, rules.price_precision,
+            SELECT e.open_time, k.open_price, k.high_price, k.low_price,
+                   e.close_price, rules.price_precision,
                    e.ema20, e.ema240,
                    k.base_volume, k.quote_volume,
                    e.amplitude_percent, k.open_interest_value
@@ -478,7 +686,8 @@ async def _load_feature_bars(
         """
     else:
         source_sql = """
-            SELECT e.open_time, e.close_price, rules.price_precision,
+            SELECT e.open_time, k.open_price, k.high_price, k.low_price,
+                   e.close_price, rules.price_precision,
                    e.ema20, e.ema240,
                    k.base_volume, k.quote_volume,
                    e.amplitude_percent, oi.open_interest_value
@@ -532,6 +741,9 @@ async def _load_feature_bars(
     return tuple(
         FeatureBar(
             open_time=cast(datetime, row["open_time"]),
+            open_price=Decimal(str(row["open_price"])),
+            high_price=Decimal(str(row["high_price"])),
+            low_price=Decimal(str(row["low_price"])),
             close_price=Decimal(str(row["close_price"])),
             price_precision=(
                 int(row["price_precision"])
@@ -687,7 +899,7 @@ def write_signals(signals: Sequence[StrategySignal], output: IO[str], output_for
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Scan configurable 5m/15m momentum/OI/volume/amplitude factors"
+        description="Scan configurable 5m/15m early-breakout and confirmation factors"
     )
     parser.add_argument("--days", type=int, default=90)
     parser.add_argument("--interval-seconds", type=int, choices=SUPPORTED_INTERVALS, default=900)
@@ -696,6 +908,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--format", choices=("jsonl", "csv"), default="jsonl")
     parser.add_argument("--average-days", type=int, default=7)
+    parser.add_argument("--bullish-sequence-bars", type=int, default=2)
+    parser.add_argument(
+        "--bullish-min-close-position-percent", type=Decimal, default=Decimal("50")
+    )
+    parser.add_argument(
+        "--bullish-last-close-position-percent", type=Decimal, default=Decimal("85")
+    )
+    parser.add_argument(
+        "--bullish-last-max-upper-shadow-percent", type=Decimal, default=Decimal("15")
+    )
+    parser.add_argument(
+        "--single-bar-price-rise-percent", type=Decimal, default=Decimal("3")
+    )
+    parser.add_argument("--volume-acceleration-average-bars", type=int, default=20)
+    parser.add_argument(
+        "--volume-acceleration-average-multiple", type=Decimal, default=Decimal("2")
+    )
+    parser.add_argument(
+        "--volume-acceleration-previous-multiple",
+        type=Decimal,
+        default=Decimal("1.3"),
+    )
+    parser.add_argument(
+        "--ema-near-cross-gap-percent", type=Decimal, default=Decimal("1")
+    )
+    parser.add_argument(
+        "--ema-gap-shrink-min-percent", type=Decimal, default=Decimal("30")
+    )
     parser.add_argument("--ema-cross-bars", type=int, default=4)
     parser.add_argument("--price-window-bars", type=int, default=4)
     parser.add_argument("--price-rise-percent", type=Decimal, default=Decimal("3"))
@@ -710,17 +950,41 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         choices=ALL_FACTORS,
         dest="required_factors",
-        help="Repeat to require only selected factors; defaults to all six.",
+        help="Repeat to select factors; defaults to the early-breakout preset.",
     )
     return parser
 
 
 async def _run(args: argparse.Namespace) -> int:
-    required = tuple(args.required_factors) if args.required_factors else ALL_FACTORS
+    required = (
+        tuple(args.required_factors)
+        if args.required_factors
+        else EARLY_BREAKOUT_FACTORS
+    )
     parameters = StrategyParameters(
         interval_seconds=args.interval_seconds,
         lookback_days=args.days,
         average_days=args.average_days,
+        bullish_sequence_bars=args.bullish_sequence_bars,
+        bullish_min_close_position_percent=(
+            args.bullish_min_close_position_percent
+        ),
+        bullish_last_close_position_percent=(
+            args.bullish_last_close_position_percent
+        ),
+        bullish_last_max_upper_shadow_percent=(
+            args.bullish_last_max_upper_shadow_percent
+        ),
+        single_bar_price_rise_percent=args.single_bar_price_rise_percent,
+        volume_acceleration_average_bars=args.volume_acceleration_average_bars,
+        volume_acceleration_average_multiple=(
+            args.volume_acceleration_average_multiple
+        ),
+        volume_acceleration_previous_multiple=(
+            args.volume_acceleration_previous_multiple
+        ),
+        ema_near_cross_gap_percent=args.ema_near_cross_gap_percent,
+        ema_gap_shrink_min_percent=args.ema_gap_shrink_min_percent,
         ema_cross_lookback_bars=args.ema_cross_bars,
         rapid_price_window_bars=args.price_window_bars,
         rapid_price_rise_percent=args.price_rise_percent,

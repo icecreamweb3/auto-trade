@@ -2,16 +2,28 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from auto_trade.strategies.feature_scan import (
-    ALL_FACTORS,
+    EARLY_BREAKOUT_FACTORS,
     FeatureBar,
     StrategyParameters,
     evaluate_series,
+)
+
+LEGACY_FACTORS = (
+    "ema_bullish_cross",
+    "rapid_price_rise",
+    "open_interest_rise",
+    "volume_surge",
+    "amplitude_spike_streak",
+    "low_average_amplitude",
 )
 
 
 def _bar(
     index: int,
     *,
+    open_price: Decimal | None = None,
+    high: Decimal | None = None,
+    low: Decimal | None = None,
     close: Decimal = Decimal("100"),
     ema20: Decimal = Decimal("99"),
     ema240: Decimal = Decimal("100"),
@@ -19,8 +31,12 @@ def _bar(
     amplitude: Decimal = Decimal("1"),
     oi: Decimal | None = Decimal("1000"),
 ) -> FeatureBar:
+    candle_open = open_price if open_price is not None else close
     return FeatureBar(
         open_time=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=15 * index),
+        open_price=candle_open,
+        high_price=high if high is not None else max(candle_open, close),
+        low_price=low if low is not None else min(candle_open, close),
         close_price=close,
         price_precision=2,
         ema20=ema20,
@@ -33,7 +49,10 @@ def _bar(
 
 
 def test_all_six_factors_produce_one_signal() -> None:
-    parameters = StrategyParameters(average_days=1)
+    parameters = StrategyParameters(
+        average_days=1,
+        required_factors=LEGACY_FACTORS,
+    )
     bars = [_bar(index) for index in range(101)]
     bars[96] = _bar(96, close=Decimal("100"), oi=Decimal("1000"))
     bars[99] = _bar(
@@ -58,7 +77,7 @@ def test_all_six_factors_produce_one_signal() -> None:
     signals = evaluate_series("BRUSDT", bars, parameters, bars[100].open_time)
 
     assert len(signals) == 1
-    assert all(signals[0].factors[name].passed for name in ALL_FACTORS)
+    assert all(signals[0].factors[name].passed for name in LEGACY_FACTORS)
     assert signals[0].factors["ema_bullish_cross"].value == 1
     assert signals[0].factors["rapid_price_rise"].value == Decimal("4")
     assert signals[0].factors["rapid_price_rise"].threshold == ">= 3.00% over 4 bars"
@@ -69,6 +88,62 @@ def test_all_six_factors_produce_one_signal() -> None:
         signals[0].factors["low_average_amplitude"].threshold
         == "< 2.00% over prior 1d"
     )
+
+
+def test_early_breakout_factors_hit_second_strong_bullish_bar() -> None:
+    parameters = StrategyParameters(
+        average_days=1,
+        required_factors=EARLY_BREAKOUT_FACTORS,
+    )
+    bars = [_bar(index) for index in range(98)]
+    bars[96] = _bar(
+        96,
+        open_price=Decimal("100"),
+        high=Decimal("103"),
+        low=Decimal("99"),
+        close=Decimal("102.5"),
+        ema20=Decimal("99"),
+        ema240=Decimal("100"),
+        volume=Decimal("180"),
+        amplitude=Decimal("4"),
+    )
+    bars[97] = _bar(
+        97,
+        open_price=Decimal("102.5"),
+        high=Decimal("106"),
+        low=Decimal("102"),
+        close=Decimal("105.8"),
+        ema20=Decimal("99.6"),
+        ema240=Decimal("100"),
+        volume=Decimal("400"),
+        amplitude=Decimal("3.9"),
+    )
+
+    signals = evaluate_series("BRUSDT", bars, parameters, bars[96].open_time)
+
+    assert [signal.open_time for signal in signals] == [bars[97].open_time]
+    factors = signals[0].factors
+    assert factors["bullish_candle_sequence"].value == Decimal("95.00")
+    assert factors["single_bar_price_rise"].value == Decimal("3.22")
+    assert factors["volume_acceleration"].value > Decimal("3.8")
+    assert factors["ema_bullish_setup"].value == Decimal("0.40")
+    assert all(factors[name].passed for name in EARLY_BREAKOUT_FACTORS)
+
+
+def test_ema_bullish_setup_rejects_stale_cross() -> None:
+    parameters = StrategyParameters(
+        ema_cross_lookback_bars=4,
+        required_factors=("ema_bullish_setup",),
+    )
+    bars = [_bar(0, ema20=Decimal("99"), ema240=Decimal("100"))]
+    bars.extend(
+        _bar(index, ema20=Decimal("101"), ema240=Decimal("100"))
+        for index in range(1, 8)
+    )
+
+    signals = evaluate_series("BRUSDT", bars, parameters, bars[-1].open_time)
+
+    assert signals == ()
 
 
 def test_missing_oi_does_not_become_zero_or_pass() -> None:
