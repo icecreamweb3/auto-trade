@@ -20,6 +20,7 @@ def _request() -> BacktestCreateRequest:
     return BacktestCreateRequest(
         start_at=datetime(2026, 10, 1, tzinfo=UTC),
         end_at=datetime(2026, 10, 8, tzinfo=UTC),
+        interval_seconds=300,
         symbols=("brusdt", "BRUSDT", " btcusdt "),
         parameters=BacktestParameters(required_factors=("rapid_price_rise",)),
     )
@@ -32,6 +33,13 @@ def test_request_normalizes_tickers_and_requires_aware_time() -> None:
         BacktestCreateRequest(
             start_at=datetime(2026, 10, 1),
             end_at=datetime(2026, 10, 2),
+        )
+
+    with pytest.raises(ValidationError, match="Input should be 300 or 900"):
+        BacktestCreateRequest(
+            start_at=datetime(2026, 10, 1, tzinfo=UTC),
+            end_at=datetime(2026, 10, 2, tzinfo=UTC),
+            interval_seconds=600,  # type: ignore[arg-type]
         )
 
 
@@ -54,6 +62,7 @@ async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.Monkey
 
     async def fake_scan(*args: Any, **kwargs: Any) -> DatabaseScanResult:
         received.update(kwargs)
+        received["parameters"] = args[1]
         kwargs["progress_callback"](1, 2)
         kwargs["progress_callback"](2, 2)
         return DatabaseScanResult((signal,), 2, 2)
@@ -74,3 +83,4 @@ async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.Monkey
     assert received["symbols"] == ("BRUSDT", "BTCUSDT")
     assert received["start"] == request.start_at
     assert received["end"] == request.end_at
+    assert received["parameters"].interval_seconds == 300

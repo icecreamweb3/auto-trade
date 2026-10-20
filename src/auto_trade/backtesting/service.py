@@ -5,7 +5,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from auto_trade.backtesting.models import (
     BacktestCreateRequest,
     BacktestFactorResult,
+    BacktestIntervalMetadata,
     BacktestJobResult,
     BacktestKlineResult,
     BacktestMetadata,
@@ -118,84 +119,138 @@ class BacktestManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def metadata(self) -> BacktestMetadata:
+        intervals: dict[str, BacktestIntervalMetadata] = {}
         async with self.engine.connect() as connection:
-            bounds = (
-                await connection.execute(
-                    text(
-                        """
+            for interval_seconds in (300, 900):
+                if interval_seconds == 900:
+                    bounds_sql = """
                         SELECT min(open_time) AS available_from,
                                max(open_time) AS available_to
                         FROM market.klines_15m
                         WHERE price_type = 'TRADE' AND interval_seconds = 900
-                        """
-                    )
-                )
-            ).mappings().one()
-            symbol_rows: list[object] = cast(
-                list[object],
-                (
-                    await connection.execute(
-                        text(
-                            """
-                            SELECT i.symbol
-                            FROM core.instruments i
-                            WHERE EXISTS (
-                                SELECT 1 FROM market.klines_15m k
-                                WHERE k.instrument_id = i.instrument_id
-                                  AND k.price_type = 'TRADE'
-                                  AND k.interval_seconds = 900
-                            )
-                            ORDER BY i.symbol
-                            """
+                    """
+                    symbols_sql = """
+                        SELECT i.symbol
+                        FROM core.instruments i
+                        WHERE EXISTS (
+                            SELECT 1 FROM market.klines_15m k
+                            WHERE k.instrument_id = i.instrument_id
+                              AND k.price_type = 'TRADE'
+                              AND k.interval_seconds = 900
                         )
-                    )
-                ).scalars().all(),
-            )
-            symbols: list[str] = [cast(str, symbol) for symbol in symbol_rows]
-        return BacktestMetadata(
-            available_from=cast(datetime | None, bounds["available_from"]),
-            available_to=cast(datetime | None, bounds["available_to"]),
-            symbols=tuple(symbols),
-        )
+                        ORDER BY i.symbol
+                    """
+                else:
+                    bounds_sql = """
+                        SELECT min(open_time) AS available_from,
+                               max(open_time) AS available_to
+                        FROM market.klines
+                        WHERE price_type = 'TRADE'
+                          AND interval_seconds = 300
+                          AND is_current AND is_closed
+                          AND quality_status = 'VALID'
+                    """
+                    symbols_sql = """
+                        SELECT i.symbol
+                        FROM core.instruments i
+                        WHERE EXISTS (
+                            SELECT 1 FROM market.klines k
+                            WHERE k.instrument_id = i.instrument_id
+                              AND k.price_type = 'TRADE'
+                              AND k.interval_seconds = 300
+                              AND k.is_current AND k.is_closed
+                              AND k.quality_status = 'VALID'
+                        )
+                        ORDER BY i.symbol
+                    """
+                bounds = (await connection.execute(text(bounds_sql))).mappings().one()
+                symbol_rows: list[object] = cast(
+                    list[object],
+                    (await connection.execute(text(symbols_sql))).scalars().all(),
+                )
+                intervals[str(interval_seconds)] = BacktestIntervalMetadata(
+                    available_from=cast(datetime | None, bounds["available_from"]),
+                    available_to=cast(datetime | None, bounds["available_to"]),
+                    symbols=tuple(cast(str, symbol) for symbol in symbol_rows),
+                )
+        return BacktestMetadata(intervals=intervals)
 
     async def signal_klines(
         self,
         *,
         symbol: str,
         signal_time: datetime,
+        interval_seconds: int,
         before_bars: int,
         after_bars: int,
     ) -> BacktestKlineResult:
-        range_start = signal_time - timedelta(minutes=15 * before_bars)
-        range_end = signal_time + timedelta(minutes=15 * (after_bars + 1))
+        if interval_seconds not in (300, 900):
+            raise ValueError("interval_seconds must be 300 or 900")
+        range_start = signal_time - timedelta(seconds=interval_seconds * before_bars)
+        range_end = signal_time + timedelta(seconds=interval_seconds * (after_bars + 1))
+        if interval_seconds == 900:
+            source_sql = """
+                SELECT k.open_time, k.close_time,
+                       k.open_price, k.high_price, k.low_price, k.close_price,
+                       k.base_volume, k.quote_volume,
+                       k.open_interest_qty, k.open_interest_value,
+                       e.ema20, e.ema240,
+                       e.price_change_percent, e.amplitude_percent
+                FROM market.klines_15m k
+                JOIN core.instruments i ON i.instrument_id = k.instrument_id
+                JOIN market.kline_ema_indicators e
+                  ON e.instrument_id = k.instrument_id
+                 AND e.price_type = k.price_type
+                 AND e.interval_seconds = k.interval_seconds
+                 AND e.open_time = k.open_time
+                WHERE upper(i.symbol) = :symbol
+                  AND k.price_type = 'TRADE'
+                  AND k.interval_seconds = :interval_seconds
+                  AND k.open_time >= CAST(:range_start AS timestamptz)
+                  AND k.open_time < CAST(:range_end AS timestamptz)
+                ORDER BY k.open_time
+            """
+        else:
+            source_sql = """
+                SELECT k.open_time, k.close_time,
+                       k.open_price, k.high_price, k.low_price, k.close_price,
+                       k.base_volume, k.quote_volume,
+                       oi.open_interest_qty, oi.open_interest_value,
+                       e.ema20, e.ema240,
+                       e.price_change_percent, e.amplitude_percent
+                FROM market.klines k
+                JOIN core.instruments i ON i.instrument_id = k.instrument_id
+                JOIN market.kline_ema_indicators e
+                  ON e.instrument_id = k.instrument_id
+                 AND e.price_type = k.price_type
+                 AND e.interval_seconds = k.interval_seconds
+                 AND e.open_time = k.open_time
+                LEFT JOIN LATERAL (
+                    SELECT o.open_interest_qty, o.open_interest_value
+                    FROM market.open_interest_observations o
+                    WHERE o.instrument_id = k.instrument_id
+                      AND o.observed_at >= k.open_time
+                      AND o.observed_at < k.open_time + interval '5 minutes'
+                      AND o.quality_status IN ('VALID', 'PARTIAL')
+                    ORDER BY o.observed_at DESC
+                    LIMIT 1
+                ) oi ON true
+                WHERE upper(i.symbol) = :symbol
+                  AND k.price_type = 'TRADE'
+                  AND k.interval_seconds = :interval_seconds
+                  AND k.is_current AND k.is_closed
+                  AND k.quality_status = 'VALID'
+                  AND k.open_time >= CAST(:range_start AS timestamptz)
+                  AND k.open_time < CAST(:range_end AS timestamptz)
+                ORDER BY k.open_time
+            """
         async with self.engine.connect() as connection:
             rows = (
                 await connection.execute(
-                    text(
-                        """
-                        SELECT k.open_time, k.close_time,
-                               k.open_price, k.high_price, k.low_price, k.close_price,
-                               k.base_volume, k.quote_volume,
-                               k.open_interest_qty, k.open_interest_value,
-                               e.ema20, e.ema240,
-                               e.price_change_percent, e.amplitude_percent
-                        FROM market.klines_15m k
-                        JOIN core.instruments i ON i.instrument_id = k.instrument_id
-                        JOIN market.kline_ema_indicators e
-                          ON e.instrument_id = k.instrument_id
-                         AND e.price_type = k.price_type
-                         AND e.interval_seconds = k.interval_seconds
-                         AND e.open_time = k.open_time
-                        WHERE upper(i.symbol) = :symbol
-                          AND k.price_type = 'TRADE'
-                          AND k.interval_seconds = 900
-                          AND k.open_time >= CAST(:range_start AS timestamptz)
-                          AND k.open_time < CAST(:range_end AS timestamptz)
-                        ORDER BY k.open_time
-                        """
-                    ),
+                    text(source_sql),
                     {
                         "symbol": symbol,
+                        "interval_seconds": interval_seconds,
                         "range_start": range_start,
                         "range_end": range_end,
                     },
@@ -204,6 +259,7 @@ class BacktestManager:
         return BacktestKlineResult(
             symbol=symbol,
             signal_time=signal_time,
+            interval_seconds=cast(Literal[300, 900], interval_seconds),
             items=tuple(KlinePoint.model_validate(row) for row in rows),
         )
 
@@ -214,6 +270,7 @@ class BacktestManager:
         span_days = max(1, (request.end_at - request.start_at).days + 1)
         parameters = request.parameters
         strategy_parameters = StrategyParameters(
+            interval_seconds=request.interval_seconds,
             lookback_days=span_days,
             average_days=parameters.average_days,
             ema_cross_lookback_bars=parameters.ema_cross_lookback_bars,

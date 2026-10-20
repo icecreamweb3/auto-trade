@@ -35,12 +35,12 @@ ALL_FACTORS: tuple[FactorName, ...] = (
     "amplitude_spike_streak",
     "low_average_amplitude",
 )
-INTERVAL_SECONDS = 900
-BARS_PER_DAY = 24 * 60 * 60 // INTERVAL_SECONDS
+SUPPORTED_INTERVALS = (300, 900)
 
 
 @dataclass(frozen=True, slots=True)
 class StrategyParameters:
+    interval_seconds: int = 900
     lookback_days: int = 90
     average_days: int = 7
     ema_cross_lookback_bars: int = 4
@@ -55,6 +55,8 @@ class StrategyParameters:
     required_factors: tuple[FactorName, ...] = ALL_FACTORS
 
     def __post_init__(self) -> None:
+        if self.interval_seconds not in SUPPORTED_INTERVALS:
+            raise ValueError("interval_seconds must be 300 or 900")
         positive_integers = (
             self.lookback_days,
             self.average_days,
@@ -81,7 +83,7 @@ class StrategyParameters:
 
     @property
     def average_bars(self) -> int:
-        return self.average_days * BARS_PER_DAY
+        return self.average_days * 24 * 60 * 60 // self.interval_seconds
 
     @property
     def warmup_bars(self) -> int:
@@ -129,12 +131,12 @@ class DatabaseScanResult:
 
 
 class SeriesContext:
-    def __init__(self, bars: Sequence[FeatureBar]) -> None:
+    def __init__(self, bars: Sequence[FeatureBar], interval_seconds: int) -> None:
         self.bars = bars
         self.volume_prefix = self._prefix("quote_volume")
         self.amplitude_prefix = self._prefix("amplitude_percent")
         self.contiguous_count: list[int] = []
-        expected_delta = timedelta(seconds=INTERVAL_SECONDS)
+        expected_delta = timedelta(seconds=interval_seconds)
         for index, bar in enumerate(bars):
             if index and bar.open_time - bars[index - 1].open_time == expected_delta:
                 self.contiguous_count.append(self.contiguous_count[-1] + 1)
@@ -320,7 +322,7 @@ def evaluate_series(
     parameters: StrategyParameters,
     scan_start: datetime,
 ) -> tuple[StrategySignal, ...]:
-    context = SeriesContext(bars)
+    context = SeriesContext(bars, parameters.interval_seconds)
     signals: list[StrategySignal] = []
     for index, bar in enumerate(bars):
         if bar.open_time < scan_start:
@@ -334,24 +336,44 @@ def evaluate_series(
 
 
 async def _instrument_rows(
-    connection: AsyncConnection, symbols: Sequence[str] | None
+    connection: AsyncConnection,
+    symbols: Sequence[str] | None,
+    interval_seconds: int,
 ) -> Sequence[Mapping[str, object]]:
+    source_condition = (
+        """
+        EXISTS (
+            SELECT 1
+            FROM market.klines_15m k
+            WHERE k.instrument_id = i.instrument_id
+              AND k.price_type = 'TRADE'
+              AND k.interval_seconds = 900
+        )
+        """
+        if interval_seconds == 900
+        else """
+        EXISTS (
+            SELECT 1
+            FROM market.klines k
+            WHERE k.instrument_id = i.instrument_id
+              AND k.price_type = 'TRADE'
+              AND k.interval_seconds = 300
+              AND k.is_current
+              AND k.is_closed
+              AND k.quality_status = 'VALID'
+        )
+        """
+    )
     result = await connection.execute(
         text(
-            """
+            f"""
             SELECT i.instrument_id, i.symbol
             FROM core.instruments i
             WHERE i.exchange = 'BINANCE'
               AND i.market = 'USD_M_FUTURES'
               AND i.contract_type = 'PERPETUAL'
               AND (:all_symbols OR upper(i.symbol) = ANY(CAST(:symbols AS text[])))
-              AND EXISTS (
-                  SELECT 1
-                  FROM market.klines_15m k
-                  WHERE k.instrument_id = i.instrument_id
-                    AND k.price_type = 'TRADE'
-                    AND k.interval_seconds = 900
-              )
+              AND {source_condition}
             ORDER BY i.symbol
             """
         ),
@@ -368,10 +390,10 @@ async def _load_feature_bars(
     instrument_id: int,
     start: datetime,
     end: datetime,
+    interval_seconds: int,
 ) -> tuple[FeatureBar, ...]:
-    result = await connection.execute(
-        text(
-            """
+    if interval_seconds == 900:
+        source_sql = """
             SELECT e.open_time, e.close_price, e.ema20, e.ema240,
                    k.quote_volume, e.amplitude_percent, k.open_interest_value
             FROM market.kline_ema_indicators e
@@ -382,14 +404,51 @@ async def _load_feature_bars(
              AND k.open_time = e.open_time
             WHERE e.instrument_id = :instrument_id
               AND e.price_type = 'TRADE'
-              AND e.interval_seconds = 900
+              AND e.interval_seconds = :interval_seconds
               AND e.open_time >= CAST(:start AS timestamptz)
               AND e.open_time < CAST(:end AS timestamptz)
               AND e.amplitude_percent IS NOT NULL
             ORDER BY e.open_time
-            """
-        ),
-        {"instrument_id": instrument_id, "start": start, "end": end},
+        """
+    else:
+        source_sql = """
+            SELECT e.open_time, e.close_price, e.ema20, e.ema240,
+                   k.quote_volume, e.amplitude_percent, oi.open_interest_value
+            FROM market.kline_ema_indicators e
+            JOIN market.klines k
+              ON k.instrument_id = e.instrument_id
+             AND k.price_type = e.price_type
+             AND k.interval_seconds = e.interval_seconds
+             AND k.open_time = e.open_time
+             AND k.is_current
+             AND k.is_closed
+             AND k.quality_status = 'VALID'
+            LEFT JOIN LATERAL (
+                SELECT o.open_interest_value
+                FROM market.open_interest_observations o
+                WHERE o.instrument_id = e.instrument_id
+                  AND o.observed_at >= e.open_time
+                  AND o.observed_at < e.open_time + interval '5 minutes'
+                  AND o.quality_status IN ('VALID', 'PARTIAL')
+                ORDER BY o.observed_at DESC
+                LIMIT 1
+            ) oi ON true
+            WHERE e.instrument_id = :instrument_id
+              AND e.price_type = 'TRADE'
+              AND e.interval_seconds = :interval_seconds
+              AND e.open_time >= CAST(:start AS timestamptz)
+              AND e.open_time < CAST(:end AS timestamptz)
+              AND e.amplitude_percent IS NOT NULL
+            ORDER BY e.open_time
+        """
+    result = await connection.execute(
+        text(source_sql),
+        {
+            "instrument_id": instrument_id,
+            "interval_seconds": interval_seconds,
+            "start": start,
+            "end": end,
+        },
     )
     return tuple(
         FeatureBar(
@@ -441,7 +500,8 @@ async def scan_database_detailed(
     scan_end = end or datetime.now(UTC)
     scan_end = scan_end.replace(tzinfo=UTC) if scan_end.tzinfo is None else scan_end.astimezone(UTC)
     scan_end = datetime.fromtimestamp(
-        int(scan_end.timestamp()) // INTERVAL_SECONDS * INTERVAL_SECONDS, tz=UTC
+        int(scan_end.timestamp()) // parameters.interval_seconds * parameters.interval_seconds,
+        tz=UTC,
     )
     scan_start = start or (scan_end - timedelta(days=parameters.lookback_days))
     scan_start = (
@@ -451,18 +511,23 @@ async def scan_database_detailed(
     )
     if scan_start >= scan_end:
         raise ValueError("scan start must be earlier than scan end")
-    query_start = scan_start - timedelta(seconds=parameters.warmup_bars * INTERVAL_SECONDS)
+    query_start = scan_start - timedelta(
+        seconds=parameters.warmup_bars * parameters.interval_seconds
+    )
     signals: list[StrategySignal] = []
     scanned_instruments = 0
     truncated = False
     async with engine.connect() as connection:
-        instruments = await _instrument_rows(connection, symbols)
+        instruments = await _instrument_rows(
+            connection, symbols, parameters.interval_seconds
+        )
         for instrument in instruments:
             bars = await _load_feature_bars(
                 connection,
                 cast(int, instrument["instrument_id"]),
                 query_start,
                 scan_end,
+                parameters.interval_seconds,
             )
             instrument_signals = evaluate_series(
                 cast(str, instrument["symbol"]), bars, parameters, scan_start
@@ -532,9 +597,10 @@ def write_signals(signals: Sequence[StrategySignal], output: IO[str], output_for
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Scan configurable 15m momentum/OI/volume/amplitude factors"
+        description="Scan configurable 5m/15m momentum/OI/volume/amplitude factors"
     )
     parser.add_argument("--days", type=int, default=90)
+    parser.add_argument("--interval-seconds", type=int, choices=SUPPORTED_INTERVALS, default=900)
     parser.add_argument("--symbols", nargs="*")
     parser.add_argument("--end", type=datetime.fromisoformat)
     parser.add_argument("--output", type=Path)
@@ -562,6 +628,7 @@ def build_parser() -> argparse.ArgumentParser:
 async def _run(args: argparse.Namespace) -> int:
     required = tuple(args.required_factors) if args.required_factors else ALL_FACTORS
     parameters = StrategyParameters(
+        interval_seconds=args.interval_seconds,
         lookback_days=args.days,
         average_days=args.average_days,
         ema_cross_lookback_bars=args.ema_cross_bars,

@@ -96,3 +96,8 @@ def test_required_factor_subset_can_be_used_for_factor_inspection() -> None:
     assert len(signals) == 1
     assert signals[0].factors["rapid_price_rise"].passed
     assert not signals[0].factors["volume_surge"].passed
+
+
+def test_average_window_uses_selected_kline_interval() -> None:
+    assert StrategyParameters(interval_seconds=300, average_days=7).average_bars == 2016
+    assert StrategyParameters(interval_seconds=900, average_days=7).average_bars == 672

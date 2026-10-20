@@ -47,23 +47,27 @@ async def signal_klines(
     request: Request,
     signal_time: datetime,
     symbol: str = Query(min_length=1, max_length=32),
+    interval_seconds: int = Query(default=900),
     before_bars: int = Query(default=80, ge=20, le=300),
     after_bars: int = Query(default=40, ge=10, le=200),
 ) -> BacktestKlineResult:
     normalized_symbol = symbol.strip().upper()
     if not normalized_symbol:
         raise HTTPException(status_code=422, detail="symbol must not be blank")
+    if interval_seconds not in (300, 900):
+        raise HTTPException(status_code=422, detail="interval_seconds must be 300 or 900")
     try:
         result = await _manager(request).signal_klines(
             symbol=normalized_symbol,
             signal_time=signal_time,
+            interval_seconds=interval_seconds,
             before_bars=before_bars,
             after_bars=after_bars,
         )
     except Exception as error:
         raise HTTPException(status_code=503, detail="signal kline data unavailable") from error
     if not result.items:
-        raise HTTPException(status_code=404, detail="no 15m kline data around signal")
+        raise HTTPException(status_code=404, detail="no kline data around signal")
     return result
 
 

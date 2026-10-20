@@ -44,6 +44,7 @@ class BacktestCreateRequest(BaseModel):
 
     start_at: datetime
     end_at: datetime
+    interval_seconds: Literal[300, 900] = 900
     symbols: tuple[str, ...] = ()
     parameters: BacktestParameters = Field(default_factory=BacktestParameters)
 
@@ -116,7 +117,7 @@ class BacktestCreated(BaseModel):
     status: BacktestStatus
 
 
-class BacktestMetadata(BaseModel):
+class BacktestIntervalMetadata(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     available_from: datetime | None = None
@@ -124,10 +125,16 @@ class BacktestMetadata(BaseModel):
     symbols: tuple[str, ...] = ()
 
 
+class BacktestMetadata(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    intervals: dict[str, BacktestIntervalMetadata]
+
+
 class BacktestKlineResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     symbol: str
     signal_time: datetime
-    interval_seconds: int = 900
+    interval_seconds: Literal[300, 900]
     items: tuple[KlinePoint, ...] = ()

@@ -194,11 +194,16 @@ interface RankingFilters {
 
 type FactorName = "ema_bullish_cross" | "rapid_price_rise" | "open_interest_rise" | "volume_surge" | "amplitude_spike_streak" | "low_average_amplitude";
 type BacktestStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+type BacktestInterval = 300 | 900;
 
-interface BacktestMetadata {
+interface BacktestIntervalMetadata {
   available_from: string | null;
   available_to: string | null;
   symbols: string[];
+}
+
+interface BacktestMetadata {
+  intervals: Record<"300" | "900", BacktestIntervalMetadata>;
 }
 
 interface BacktestFactorResult {
@@ -224,7 +229,7 @@ interface BacktestJob {
   truncated: boolean;
   max_signals: number;
   error: string | null;
-  request: { parameters: { required_factors: FactorName[] } };
+  request: { interval_seconds: BacktestInterval; parameters: { required_factors: FactorName[] } };
   signals: BacktestSignal[];
 }
 
@@ -1206,14 +1211,14 @@ function factorValue(name: FactorName, value: number | null): string {
   return `${value.toFixed(3)}×`;
 }
 
-function SignalKlineModal({ signal, onClose }: { signal: BacktestSignal; onClose: () => void }) {
+function SignalKlineModal({ signal, intervalSeconds, onClose }: { signal: BacktestSignal; intervalSeconds: BacktestInterval; onClose: () => void }) {
   const [result, setResult] = useState<BacktestKlineResult | null>(null);
   const [loadedRange, setLoadedRange] = useState<LoadedKlineRange | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ symbol: signal.symbol, signal_time: signal.open_time });
+    const params = new URLSearchParams({ symbol: signal.symbol, signal_time: signal.open_time, interval_seconds: String(intervalSeconds) });
     void fetch(`/api/backtests/klines?${params}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
@@ -1228,7 +1233,7 @@ function SignalKlineModal({ signal, onClose }: { signal: BacktestSignal; onClose
         setError(reason instanceof Error ? reason.message : "无法读取信号 K 线");
       });
     return () => controller.abort();
-  }, [signal]);
+  }, [intervalSeconds, signal]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -1245,7 +1250,7 @@ function SignalKlineModal({ signal, onClose }: { signal: BacktestSignal; onClose
       symbol: result.symbol,
       utc_trade_date: result.signal_time.slice(0, 10),
       price_type: "TRADE",
-      interval_seconds: 900,
+      interval_seconds: result.interval_seconds,
       items: result.items
     } : null,
   [result]);
@@ -1258,15 +1263,15 @@ function SignalKlineModal({ signal, onClose }: { signal: BacktestSignal; onClose
   return <div className="chart-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="chart-modal" role="dialog" aria-modal="true" aria-labelledby="signal-chart-title">
       <header className="chart-modal-header">
-        <div><p className="eyebrow">策略信号 · UTC+8 · 15分钟</p><h2 id="signal-chart-title">{signal.symbol} <span>{rangeText}</span></h2></div>
+        <div><p className="eyebrow">策略信号 · UTC+8 · {intervalSeconds / 60}分钟</p><h2 id="signal-chart-title">{signal.symbol} <span>{rangeText}</span></h2></div>
         <div className="chart-modal-actions"><strong className="signal-time-badge">命中 {formatKlineTime(signal.open_time)}</strong><button type="button" className="chart-close-button" onClick={onClose} aria-label="关闭K线图">×</button></div>
       </header>
-      {!result && !error && <div className="chart-state">正在读取持久化 15min K 线…</div>}
+      {!result && !error && <div className="chart-state">正在读取本地 {intervalSeconds / 60}min K 线…</div>}
       {error && <div className="chart-state chart-state-error">K 线加载失败：{error}</div>}
       {chartData && chartData.items.length > 0 && <div className="chart-modal-body">
         <div className="chart-summary"><span>命中时间 <strong>{formatKlineTime(signal.open_time)}</strong></span><span>命中收盘价 <strong>{formatNumber(signal.close_price, 8)}</strong></span><span>K线数量 <strong>{loadedRange?.count ?? chartData.items.length}</strong></span><span className="ema20-label">━ EMA20</span><span className="ema240-label">━ EMA240</span></div>
         <CandlestickChart data={chartData} signalTime={signal.open_time} onLoadedRangeChange={setLoadedRange} />
-        <p className="chart-footnote">橙色箭头标记命中 K 线；数据直接读取持久化 15min K 线和 EMA 指标，图表时间统一显示为 UTC+8。</p>
+        <p className="chart-footnote">橙色箭头标记命中 K 线；数据直接读取本地 {intervalSeconds / 60}min K 线和同周期 EMA 指标，图表时间统一显示为 UTC+8。</p>
       </div>}
     </section>
   </div>;
@@ -1274,6 +1279,7 @@ function SignalKlineModal({ signal, onClose }: { signal: BacktestSignal; onClose
 
 function BacktestWorkspace() {
   const [metadata, setMetadata] = useState<BacktestMetadata | null>(null);
+  const [intervalSeconds, setIntervalSeconds] = useState<BacktestInterval>(900);
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
   const [allSymbols, setAllSymbols] = useState(true);
@@ -1296,7 +1302,7 @@ function BacktestWorkspace() {
   const [job, setJob] = useState<BacktestJob | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [chartSignal, setChartSignal] = useState<BacktestSignal | null>(null);
+  const [chartSignal, setChartSignal] = useState<{ signal: BacktestSignal; intervalSeconds: BacktestInterval } | null>(null);
 
   useEffect(() => {
     void fetch("/api/backtests/metadata", { cache: "no-store" })
@@ -1304,18 +1310,21 @@ function BacktestWorkspace() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json() as Promise<BacktestMetadata>;
       })
-      .then((value) => {
-        setMetadata(value);
-        if (!value.available_to) return;
-        const availableEnd = new Date(value.available_to);
-        const exclusiveEnd = new Date(availableEnd.getTime() + 15 * 60 * 1000);
-        const candidateStart = new Date(exclusiveEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
-        const minimumStart = value.available_from ? new Date(value.available_from) : candidateStart;
-        setStartAt(toUtc8Input((candidateStart < minimumStart ? minimumStart : candidateStart).toISOString()));
-        setEndAt(toUtc8Input(exclusiveEnd.toISOString()));
-      })
+      .then(setMetadata)
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取回测数据范围"));
   }, []);
+
+  useEffect(() => {
+    const intervalMetadata = metadata?.intervals[String(intervalSeconds) as "300" | "900"];
+    if (!intervalMetadata?.available_to) return;
+    const availableEnd = new Date(intervalMetadata.available_to);
+    const exclusiveEnd = new Date(availableEnd.getTime() + intervalSeconds * 1000);
+    const candidateStart = new Date(exclusiveEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const minimumStart = intervalMetadata.available_from ? new Date(intervalMetadata.available_from) : candidateStart;
+    setStartAt(toUtc8Input((candidateStart < minimumStart ? minimumStart : candidateStart).toISOString()));
+    setEndAt(toUtc8Input(exclusiveEnd.toISOString()));
+    setSelectedSymbols((current) => current.filter((symbol) => intervalMetadata.symbols.includes(symbol)));
+  }, [intervalSeconds, metadata]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -1373,6 +1382,7 @@ function BacktestWorkspace() {
         body: JSON.stringify({
           start_at: utc8InputToIso(startAt),
           end_at: utc8InputToIso(endAt),
+          interval_seconds: intervalSeconds,
           symbols: allSymbols ? [] : selectedSymbols,
           parameters: {
             average_days: parameters.averageDays,
@@ -1402,19 +1412,21 @@ function BacktestWorkspace() {
     }
   }
 
-  const filteredSymbols = metadata?.symbols.filter((symbol) => symbol.includes(symbolSearch.trim().toUpperCase())) ?? [];
+  const intervalMetadata = metadata?.intervals[String(intervalSeconds) as "300" | "900"];
+  const filteredSymbols = intervalMetadata?.symbols.filter((symbol) => symbol.includes(symbolSearch.trim().toUpperCase())) ?? [];
   const progress = job?.total_instruments ? job.scanned_instruments / job.total_instruments * 100 : 0;
   const visibleFactors = job?.request.parameters.required_factors ?? selectedFactors;
 
   return <main className="backtest-page">
     <header className="topbar ranking-header">
-      <div><p className="brand-mark">STRATEGY LAB</p><h1>15min 策略配置回测</h1><p className="subtitle">组合策略因子 · 指定 Tickers 与时间范围 · 双击信号定位命中 K 线</p></div>
-      <div className="data-range-badge"><span>持久化 15min 数据范围</span><strong>{metadata?.available_from && metadata.available_to ? `${formatKlineTime(metadata.available_from)} → ${formatKlineTime(metadata.available_to)}` : "读取中…"}</strong></div>
+      <div><p className="brand-mark">STRATEGY LAB</p><h1>{intervalSeconds / 60}min 策略配置回测</h1><p className="subtitle">组合策略因子 · 指定 K 线周期、Tickers 与时间范围 · 双击信号定位命中 K 线</p></div>
+      <div className="data-range-badge"><span>本地 {intervalSeconds / 60}min 数据范围</span><strong>{intervalMetadata?.available_from && intervalMetadata.available_to ? `${formatKlineTime(intervalMetadata.available_from)} → ${formatKlineTime(intervalMetadata.available_to)}` : "读取中…"}</strong></div>
     </header>
     {error && <div className="alert alert-critical">{error}</div>}
     <form className="backtest-layout" onSubmit={(event) => void runBacktest(event)}>
       <section className="panel backtest-config">
         <div className="panel-heading"><div><p className="eyebrow">CONFIGURATION</p><h3>回测条件</h3></div><span className="message">时间均为 UTC+8，结束时间不包含在筛选范围内</span></div>
+        <div className="backtest-interval-row"><span>K 线周期</span><div className="backtest-interval-switch"><button type="button" className={intervalSeconds === 300 ? "active" : ""} onClick={() => setIntervalSeconds(300)}>5min</button><button type="button" className={intervalSeconds === 900 ? "active" : ""} onClick={() => setIntervalSeconds(900)}>15min</button></div><small>所有 EMA、价格、OI、成交量和振幅因子均按所选周期计算</small></div>
         <div className="backtest-time-grid">
           <label><span>开始时间</span><input type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>
           <label><span>结束时间（不含）</span><input type="datetime-local" value={endAt} onChange={(event) => setEndAt(event.target.value)} /></label>
@@ -1430,7 +1442,7 @@ function BacktestWorkspace() {
         </div>
       </section>
       <aside className="panel ticker-picker">
-        <div className="panel-heading"><div><p className="eyebrow">UNIVERSE</p><h3>Tickers</h3></div><strong>{allSymbols ? `全部 ${metadata?.symbols.length ?? 0}` : `已选 ${selectedSymbols.length}`}</strong></div>
+        <div className="panel-heading"><div><p className="eyebrow">UNIVERSE</p><h3>Tickers</h3></div><strong>{allSymbols ? `全部 ${intervalMetadata?.symbols.length ?? 0}` : `已选 ${selectedSymbols.length}`}</strong></div>
         <label className="ticker-all"><input type="checkbox" checked={allSymbols} onChange={(event) => setAllSymbols(event.target.checked)} /><span>全部 Tickers</span></label>
         <input type="search" placeholder="搜索 BTCUSDT" value={symbolSearch} onChange={(event) => setSymbolSearch(event.target.value)} disabled={allSymbols} />
         <div className="ticker-list" aria-disabled={allSymbols}>{filteredSymbols.map((symbol) => <label key={symbol}><input type="checkbox" checked={selectedSymbols.includes(symbol)} disabled={allSymbols} onChange={() => toggleSymbol(symbol)} /><span>{symbol}</span></label>)}</div>
@@ -1442,13 +1454,13 @@ function BacktestWorkspace() {
       <div className="panel-heading"><div><p className="eyebrow">SIGNALS</p><h3>命中信号</h3></div><div className="backtest-result-meta"><strong>{job?.signal_count.toLocaleString() ?? 0} 条</strong><span>{job?.status === "COMPLETED" ? "回测完成" : job?.status === "FAILED" ? "回测失败" : job ? `${job.scanned_instruments} / ${job.total_instruments} Tickers` : "等待回测"}</span></div></div>
       {job && (job.status === "QUEUED" || job.status === "RUNNING") && <div className="backtest-progress"><span style={{ width: `${progress}%` }} /></div>}
       {job?.truncated && <div className="alert">结果已达到 {job.max_signals.toLocaleString()} 条上限，请缩短时间范围、收紧参数或减少 Tickers。</div>}
-      <p className="backtest-list-hint">双击任一信号，在 15min K 线图中查看橙色箭头标记。</p>
+      <p className="backtest-list-hint">双击任一信号，在 {job ? job.request.interval_seconds / 60 : intervalSeconds / 60}min K 线图中查看橙色箭头标记。</p>
       <div className="table-scroll backtest-signal-scroll"><table className="storage-table backtest-signal-table"><thead><tr><th>信号时间 UTC+8</th><th>Ticker</th><th>收盘价</th>{visibleFactors.map((name) => <th key={name}>{factorLabels[name]}</th>)}</tr></thead><tbody>
-        {job?.signals.map((signal) => <tr key={`${signal.symbol}-${signal.open_time}`} tabIndex={0} onDoubleClick={() => setChartSignal(signal)} onKeyDown={(event) => { if (event.key === "Enter") setChartSignal(signal); }}><td>{formatKlineTime(signal.open_time)}</td><td><strong>{signal.symbol}</strong></td><td>{formatNumber(signal.close_price, 8)}</td>{visibleFactors.map((name) => <td key={name} title={signal.factors[name].threshold}>{factorValue(name, signal.factors[name].value)}</td>)}</tr>)}
+        {job?.signals.map((signal) => <tr key={`${signal.symbol}-${signal.open_time}`} tabIndex={0} onDoubleClick={() => setChartSignal({ signal, intervalSeconds: job.request.interval_seconds })} onKeyDown={(event) => { if (event.key === "Enter") setChartSignal({ signal, intervalSeconds: job.request.interval_seconds }); }}><td>{formatKlineTime(signal.open_time)}</td><td><strong>{signal.symbol}</strong></td><td>{formatNumber(signal.close_price, 8)}</td>{visibleFactors.map((name) => <td key={name} title={signal.factors[name].threshold}>{factorValue(name, signal.factors[name].value)}</td>)}</tr>)}
         {!submitting && (!job || job.signals.length === 0) && <tr><td className="empty-cell" colSpan={3 + visibleFactors.length}>{job?.status === "COMPLETED" ? "当前配置没有命中信号" : "配置策略后点击“开始回测”"}</td></tr>}
       </tbody></table></div>
     </section>
-    {chartSignal && <SignalKlineModal signal={chartSignal} onClose={() => setChartSignal(null)} />}
+    {chartSignal && <SignalKlineModal signal={chartSignal.signal} intervalSeconds={chartSignal.intervalSeconds} onClose={() => setChartSignal(null)} />}
   </main>;
 }
 
