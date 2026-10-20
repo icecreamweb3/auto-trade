@@ -52,6 +52,7 @@ FACTOR_LOG_LABELS = {
 PERCENT_FACTORS = frozenset(
     {"rapid_price_rise", "open_interest_rise", "low_average_amplitude"}
 )
+MULTIPLE_FACTORS = frozenset({"volume_surge", "amplitude_spike_streak"})
 
 
 @dataclass(slots=True)
@@ -100,6 +101,8 @@ def _log_value(name: str, value: Decimal | int | None) -> str:
     if isinstance(value, Decimal):
         if name in PERCENT_FACTORS:
             return f"{value:.2f}%"
+        if name in MULTIPLE_FACTORS:
+            return f"{value:.2f}x"
         return format(value, "f")
     return str(value)
 

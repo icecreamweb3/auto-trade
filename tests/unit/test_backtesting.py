@@ -96,7 +96,15 @@ async def test_optional_html_log_is_generated_and_resolvable(
     factors = {
         name: FactorResult(
             passed=name == "rapid_price_rise",
-            value=Decimal("4.2") if name == "rapid_price_rise" else None,
+            value=(
+                Decimal("4.2")
+                if name == "rapid_price_rise"
+                else Decimal("0.07633334544580432043302834212")
+                if name == "volume_surge"
+                else Decimal("0.3294036146087840013440172645")
+                if name == "amplitude_spike_streak"
+                else None
+            ),
             threshold="test threshold",
             reason=None if name == "rapid_price_rise" else "not matched",
         )
@@ -144,6 +152,8 @@ async def test_optional_html_log_is_generated_and_resolvable(
     assert "成交量: 18788.71" in html
     assert "成交额: 2043370000.00" in html
     assert "实际值: 4.20%" in html
+    assert "成交量暴涨: " in html and "实际值: 0.08x" in html
+    assert "连续振幅异常: " in html and "实际值: 0.33x" in html
     assert '<span class="pass">✓</span>' in html
     assert "test threshold" in html
     assert "</html>" in html

@@ -1241,7 +1241,7 @@ function factorValue(name: FactorName, value: number | null): string {
   if (value === null) return "—";
   if (name === "ema_bullish_cross") return `${value} 根前`;
   if (name === "rapid_price_rise" || name === "open_interest_rise" || name === "low_average_amplitude") return `${value.toFixed(2)}%`;
-  return `${value.toFixed(3)}×`;
+  return `${value.toFixed(2)}×`;
 }
 
 function SignalKlineModal({ signal, intervalSeconds, onClose }: { signal: BacktestSignal; intervalSeconds: BacktestInterval; onClose: () => void }) {
