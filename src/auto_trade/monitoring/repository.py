@@ -842,6 +842,104 @@ class MonitoringRepository:
 
         return tuple(visible_points)
 
+    async def paper_trader_ranges(
+        self, symbols: Sequence[str]
+    ) -> tuple[dict[str, object], ...]:
+        """Return local replay coverage for the supported perpetual symbols."""
+        async with self._engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT upper(i.symbol) AS symbol,
+                               min(k.open_time) AS available_from,
+                               max(k.close_time) AS available_to
+                        FROM market.klines k
+                        JOIN core.instruments i USING (instrument_id)
+                        WHERE upper(i.symbol) = ANY(:symbols)
+                          AND i.exchange = 'BINANCE'
+                          AND i.market = 'USD_M_FUTURES'
+                          AND i.contract_type = 'PERPETUAL'
+                          AND k.price_type = 'TRADE'
+                          AND k.interval_seconds = 300
+                          AND k.is_current
+                          AND k.is_closed
+                          AND k.quality_status = 'VALID'
+                        GROUP BY upper(i.symbol)
+                        ORDER BY upper(i.symbol)
+                        """
+                    ),
+                    {"symbols": list(symbols)},
+                )
+            ).mappings().all()
+        by_symbol = {cast(str, row["symbol"]): row for row in rows}
+        return tuple(
+            {
+                "symbol": symbol,
+                "available_from": by_symbol[symbol]["available_from"]
+                if symbol in by_symbol
+                else None,
+                "available_to": by_symbol[symbol]["available_to"]
+                if symbol in by_symbol
+                else None,
+            }
+            for symbol in symbols
+        )
+
+    async def paper_trader_klines(
+        self,
+        *,
+        symbol: str,
+        range_start: datetime,
+        range_end: datetime,
+        interval_seconds: int,
+        limit: int,
+    ) -> tuple[KlinePointRow, ...]:
+        """Return complete replay candles aggregated from canonical 5-minute bars."""
+        if interval_seconds not in (300, 900, 3600):
+            raise ValueError("interval_seconds must be 300, 900 or 3600")
+        source_bars = interval_seconds // 300
+        async with self._engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT k.open_time, k.close_time,
+                               k.open_price, k.high_price,
+                               k.low_price, k.close_price,
+                               k.base_volume, k.quote_volume
+                        FROM market.klines k
+                        JOIN core.instruments i USING (instrument_id)
+                        WHERE upper(i.symbol) = :symbol
+                          AND i.exchange = 'BINANCE'
+                          AND i.market = 'USD_M_FUTURES'
+                          AND i.contract_type = 'PERPETUAL'
+                          AND k.price_type = 'TRADE'
+                          AND k.interval_seconds = 300
+                          AND k.open_time >= CAST(:range_start AS timestamptz)
+                          AND k.open_time < CAST(:range_end AS timestamptz)
+                          AND k.is_current
+                          AND k.is_closed
+                          AND k.quality_status = 'VALID'
+                        ORDER BY k.open_time ASC
+                        LIMIT :raw_limit
+                        """
+                    ),
+                    {
+                        "symbol": symbol.strip().upper(),
+                        "range_start": range_start,
+                        "range_end": range_end,
+                        "raw_limit": limit * source_bars,
+                    },
+                )
+            ).mappings().all()
+        points = aggregate_kline_rows(
+            [cast(Mapping[str, object], row) for row in rows], interval_seconds
+        )
+        return tuple(
+            point for point in points if point.source_bar_count == source_bars
+        )[:limit]
+
     async def kline_history(
         self,
         *,

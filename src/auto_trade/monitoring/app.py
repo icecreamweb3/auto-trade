@@ -24,6 +24,7 @@ from auto_trade.monitoring.models import (
 from auto_trade.monitoring.nats_probe import NatsProbe
 from auto_trade.monitoring.repository import MonitoringRepository
 from auto_trade.monitoring.service import MonitoringService
+from auto_trade.paper_trading.router import router as paper_trader_router
 
 
 @asynccontextmanager
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings, "monitor-api")
     engine = create_database_engine(settings)
     app.state.database_engine = engine
+    app.state.paper_trader_sessions = {}
     app.state.backtest_manager = BacktestManager(
         engine,
         Path(settings.file_log_directory) / "backtests",
@@ -58,6 +60,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(backtest_router)
+app.include_router(paper_trader_router)
 
 
 @app.get("/health/live")

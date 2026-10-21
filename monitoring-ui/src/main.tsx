@@ -184,6 +184,74 @@ interface LoadedKlineRange {
   count: number;
 }
 
+type PaperSide = "LONG" | "SHORT";
+type PaperGameStatus = "READY" | "RUNNING" | "COMPLETED" | "LIQUIDATED";
+
+interface PaperCandle {
+  open_time: string;
+  close_time: string;
+  open_price: number;
+  high_price: number;
+  low_price: number;
+  close_price: number;
+  base_volume: number;
+  quote_volume: number;
+}
+
+interface PaperPosition {
+  side: PaperSide;
+  leverage: number;
+  margin: number;
+  quantity: number;
+  entry_price: number;
+  mark_price: number;
+  liquidation_price: number;
+  unrealized_pnl: number;
+  return_on_margin_percent: number;
+}
+
+interface PaperTrade {
+  side: PaperSide;
+  leverage: number;
+  margin: number;
+  quantity: number;
+  entry_price: number;
+  exit_price: number;
+  realized_pnl: number;
+  opened_at: string;
+  closed_at: string;
+  exit_reason: string;
+}
+
+interface PaperSessionSnapshot {
+  session_id: string;
+  symbol: string;
+  interval_seconds: number;
+  range_start: string;
+  range_end: string;
+  status: PaperGameStatus;
+  starting_balance: number;
+  balance: number;
+  available_balance: number;
+  equity: number;
+  realized_pnl: number;
+  revealed_count: number;
+  total_candles: number;
+  current_candle: PaperCandle;
+  position: PaperPosition | null;
+  trades: PaperTrade[];
+  message: string | null;
+}
+
+interface PaperMetadata {
+  symbols: string[];
+  intervals: number[];
+  starting_balance: number;
+  maximum_leverage: number;
+  maintenance_margin_rate: number;
+  ranges: Array<{ symbol: string; available_from: string | null; available_to: string | null }>;
+}
+
 interface RankingFilters {
   dateFrom: string;
   dateTo: string;
@@ -1761,15 +1829,273 @@ function BacktestWorkspace() {
   </main>;
 }
 
+function PaperReplayChart({ candles, position }: { candles: PaperCandle[]; position: PaperPosition | null }) {
+  const points = candles.slice(-100);
+  if (points.length === 0) return <div className="chart-state">载入行情后开始回放</div>;
+  const width = 1100;
+  const height = 520;
+  const left = 72;
+  const right = 92;
+  const top = 28;
+  const priceBottom = 410;
+  const volumeTop = 438;
+  const volumeBottom = 486;
+  const plotWidth = width - left - right;
+  const referencePrices = position ? [position.entry_price, position.liquidation_price] : [];
+  const low = Math.min(...points.map((point) => point.low_price), ...referencePrices);
+  const high = Math.max(...points.map((point) => point.high_price), ...referencePrices);
+  const rawRange = Math.max(high - low, high * .001, 1e-9);
+  const priceMin = low - rawRange * .08;
+  const priceMax = high + rawRange * .08;
+  const priceRange = priceMax - priceMin;
+  const priceHeight = priceBottom - top;
+  const slot = plotWidth / points.length;
+  const candleWidth = Math.max(3, Math.min(9, slot * .66));
+  const maxVolume = Math.max(...points.map((point) => point.quote_volume), 1);
+  const xAt = (index: number) => left + slot * (index + .5);
+  const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
+  const ticks = Array.from({ length: 6 }, (_, index) => priceMax - priceRange * index / 5);
+  const timeTicks = [0, Math.floor((points.length - 1) / 2), points.length - 1]
+    .filter((value, index, values) => value >= 0 && values.indexOf(value) === index);
+  const current = points[points.length - 1];
+  return <div className="paper-chart-wrap">
+    <div className="chart-readout">
+      <span>{formatKlineTime(current.open_time)}</span>
+      <span>开 <strong>{formatNumber(current.open_price, 2)}</strong></span>
+      <span>高 <strong>{formatNumber(current.high_price, 2)}</strong></span>
+      <span>低 <strong>{formatNumber(current.low_price, 2)}</strong></span>
+      <span>收 <strong className={current.close_price >= current.open_price ? "candle-change-up" : "candle-change-down"}>{formatNumber(current.close_price, 2)}</strong></span>
+      <span className="chart-drag-hint">显示最近 {points.length} 根 · 已揭示 {candles.length} 根</span>
+    </div>
+    <svg className="paper-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="PaperTrader K线回放图">
+      <rect width={width} height={height} rx="10" className="chart-background" />
+      {ticks.map((price) => <g key={price}>
+        <line x1={left} x2={width - right} y1={yAt(price)} y2={yAt(price)} className="chart-grid-line" />
+        <text x={width - right + 10} y={yAt(price) + 4} className="chart-axis-label">{formatNumber(price, 2)}</text>
+      </g>)}
+      {points.map((point, index) => {
+        const x = xAt(index);
+        const openY = yAt(point.open_price);
+        const closeY = yAt(point.close_price);
+        const rising = point.close_price >= point.open_price;
+        const barHeight = point.quote_volume / maxVolume * (volumeBottom - volumeTop);
+        return <g key={point.open_time} className={rising ? "chart-up" : "chart-down"}>
+          <line x1={x} x2={x} y1={yAt(point.high_price)} y2={yAt(point.low_price)} className="candle-wick" />
+          <rect x={x - candleWidth / 2} y={Math.min(openY, closeY)} width={candleWidth} height={Math.max(1, Math.abs(closeY - openY))} className="candle-body" />
+          <rect x={x - candleWidth / 2} y={volumeBottom - barHeight} width={candleWidth} height={barHeight} className="volume-bar" />
+        </g>;
+      })}
+      {position && <>
+        <line x1={left} x2={width - right} y1={yAt(position.entry_price)} y2={yAt(position.entry_price)} className="paper-entry-line" />
+        <text x={left + 8} y={yAt(position.entry_price) - 6} className="paper-entry-label">开仓 {formatNumber(position.entry_price, 2)}</text>
+        <line x1={left} x2={width - right} y1={yAt(position.liquidation_price)} y2={yAt(position.liquidation_price)} className="paper-liquidation-line" />
+        <text x={left + 8} y={yAt(position.liquidation_price) - 6} className="paper-liquidation-label">强平 {formatNumber(position.liquidation_price, 2)}</text>
+      </>}
+      {timeTicks.map((index) => <text key={index} x={xAt(index)} y={height - 13} textAnchor="middle" className="chart-axis-label">{formatKlineTime(points[index].open_time, true)}</text>)}
+    </svg>
+  </div>;
+}
+
+function paperErrorMessage(value: unknown, fallback: string): string {
+  if (typeof value === "object" && value !== null && "detail" in value && typeof value.detail === "string") return value.detail;
+  return fallback;
+}
+
+function PaperTraderWorkspace() {
+  const [metadata, setMetadata] = useState<PaperMetadata | null>(null);
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [intervalSeconds, setIntervalSeconds] = useState(300);
+  const [rangeStart, setRangeStart] = useState("");
+  const [rangeEnd, setRangeEnd] = useState("");
+  const [speedSeconds, setSpeedSeconds] = useState(10);
+  const [margin, setMargin] = useState(100);
+  const [leverage, setLeverage] = useState(10);
+  const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
+  const [candles, setCandles] = useState<PaperCandle[]>([]);
+  const [playing, setPlaying] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const advancingRef = useRef(false);
+
+  useEffect(() => {
+    void fetch("/api/paper-trader/metadata", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as PaperMetadata | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "模拟器行情范围加载失败"));
+        const value = body as PaperMetadata;
+        setMetadata(value);
+        const coverage = value.ranges.find((item) => item.symbol === "BTCUSDT");
+        if (coverage?.available_to) {
+          const end = new Date(coverage.available_to);
+          const earliest = coverage.available_from ? new Date(coverage.available_from).getTime() : 0;
+          const start = new Date(Math.max(earliest, end.getTime() - 24 * 60 * 60 * 1000));
+          setRangeStart(toUtc8Input(start.toISOString()));
+          setRangeEnd(toUtc8Input(end.toISOString()));
+        }
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "模拟器行情范围加载失败"));
+  }, []);
+
+  useEffect(() => {
+    if (!metadata) return;
+    const coverage = metadata.ranges.find((item) => item.symbol === symbol);
+    if (!coverage?.available_to) return;
+    const end = new Date(coverage.available_to);
+    const earliest = coverage.available_from ? new Date(coverage.available_from).getTime() : 0;
+    const start = new Date(Math.max(earliest, end.getTime() - 24 * 60 * 60 * 1000));
+    setRangeStart(toUtc8Input(start.toISOString()));
+    setRangeEnd(toUtc8Input(end.toISOString()));
+  }, [metadata, symbol]);
+
+  useEffect(() => {
+    if (!playing || !snapshot || snapshot.status === "COMPLETED" || snapshot.status === "LIQUIDATED") return;
+    const timer = window.setInterval(() => void advance(), speedSeconds * 1000);
+    return () => window.clearInterval(timer);
+  }, [playing, snapshot?.session_id, snapshot?.status, speedSeconds]);
+
+  useEffect(() => {
+    if (snapshot?.status === "COMPLETED" || snapshot?.status === "LIQUIDATED") setPlaying(false);
+  }, [snapshot?.status]);
+
+  function applySnapshot(next: PaperSessionSnapshot, reset = false) {
+    setSnapshot(next);
+    setCandles((current) => {
+      if (reset) return [next.current_candle];
+      const last = current[current.length - 1];
+      return last?.open_time === next.current_candle.open_time ? current : [...current, next.current_candle];
+    });
+  }
+
+  async function requestSnapshot(path: string, init?: RequestInit): Promise<PaperSessionSnapshot> {
+    const response = await fetch(path, init);
+    const body = await response.json() as PaperSessionSnapshot | { detail?: string };
+    if (!response.ok) throw new Error(paperErrorMessage(body, `请求失败 (HTTP ${response.status})`));
+    return body as PaperSessionSnapshot;
+  }
+
+  async function startGame() {
+    if (!rangeStart || !rangeEnd) {
+      setError("请选择完整的行情开始和结束时间");
+      return;
+    }
+    setLoading(true);
+    setPlaying(false);
+    setError(null);
+    try {
+      const next = await requestSnapshot("/api/paper-trader/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, interval_seconds: intervalSeconds, range_start: utc8InputToIso(rangeStart), range_end: utc8InputToIso(rangeEnd) })
+      });
+      applySnapshot(next, true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "模拟账户创建失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function advance() {
+    if (!snapshot || advancingRef.current) return;
+    advancingRef.current = true;
+    setError(null);
+    try {
+      applySnapshot(await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/advance`, { method: "POST" }));
+    } catch (reason) {
+      setPlaying(false);
+      setError(reason instanceof Error ? reason.message : "K 线推进失败");
+    } finally {
+      advancingRef.current = false;
+    }
+  }
+
+  async function openPosition(side: PaperSide) {
+    if (!snapshot) return;
+    setError(null);
+    try {
+      applySnapshot(await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ side, margin, leverage })
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "下单失败");
+    }
+  }
+
+  async function closePosition() {
+    if (!snapshot) return;
+    setError(null);
+    try {
+      applySnapshot(await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/close`, { method: "POST" }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "平仓失败");
+    }
+  }
+
+  const gameEnded = snapshot?.status === "COMPLETED" || snapshot?.status === "LIQUIDATED";
+  const pnl = snapshot?.position?.unrealized_pnl ?? 0;
+  return <main className="paper-page">
+    <header className="topbar">
+      <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">选择历史行情，逐根回放 K 线，在 1000 USDT 模拟账户中练习仓位与杠杆。</p></div>
+      <div className="paper-rule-badge"><span>首版撮合规则</span><strong>市价成交 · 单仓逐仓 · 维持保证金率 0.5%</strong></div>
+    </header>
+    <section className="panel paper-config">
+      <div className="paper-config-grid">
+        <label><span>交易对</span><select value={symbol} onChange={(event) => setSymbol(event.target.value)} disabled={!!snapshot && !gameEnded}><option>BTCUSDT</option><option>ETHUSDT</option></select></label>
+        <label><span>K 线级别</span><select value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} disabled={!!snapshot && !gameEnded}><option value={300}>5min</option><option value={900}>15min</option><option value={3600}>1h</option></select></label>
+        <label><span>开始时间 UTC+8</span><input type="datetime-local" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} disabled={!!snapshot && !gameEnded} /></label>
+        <label><span>结束时间 UTC+8</span><input type="datetime-local" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} disabled={!!snapshot && !gameEnded} /></label>
+        <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label>
+        <button className="primary-button" type="button" onClick={() => void startGame()} disabled={loading || !metadata}>{loading ? "正在载入…" : snapshot ? "重新开始" : "载入并开始"}</button>
+      </div>
+    </section>
+    {error && <div className="alert alert-critical">{error}</div>}
+    {!snapshot ? <section className="panel paper-empty"><strong>准备开始</strong><p>载入后只会显示第一根 K 线，后续行情不会提前暴露。</p></section> : <>
+      <section className="paper-account-grid">
+        <article className="summary-card"><span>账户权益</span><strong>{formatNumber(snapshot.equity, 2)}</strong><em>USDT</em></article>
+        <article className="summary-card"><span>可用余额</span><strong>{formatNumber(snapshot.available_balance, 2)}</strong><em>USDT</em></article>
+        <article className="summary-card"><span>未实现盈亏</span><strong className={pnl >= 0 ? "change-positive" : "change-negative"}>{pnl >= 0 ? "+" : ""}{formatNumber(pnl, 2)}</strong><em>{snapshot.position ? `${snapshot.position.return_on_margin_percent.toFixed(2)}% 保证金收益率` : "暂无持仓"}</em></article>
+        <article className="summary-card"><span>已实现盈亏</span><strong className={snapshot.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{snapshot.realized_pnl >= 0 ? "+" : ""}{formatNumber(snapshot.realized_pnl, 2)}</strong><em>{snapshot.trades.length} 笔已平仓</em></article>
+      </section>
+      <section className="paper-workspace">
+        <div className="panel paper-chart-panel">
+          <div className="paper-playback-bar">
+            <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
+            <div className="paper-playback-actions"><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
+          </div>
+          <PaperReplayChart candles={candles} position={snapshot.position} />
+        </div>
+        <aside className="panel paper-order-panel">
+          <div className="panel-heading"><div><p className="eyebrow">ORDER</p><h3>模拟下单</h3></div><strong>{formatNumber(snapshot.current_candle.close_price, 2)}</strong></div>
+          {snapshot.position ? <div className={`paper-position ${snapshot.position.side.toLowerCase()}`}>
+            <div><span>{snapshot.position.side === "LONG" ? "多仓" : "空仓"} · {snapshot.position.leverage}x</span><strong>{formatNumber(snapshot.position.quantity, 6)} {snapshot.symbol.replace("USDT", "")}</strong></div>
+            <dl><div><dt>开仓价</dt><dd>{formatNumber(snapshot.position.entry_price, 2)}</dd></div><div><dt>标记价</dt><dd>{formatNumber(snapshot.position.mark_price, 2)}</dd></div><div><dt>保证金</dt><dd>{formatNumber(snapshot.position.margin, 2)}</dd></div><div><dt>强平价</dt><dd className="paper-danger">{formatNumber(snapshot.position.liquidation_price, 2)}</dd></div></dl>
+            <button type="button" className="paper-close-position" onClick={() => void closePosition()}>按当前收盘价平仓</button>
+          </div> : <div className="paper-order-form">
+            <label><span>逐仓保证金 USDT</span><input type="number" min={1} max={snapshot.available_balance} step={10} value={margin} onChange={(event) => setMargin(Number(event.target.value))} disabled={gameEnded} /></label>
+            <label><span>杠杆倍数</span><input type="number" min={1} max={100} value={leverage} onChange={(event) => setLeverage(Number(event.target.value))} disabled={gameEnded} /></label>
+            <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded}>开空</button></div>
+            <small>按当前已揭示 K 线收盘价成交，不收手续费与资金费。</small>
+          </div>}
+          <div className="paper-trade-log"><span>最近成交</span>{snapshot.trades.length === 0 ? <p>暂无成交记录</p> : snapshot.trades.slice().reverse().slice(0, 5).map((trade) => <div key={`${trade.opened_at}-${trade.closed_at}`}><strong className={trade.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{trade.realized_pnl >= 0 ? "+" : ""}{trade.realized_pnl.toFixed(2)}</strong><small>{trade.side} {trade.leverage}x · {trade.exit_reason}</small></div>)}</div>
+        </aside>
+      </section>
+      {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><button className="primary-button" type="button" onClick={() => void startGame()}>再来一轮</button></section>}
+    </>}
+  </main>;
+}
+
 function App() {
-  const [view, setView] = useState<"rankings" | "backtest" | "monitoring">("rankings");
+  const [view, setView] = useState<"rankings" | "backtest" | "paper" | "monitoring">("rankings");
   return <>
     <nav className="workspace-tabs" aria-label="工具导航">
       <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>
       <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>
+      <button className={view === "paper" ? "active" : ""} onClick={() => setView("paper")}>交易模拟器</button>
       <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>
     </nav>
-    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : <MonitoringDashboard />}
+    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "paper" ? <PaperTraderWorkspace /> : <MonitoringDashboard />}
   </>;
 }
 
