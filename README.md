@@ -63,6 +63,20 @@ make monitor-logs
 make repair-once
 ```
 
+为 PaperTrader 独立补齐 BTCUSDT、ETHUSDT 自 `2020-04-01 00:00 UTC`
+起的 5 分钟 Trade OHLCV：
+
+```bash
+make paper-history-backfill
+make paper-history-status
+```
+
+该工具直接批量幂等写入规范化 `market.klines`，不经过 NATS。每个交易对的
+游标保存在 `market.backfill_scan_checkpoints`，中断后重新执行同一命令即可续跑；
+前向抓取结束后还会逐点检查缺口，只有目标区间全部为闭合、`VALID` K 线时才成功退出。
+15 分钟和 1 小时行情由 5 分钟源数据查询时聚合，不重复长期存储。默认每个交易对
+每次请求后等待 0.5 秒，可通过 `PAPER_HISTORY_REQUEST_INTERVAL_SECONDS` 调整。
+
 采集器将每份 Binance 响应同时用于原始事件留存和标准事件生成；策略、风控和后续数据库写入消费者从 JetStream 获取这份一致的数据，不重复请求 Binance。Trade 1m/5m 使用 WebSocket 闭合K线；Mark 1m 使用全市场 `!markPrice@arr@1s` WebSocket 实时流在本地按UTC分钟聚合，缺口再由REST回补。
 
 `daily-rankings` 服务每5分钟检查最近90天内缺失或非有效的 UTC 日榜，每轮最多处理7天。它只使用本地已闭合且质量有效的5分钟Trade K线；每天UTC日期结束后生成前一日榜单，启动时也会自动补齐遗漏日。数据尚不完整时快照保持非有效状态，缺口回补完成后由后续周期重算。

@@ -99,6 +99,31 @@ services:
         condition: service_healthy
     network_mode: host
 
+  paper-history:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      <<: *file-logging-environment
+      SERVICE_NAME: paper-history
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost,database}
+      TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
+    entrypoint: ["python", "-m", "auto_trade.collectors.paper_history"]
+    depends_on:
+      database:
+        condition: service_healthy
+    network_mode: host
+
   feature-scan:
     profiles: ["tools"]
     build:

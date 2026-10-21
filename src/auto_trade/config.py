@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     backfill_rate_limit_cooldown_seconds: float = Field(
         default=300.0, ge=60, le=86400
     )
+    paper_history_request_interval_seconds: float = Field(
+        default=0.5, ge=0, le=60
+    )
 
     @property
     def database_dsn(self) -> str:
