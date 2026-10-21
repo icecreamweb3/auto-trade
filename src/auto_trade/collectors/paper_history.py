@@ -26,7 +26,7 @@ START_AT = datetime.combine(date(2020, 4, 1), time.min, tzinfo=UTC)
 INTERVAL_SECONDS = 300
 INTERVAL = timedelta(seconds=INTERVAL_SECONDS)
 PAGE_LIMIT = 1000
-WRITE_BATCH_SIZE = 200
+WRITE_BATCH_SIZE = 50
 CHECKPOINT_PREFIX = "PAPER_HISTORY"
 CONFIG_SIGNATURE = "v1:BTCUSDT,ETHUSDT:TRADE:300:2020-04-01"
 
@@ -274,25 +274,55 @@ class PaperHistoryRepository:
     async def _write_kline_batch(
         self, instrument_id: int, rows: tuple[HistoricalKline, ...]
     ) -> int:
-        serialized = json.dumps(
-            [
-                {
-                    "open_time": row.open_time.isoformat(),
-                    "close_time": row.close_time.isoformat(),
-                    "open_price": str(row.open_price),
-                    "high_price": str(row.high_price),
-                    "low_price": str(row.low_price),
-                    "close_price": str(row.close_price),
-                    "base_volume": str(row.base_volume),
-                    "quote_volume": str(row.quote_volume),
-                    "trade_count": row.trade_count,
-                    "payload_hash": row.payload_hash,
-                    "collected_at": row.collected_at.isoformat(),
-                }
-                for row in rows
-            ]
-        )
+        range_start = rows[0].open_time
+        range_end = rows[-1].open_time + INTERVAL
         async with self._engine.begin() as connection:
+            existing_open_times: set[datetime] = set(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT DISTINCT open_time
+                            FROM market.klines
+                            WHERE instrument_id = :instrument_id
+                              AND price_type = 'TRADE'
+                              AND interval_seconds = 300
+                              AND open_time >= :range_start
+                              AND open_time < :range_end
+                            """
+                        ),
+                        {
+                            "instrument_id": instrument_id,
+                            "range_start": range_start,
+                            "range_end": range_end,
+                        },
+                    )
+                ).scalars()
+            )
+            missing_rows = tuple(
+                row for row in rows if row.open_time not in existing_open_times
+            )
+            if not missing_rows:
+                return 0
+
+            serialized = json.dumps(
+                [
+                    {
+                        "open_time": row.open_time.isoformat(),
+                        "close_time": row.close_time.isoformat(),
+                        "open_price": str(row.open_price),
+                        "high_price": str(row.high_price),
+                        "low_price": str(row.low_price),
+                        "close_price": str(row.close_price),
+                        "base_volume": str(row.base_volume),
+                        "quote_volume": str(row.quote_volume),
+                        "trade_count": row.trade_count,
+                        "payload_hash": row.payload_hash,
+                        "collected_at": row.collected_at.isoformat(),
+                    }
+                    for row in missing_rows
+                ]
+            )
             result = await connection.execute(
                 text(
                     """
@@ -328,7 +358,6 @@ class PaperHistoryRepository:
                            'paper-history-v1', '{}'::uuid[], item.payload_hash,
                            'VALID', item.collected_at, item.collected_at
                     FROM incoming item
-                    ON CONFLICT DO NOTHING
                     """
                 ),
                 {"instrument_id": instrument_id, "rows": serialized},
@@ -557,9 +586,9 @@ async def run(settings: Settings, request_interval_seconds: float) -> None:
                 client,
                 request_interval_seconds=request_interval_seconds,
             )
-            results = await asyncio.gather(
-                *(service.backfill_symbol(symbol, range_end) for symbol in SYMBOLS)
-            )
+            results = []
+            for symbol in SYMBOLS:
+                results.append(await service.backfill_symbol(symbol, range_end))
         if any(item.valid_count != item.expected_count for item in results):
             raise RuntimeError("paper history verification failed")
     finally:

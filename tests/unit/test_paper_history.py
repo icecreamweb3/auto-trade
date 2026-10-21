@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -142,4 +143,47 @@ async def test_database_writes_are_split_into_bounded_transactions() -> None:
         WRITE_BATCH_SIZE,
         WRITE_BATCH_SIZE,
         1,
+    ]
+
+
+async def test_database_write_prefilters_existing_rows_without_conflict_scan() -> None:
+    opened = datetime(2020, 4, 1, tzinfo=UTC)
+    rows = tuple(
+        HistoricalKline(
+            open_time=opened + offset * INTERVAL,
+            close_time=opened + (offset + 1) * INTERVAL,
+            open_price=Decimal("100"),
+            high_price=Decimal("105"),
+            low_price=Decimal("95"),
+            close_price=Decimal("102"),
+            base_volume=Decimal("12.5"),
+            quote_volume=Decimal("1250"),
+            trade_count=42,
+            payload_hash=str(offset) * 64,
+            collected_at=opened + 3 * INTERVAL,
+        )
+        for offset in range(2)
+    )
+    existing_result = MagicMock()
+    existing_result.scalars.return_value = [opened]
+    insert_result = MagicMock(rowcount=1)
+    connection = AsyncMock()
+    connection.execute.side_effect = (existing_result, insert_result)
+    transaction = AsyncMock()
+    transaction.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.begin.return_value = transaction
+
+    inserted = await PaperHistoryRepository(engine)._write_kline_batch(1, rows)
+
+    assert inserted == 1
+    lookup_sql = str(connection.execute.await_args_list[0].args[0])
+    assert "open_time >= :range_start" in lookup_sql
+    assert "open_time < :range_end" in lookup_sql
+    insert_sql = str(connection.execute.await_args_list[1].args[0])
+    assert "ON CONFLICT" not in insert_sql
+    insert_params = connection.execute.await_args_list[1].args[1]
+    serialized_rows = json.loads(insert_params["rows"])
+    assert [row["open_time"] for row in serialized_rows] == [
+        (opened + INTERVAL).isoformat()
     ]
