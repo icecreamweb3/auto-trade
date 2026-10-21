@@ -26,6 +26,7 @@ START_AT = datetime.combine(date(2020, 4, 1), time.min, tzinfo=UTC)
 INTERVAL_SECONDS = 300
 INTERVAL = timedelta(seconds=INTERVAL_SECONDS)
 PAGE_LIMIT = 1000
+WRITE_BATCH_SIZE = 200
 CHECKPOINT_PREFIX = "PAPER_HISTORY"
 CONFIG_SIGNATURE = "v1:BTCUSDT,ETHUSDT:TRADE:300:2020-04-01"
 
@@ -263,6 +264,16 @@ class PaperHistoryRepository:
     ) -> int:
         if not rows:
             return 0
+        inserted = 0
+        for offset in range(0, len(rows), WRITE_BATCH_SIZE):
+            inserted += await self._write_kline_batch(
+                instrument_id, rows[offset : offset + WRITE_BATCH_SIZE]
+            )
+        return inserted
+
+    async def _write_kline_batch(
+        self, instrument_id: int, rows: tuple[HistoricalKline, ...]
+    ) -> int:
         serialized = json.dumps(
             [
                 {
@@ -310,36 +321,14 @@ class PaperHistoryRepository:
                         quality_status, collected_at, effective_at
                     )
                     SELECT :instrument_id, 'TRADE', 300, item.open_time,
-                           COALESCE(revision.latest_revision, 0) + 1, true,
-                           revision.latest_revision, item.close_time,
+                           1, true, NULL, item.close_time,
                            item.open_price, item.high_price, item.low_price,
                            item.close_price, item.base_volume, item.quote_volume,
                            item.trade_count, true, 'BACKFILL',
                            'paper-history-v1', '{}'::uuid[], item.payload_hash,
                            'VALID', item.collected_at, item.collected_at
                     FROM incoming item
-                    LEFT JOIN LATERAL (
-                        SELECT max(k.revision_no) AS latest_revision
-                        FROM market.klines k
-                        WHERE k.instrument_id = :instrument_id
-                          AND k.price_type = 'TRADE'
-                          AND k.interval_seconds = 300
-                          AND k.open_time = item.open_time
-                    ) revision ON true
-                    WHERE NOT EXISTS (
-                        SELECT 1
-                        FROM market.klines current
-                        WHERE current.instrument_id = :instrument_id
-                          AND current.price_type = 'TRADE'
-                          AND current.interval_seconds = 300
-                          AND current.open_time = item.open_time
-                          AND current.is_current
-                          AND current.is_closed
-                          AND current.quality_status = 'VALID'
-                    )
-                    ON CONFLICT (
-                        instrument_id, price_type, interval_seconds, open_time
-                    ) WHERE is_current DO NOTHING
+                    ON CONFLICT DO NOTHING
                     """
                 ),
                 {"instrument_id": instrument_id, "rows": serialized},

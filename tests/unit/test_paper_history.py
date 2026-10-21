@@ -1,10 +1,14 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from auto_trade.collectors.paper_history import (
     INTERVAL,
+    WRITE_BATCH_SIZE,
+    HistoricalKline,
+    PaperHistoryRepository,
     checkpoint_key,
     latest_closed_boundary,
     parse_binance_klines,
@@ -106,3 +110,36 @@ def test_parse_binance_klines_requires_increasing_aligned_rows() -> None:
 def test_checkpoint_key_is_isolated_per_symbol() -> None:
     assert checkpoint_key("BTCUSDT") == "PAPER_HISTORY_BTCUSDT_300"
     assert checkpoint_key("ETHUSDT") == "PAPER_HISTORY_ETHUSDT_300"
+
+
+async def test_database_writes_are_split_into_bounded_transactions() -> None:
+    repository = PaperHistoryRepository(MagicMock())
+    write_batch = AsyncMock(
+        side_effect=(WRITE_BATCH_SIZE, WRITE_BATCH_SIZE, 1)
+    )
+    repository._write_kline_batch = write_batch  # type: ignore[method-assign]
+    opened = datetime(2020, 4, 1, tzinfo=UTC)
+    row = HistoricalKline(
+        open_time=opened,
+        close_time=opened + INTERVAL,
+        open_price=Decimal("100"),
+        high_price=Decimal("105"),
+        low_price=Decimal("95"),
+        close_price=Decimal("102"),
+        base_volume=Decimal("12.5"),
+        quote_volume=Decimal("1250"),
+        trade_count=42,
+        payload_hash="a" * 64,
+        collected_at=opened + INTERVAL,
+    )
+
+    inserted = await repository.write_klines(
+        1, tuple(row for _ in range(WRITE_BATCH_SIZE * 2 + 1))
+    )
+
+    assert inserted == WRITE_BATCH_SIZE * 2 + 1
+    assert [len(call.args[1]) for call in write_batch.await_args_list] == [
+        WRITE_BATCH_SIZE,
+        WRITE_BATCH_SIZE,
+        1,
+    ]
