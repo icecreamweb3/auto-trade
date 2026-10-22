@@ -465,6 +465,60 @@ async def test_daily_klines_uses_ranking_day_through_latest_closed_window() -> N
     assert "market.kline_ema_indicators" in ema_statement
 
 
+async def test_paper_trader_ranges_only_scans_edge_chunks() -> None:
+    first_start = datetime(2020, 4, 1, tzinfo=UTC)
+    first_end = first_start + timedelta(days=1)
+    last_start = datetime(2026, 10, 22, tzinfo=UTC)
+    last_end = last_start + timedelta(days=1)
+    chunk_result = MagicMock()
+    chunk_result.mappings.return_value.all.return_value = [
+        {
+            "edge": "FIRST",
+            "range_start": first_start,
+            "range_end": first_end,
+        },
+        {
+            "edge": "LAST",
+            "range_start": last_start,
+            "range_end": last_end,
+        },
+    ]
+    range_result = MagicMock()
+    range_result.mappings.return_value.all.return_value = [
+        {
+            "symbol": "BTCUSDT",
+            "available_from": first_start,
+            "available_to": last_start + timedelta(minutes=5),
+        }
+    ]
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=[MagicMock(), chunk_result, range_result]
+    )
+    context = AsyncMock()
+    context.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = context
+
+    ranges = await MonitoringRepository(engine).paper_trader_ranges(
+        ("BTCUSDT", "ETHUSDT")
+    )
+
+    assert ranges[0]["available_from"] == first_start
+    assert ranges[1]["available_from"] is None
+    calls = connection.execute.await_args_list
+    assert "force_custom_plan" in str(calls[0].args[0])
+    assert "timescaledb_information.chunks" in str(calls[1].args[0])
+    statement = str(calls[2].args[0])
+    parameters = calls[2].args[1]
+    assert "min(k.open_time)" in statement
+    assert "max(k.close_time)" in statement
+    assert "CAST(:first_start AS timestamptz)" in statement
+    assert "CAST(:last_start AS timestamptz)" in statement
+    assert parameters["first_start"] == first_start
+    assert parameters["last_end"] == last_end
+
+
 async def test_daily_klines_aggregates_15m_and_attaches_latest_oi() -> None:
     start = datetime(2026, 10, 18, tzinfo=UTC)
     kline_rows = [

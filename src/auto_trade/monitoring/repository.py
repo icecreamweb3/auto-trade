@@ -847,29 +847,103 @@ class MonitoringRepository:
     ) -> tuple[dict[str, object], ...]:
         """Return local replay coverage for the supported perpetual symbols."""
         async with self._engine.connect() as connection:
+            await connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'plan_cache_mode', 'force_custom_plan', true)"
+                )
+            )
+            chunk_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        (SELECT 'FIRST' AS edge, range_start, range_end
+                         FROM timescaledb_information.chunks
+                         WHERE hypertable_schema = 'market'
+                           AND hypertable_name = 'klines'
+                         ORDER BY range_start
+                         LIMIT 1)
+                        UNION ALL
+                        (SELECT 'LAST' AS edge, range_start, range_end
+                         FROM timescaledb_information.chunks
+                         WHERE hypertable_schema = 'market'
+                           AND hypertable_name = 'klines'
+                         ORDER BY range_start DESC
+                         LIMIT 1)
+                        """
+                    )
+                )
+            ).mappings().all()
+            chunk_bounds = {
+                cast(str, row["edge"]): (
+                    cast(datetime, row["range_start"]),
+                    cast(datetime, row["range_end"]),
+                )
+                for row in chunk_rows
+            }
+            first_chunk = chunk_bounds.get("FIRST")
+            last_chunk = chunk_bounds.get("LAST")
+            if first_chunk is None or last_chunk is None:
+                return tuple(
+                    {
+                        "symbol": symbol,
+                        "available_from": None,
+                        "available_to": None,
+                    }
+                    for symbol in symbols
+                )
             rows = (
                 await connection.execute(
                     text(
                         """
-                        SELECT upper(i.symbol) AS symbol,
-                               min(k.open_time) AS available_from,
-                               max(k.close_time) AS available_to
-                        FROM market.klines k
-                        JOIN core.instruments i USING (instrument_id)
-                        WHERE upper(i.symbol) = ANY(:symbols)
-                          AND i.exchange = 'BINANCE'
-                          AND i.market = 'USD_M_FUTURES'
-                          AND i.contract_type = 'PERPETUAL'
-                          AND k.price_type = 'TRADE'
-                          AND k.interval_seconds = 300
-                          AND k.is_current
-                          AND k.is_closed
-                          AND k.quality_status = 'VALID'
-                        GROUP BY upper(i.symbol)
-                        ORDER BY upper(i.symbol)
+                        WITH target_instruments AS (
+                            SELECT instrument_id, upper(symbol) AS symbol
+                            FROM core.instruments
+                            WHERE upper(symbol) = ANY(:symbols)
+                              AND exchange = 'BINANCE'
+                              AND market = 'USD_M_FUTURES'
+                              AND contract_type = 'PERPETUAL'
+                        ), first_values AS (
+                            SELECT k.instrument_id,
+                                   min(k.open_time) AS available_from
+                            FROM market.klines k
+                            JOIN target_instruments i USING (instrument_id)
+                            WHERE k.price_type = 'TRADE'
+                              AND k.interval_seconds = 300
+                              AND k.is_current
+                              AND k.is_closed
+                              AND k.quality_status = 'VALID'
+                              AND k.open_time >= CAST(:first_start AS timestamptz)
+                              AND k.open_time < CAST(:first_end AS timestamptz)
+                            GROUP BY k.instrument_id
+                        ), last_values AS (
+                            SELECT k.instrument_id,
+                                   max(k.close_time) AS available_to
+                            FROM market.klines k
+                            JOIN target_instruments i USING (instrument_id)
+                            WHERE k.price_type = 'TRADE'
+                              AND k.interval_seconds = 300
+                              AND k.is_current
+                              AND k.is_closed
+                              AND k.quality_status = 'VALID'
+                              AND k.open_time >= CAST(:last_start AS timestamptz)
+                              AND k.open_time < CAST(:last_end AS timestamptz)
+                            GROUP BY k.instrument_id
+                        )
+                        SELECT i.symbol, f.available_from, l.available_to
+                        FROM target_instruments i
+                        LEFT JOIN first_values f USING (instrument_id)
+                        LEFT JOIN last_values l USING (instrument_id)
+                        ORDER BY i.symbol
                         """
                     ),
-                    {"symbols": list(symbols)},
+                    {
+                        "symbols": list(symbols),
+                        "first_start": first_chunk[0],
+                        "first_end": first_chunk[1],
+                        "last_start": last_chunk[0],
+                        "last_end": last_chunk[1],
+                    },
                 )
             ).mappings().all()
         by_symbol = {cast(str, row["symbol"]): row for row in rows}
