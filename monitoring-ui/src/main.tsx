@@ -574,6 +574,51 @@ function utc8InputToIso(value: string): string {
   return new Date(`${value}:00+08:00`).toISOString();
 }
 
+function randomEarlySession(
+  availableFrom: string,
+  availableTo: string,
+  randomValue = Math.random()
+): { rangeStart: string; rangeEnd: string } | null {
+  const availableFromMs = new Date(availableFrom).getTime();
+  const availableToMs = new Date(availableTo).getTime();
+  if (!Number.isFinite(availableFromMs) || !Number.isFinite(availableToMs)) return null;
+
+  const firstLocalDate = new Date(availableFromMs + UTC8_OFFSET_MS);
+  const lastLocalDate = new Date(availableToMs + UTC8_OFFSET_MS);
+  let localMidnightMs = Date.UTC(
+    firstLocalDate.getUTCFullYear(),
+    firstLocalDate.getUTCMonth(),
+    firstLocalDate.getUTCDate()
+  );
+  const lastLocalMidnightMs = Date.UTC(
+    lastLocalDate.getUTCFullYear(),
+    lastLocalDate.getUTCMonth(),
+    lastLocalDate.getUTCDate()
+  );
+  const candidates: number[] = [];
+  while (localMidnightMs <= lastLocalMidnightMs) {
+    const weekday = new Date(localMidnightMs).getUTCDay();
+    const sessionStartMs = localMidnightMs + 21.5 * 60 * 60 * 1000 - UTC8_OFFSET_MS;
+    const sessionEndMs = sessionStartMs + 7 * 60 * 60 * 1000;
+    if (
+      weekday >= 1 && weekday <= 5 &&
+      sessionStartMs >= availableFromMs &&
+      sessionEndMs <= availableToMs
+    ) {
+      candidates.push(sessionStartMs);
+    }
+    localMidnightMs += 24 * 60 * 60 * 1000;
+  }
+  if (candidates.length === 0) return null;
+
+  const boundedRandom = Math.min(Math.max(randomValue, 0), 0.9999999999999999);
+  const sessionStartMs = candidates[Math.floor(boundedRandom * candidates.length)];
+  return {
+    rangeStart: toUtc8Input(new Date(sessionStartMs).toISOString()),
+    rangeEnd: toUtc8Input(new Date(sessionStartMs + 7 * 60 * 60 * 1000).toISOString())
+  };
+}
+
 function chartViewportStart(items: KlinePoint[], count: number, focusTime?: string): number {
   if (!focusTime) return Math.max(0, items.length - count);
   const target = new Date(focusTime).getTime();
@@ -1973,8 +2018,8 @@ function PaperTraderWorkspace() {
     return body as PaperSessionSnapshot;
   }
 
-  async function startGame() {
-    if (!rangeStart || !rangeEnd) {
+  async function startGame(selectedStart = rangeStart, selectedEnd = rangeEnd) {
+    if (!selectedStart || !selectedEnd) {
       setError("请选择完整的行情开始和结束时间");
       return;
     }
@@ -1985,7 +2030,7 @@ function PaperTraderWorkspace() {
       const next = await requestSnapshot("/api/paper-trader/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol, interval_seconds: intervalSeconds, range_start: utc8InputToIso(rangeStart), range_end: utc8InputToIso(rangeEnd) })
+        body: JSON.stringify({ symbol, interval_seconds: intervalSeconds, range_start: utc8InputToIso(selectedStart), range_end: utc8InputToIso(selectedEnd) })
       });
       applySnapshot(next, true);
     } catch (reason) {
@@ -1993,6 +2038,22 @@ function PaperTraderWorkspace() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function startRandomEarlySession() {
+    const coverage = metadata?.ranges.find((item) => item.symbol === symbol);
+    if (!coverage?.available_from || !coverage.available_to) {
+      setError(`${symbol} 暂无可用的本地历史行情`);
+      return;
+    }
+    const selected = randomEarlySession(coverage.available_from, coverage.available_to);
+    if (!selected) {
+      setError("本地行情范围内没有完整的工作日早盘（UTC+8 21:30—次日 04:30）");
+      return;
+    }
+    setRangeStart(selected.rangeStart);
+    setRangeEnd(selected.rangeEnd);
+    void startGame(selected.rangeStart, selected.rangeEnd);
   }
 
   async function advance() {
@@ -2037,7 +2098,7 @@ function PaperTraderWorkspace() {
   const pnl = snapshot?.position?.unrealized_pnl ?? 0;
   return <main className="paper-page">
     <header className="topbar">
-      <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">选择历史行情，逐根回放 K 线，在 1000 USDT 模拟账户中练习仓位与杠杆。</p></div>
+      <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在 1000 USDT 模拟账户中练习仓位与杠杆。</p></div>
       <div className="paper-rule-badge"><span>首版撮合规则</span><strong>市价成交 · 单仓逐仓 · 维持保证金率 0.5%</strong></div>
     </header>
     <section className="panel paper-config">
@@ -2047,8 +2108,12 @@ function PaperTraderWorkspace() {
         <label><span>开始时间 UTC+8</span><input type="datetime-local" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} disabled={!!snapshot && !gameEnded} /></label>
         <label><span>结束时间 UTC+8</span><input type="datetime-local" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} disabled={!!snapshot && !gameEnded} /></label>
         <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label>
-        <button className="primary-button" type="button" onClick={() => void startGame()} disabled={loading || !metadata}>{loading ? "正在载入…" : snapshot ? "重新开始" : "载入并开始"}</button>
+        <div className="paper-start-actions">
+          <button type="button" onClick={startRandomEarlySession} disabled={loading || !metadata} title="UTC+8 开盘日周一至周五 21:30—次日 04:30">随机早盘</button>
+          <button className="primary-button" type="button" onClick={() => void startGame()} disabled={loading || !metadata}>{loading ? "正在载入…" : snapshot ? "重新开始" : "载入并开始"}</button>
+        </div>
       </div>
+      <p className="paper-random-hint">随机早盘：UTC+8 开盘日周一至周五 21:30—次日 04:30</p>
     </section>
     {error && <div className="alert alert-critical">{error}</div>}
     {!snapshot ? <section className="panel paper-empty"><strong>准备开始</strong><p>载入后只会显示第一根 K 线，后续行情不会提前暴露。</p></section> : <>
