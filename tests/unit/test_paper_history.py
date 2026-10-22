@@ -222,14 +222,14 @@ async def test_first_missing_releases_transaction_between_scan_windows() -> None
         connections.append(connection)
         transactions.append(transaction)
     engine = MagicMock()
-    engine.begin.side_effect = transactions
+    engine.connect.side_effect = transactions
 
     result = await PaperHistoryRepository(engine).first_missing(
         1, range_start, missing_at + INTERVAL
     )
 
     assert result == missing_at
-    assert engine.begin.call_count == 2
+    assert engine.connect.call_count == 2
     first_params = connections[0].execute.await_args_list[1].args[1]
     second_params = connections[1].execute.await_args_list[1].args[1]
     assert first_params["range_start"] == range_start
@@ -264,14 +264,14 @@ async def test_status_aggregates_independent_scan_windows() -> None:
         context.__aenter__.return_value = connection
         contexts.append(context)
     engine = MagicMock()
-    engine.begin.side_effect = contexts
+    engine.connect.side_effect = contexts
     repository = PaperHistoryRepository(engine)
     repository.instrument_id = AsyncMock(return_value=1)  # type: ignore[method-assign]
     repository.first_missing = AsyncMock()  # type: ignore[method-assign]
 
     status = await repository.status("BTCUSDT", range_start, range_end)
 
-    assert engine.begin.call_count == 2
+    assert engine.connect.call_count == 2
     assert status.valid_count == status.expected_count
     assert status.first_open_time == range_start
     assert status.last_open_time == second_window

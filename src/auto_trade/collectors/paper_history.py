@@ -386,7 +386,7 @@ class PaperHistoryRepository:
         self, instrument_id: int, range_start: datetime, range_end: datetime
     ) -> datetime | None:
         for window_start, window_end in scan_windows(range_start, range_end):
-            async with self._engine.begin() as connection:
+            async with self._engine.connect() as connection:
                 await connection.execute(
                     text(
                         "SELECT "
@@ -441,7 +441,7 @@ class PaperHistoryRepository:
         first_open_time: datetime | None = None
         last_open_time: datetime | None = None
         for window_start, window_end in scan_windows(range_start, range_end):
-            async with self._engine.begin() as connection:
+            async with self._engine.connect() as connection:
                 await connection.execute(
                     text(
                         "SELECT set_config("
