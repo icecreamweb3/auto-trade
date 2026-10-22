@@ -148,8 +148,8 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-summary strong { margin-left: 5px; color: #cbdbea; font-variant-numeric: tabular-nums; }
 .chart-readout { display: flex; flex-wrap: wrap; min-height: 35px; gap: 7px 17px; padding: 7px 12px; color: #7790a8; font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart-readout strong { margin-left: 3px; color: #c8d7e6; }
-.chart-readout strong.candle-change-up { color: #41c9aa; }
-.chart-readout strong.candle-change-down { color: #ff7182; }
+.chart-readout strong.candle-change-up { color: #0ecb81; }
+.chart-readout strong.candle-change-down { color: #f6465d; }
 .chart-readout .ema20-label, .chart-summary .ema20-label { color: #a98cff; }
 .chart-readout .ema240-label, .chart-summary .ema240-label { color: #38a34a; }
 .chart-axis-reset { border-color: #29455e; padding: 3px 8px; color: #70cbbb; background: #0b1d2d; font-size: 10px; }
@@ -166,10 +166,10 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-grid-line { stroke: #193044; stroke-width: 1; stroke-dasharray: 3 5; }
 .chart-divider { stroke: #284158; stroke-width: 1; }
 .chart-axis-label { fill: #6f879e; font-size: 11px; font-family: Inter, ui-sans-serif, sans-serif; font-variant-numeric: tabular-nums; }
-.chart-up .candle-wick, .chart-up .candle-body { stroke: #41c9aa; fill: #41c9aa; }
-.chart-down .candle-wick, .chart-down .candle-body { stroke: #ff7182; fill: #ff7182; }
-.chart-up .volume-bar { fill: rgba(65,201,170,.4); }
-.chart-down .volume-bar { fill: rgba(255,113,130,.4); }
+.chart-up .candle-wick, .chart-up .candle-body { stroke: #0ecb81; fill: #0ecb81; }
+.chart-down .candle-wick, .chart-down .candle-body { stroke: #f6465d; fill: #f6465d; }
+.chart-up .volume-bar { fill: rgba(14,203,129,.4); }
+.chart-down .volume-bar { fill: rgba(246,70,93,.4); }
 .candle-wick { stroke-width: 1; }
 .ema-line { fill: none; stroke-width: 1.8; pointer-events: none; }
 .ema20-line { stroke: #a98cff; }
