@@ -403,52 +403,111 @@ class BacktestManager:
     async def metadata(self) -> BacktestMetadata:
         intervals: dict[str, BacktestIntervalMetadata] = {}
         async with self.engine.connect() as connection:
+            await connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'plan_cache_mode', 'force_custom_plan', true)"
+                )
+            )
+            chunk_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        WITH ranked AS (
+                            SELECT hypertable_name, range_start, range_end,
+                                   row_number() OVER (
+                                       PARTITION BY hypertable_name
+                                       ORDER BY range_start
+                                   ) AS first_rank,
+                                   row_number() OVER (
+                                       PARTITION BY hypertable_name
+                                       ORDER BY range_start DESC
+                                   ) AS last_rank
+                            FROM timescaledb_information.chunks
+                            WHERE hypertable_schema = 'market'
+                              AND hypertable_name IN ('klines', 'klines_15m')
+                        )
+                        SELECT hypertable_name, edge, range_start, range_end
+                        FROM (
+                            SELECT hypertable_name, 'FIRST' AS edge,
+                                   range_start, range_end
+                            FROM ranked WHERE first_rank = 1
+                            UNION ALL
+                            SELECT hypertable_name, 'LAST' AS edge,
+                                   range_start, range_end
+                            FROM ranked WHERE last_rank = 1
+                        ) edges
+                        ORDER BY hypertable_name, edge
+                        """
+                    )
+                )
+            ).mappings().all()
+            chunk_bounds = {
+                (cast(str, row["hypertable_name"]), cast(str, row["edge"])): (
+                    cast(datetime, row["range_start"]),
+                    cast(datetime, row["range_end"]),
+                )
+                for row in chunk_rows
+            }
             for interval_seconds in (300, 900):
                 if interval_seconds == 900:
-                    bounds_sql = """
-                        SELECT min(open_time) AS available_from,
-                               max(open_time) AS available_to
-                        FROM market.klines_15m
-                        WHERE price_type = 'TRADE' AND interval_seconds = 900
-                    """
-                    symbols_sql = """
-                        SELECT i.symbol
-                        FROM core.instruments i
-                        WHERE EXISTS (
-                            SELECT 1 FROM market.klines_15m k
-                            WHERE k.instrument_id = i.instrument_id
-                              AND k.price_type = 'TRADE'
-                              AND k.interval_seconds = 900
-                        )
-                        ORDER BY i.symbol
-                    """
+                    hypertable_name = "klines_15m"
+                    table_name = "market.klines_15m"
+                    filters = (
+                        "price_type = 'TRADE' AND interval_seconds = 900"
+                    )
                 else:
-                    bounds_sql = """
-                        SELECT min(open_time) AS available_from,
-                               max(open_time) AS available_to
-                        FROM market.klines
-                        WHERE price_type = 'TRADE'
-                          AND interval_seconds = 300
-                          AND is_current AND is_closed
-                          AND quality_status = 'VALID'
-                    """
-                    symbols_sql = """
-                        SELECT i.symbol
-                        FROM core.instruments i
-                        WHERE EXISTS (
-                            SELECT 1 FROM market.klines k
-                            WHERE k.instrument_id = i.instrument_id
-                              AND k.price_type = 'TRADE'
-                              AND k.interval_seconds = 300
-                              AND k.is_current AND k.is_closed
-                              AND k.quality_status = 'VALID'
-                        )
-                        ORDER BY i.symbol
-                    """
-                bounds = (await connection.execute(text(bounds_sql))).mappings().one()
+                    hypertable_name = "klines"
+                    table_name = "market.klines"
+                    filters = (
+                        "price_type = 'TRADE' AND interval_seconds = 300 "
+                        "AND is_current AND is_closed "
+                        "AND quality_status = 'VALID'"
+                    )
+                first_chunk = chunk_bounds.get((hypertable_name, "FIRST"))
+                last_chunk = chunk_bounds.get((hypertable_name, "LAST"))
+                if first_chunk is None or last_chunk is None:
+                    intervals[str(interval_seconds)] = BacktestIntervalMetadata()
+                    continue
+                bounds_sql = f"""
+                    SELECT (
+                        SELECT min(open_time) FROM {table_name}
+                        WHERE {filters}
+                          AND open_time >= CAST(:first_start AS timestamptz)
+                          AND open_time < CAST(:first_end AS timestamptz)
+                    ) AS available_from, (
+                        SELECT max(open_time) FROM {table_name}
+                        WHERE {filters}
+                          AND open_time >= CAST(:last_start AS timestamptz)
+                          AND open_time < CAST(:last_end AS timestamptz)
+                    ) AS available_to
+                """
+                symbols_sql = f"""
+                    SELECT i.symbol
+                    FROM core.instruments i
+                    WHERE EXISTS (
+                        SELECT 1 FROM {table_name} k
+                        WHERE k.instrument_id = i.instrument_id
+                          AND {filters}
+                          AND k.open_time >= CAST(:last_start AS timestamptz)
+                          AND k.open_time < CAST(:last_end AS timestamptz)
+                    )
+                    ORDER BY i.symbol
+                """
+                parameters = {
+                    "first_start": first_chunk[0],
+                    "first_end": first_chunk[1],
+                    "last_start": last_chunk[0],
+                    "last_end": last_chunk[1],
+                }
+                bounds = (
+                    await connection.execute(text(bounds_sql), parameters)
+                ).mappings().one()
                 symbol_rows: list[object] = cast(
                     list[object],
-                    (await connection.execute(text(symbols_sql))).scalars().all(),
+                    (
+                        await connection.execute(text(symbols_sql), parameters)
+                    ).scalars().all(),
                 )
                 intervals[str(interval_seconds)] = BacktestIntervalMetadata(
                     available_from=cast(datetime | None, bounds["available_from"]),

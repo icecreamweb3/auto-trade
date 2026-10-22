@@ -1,7 +1,8 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -73,6 +74,81 @@ def test_saved_strategy_normalizes_metadata_and_serializes_parameters() -> None:
 
     with pytest.raises(ValidationError, match="strategy name must not be blank"):
         BacktestStrategyWrite(name="   ")
+
+
+async def test_metadata_reads_only_first_and_last_timescale_chunks() -> None:
+    first_5m = datetime(2020, 4, 1, tzinfo=UTC)
+    last_5m = datetime(2026, 10, 22, tzinfo=UTC)
+    first_15m = datetime(2020, 3, 26, tzinfo=UTC)
+    last_15m = datetime(2026, 10, 15, tzinfo=UTC)
+    chunk_result = MagicMock()
+    chunk_result.mappings.return_value.all.return_value = [
+        {
+            "hypertable_name": "klines",
+            "edge": "FIRST",
+            "range_start": first_5m,
+            "range_end": first_5m + timedelta(days=1),
+        },
+        {
+            "hypertable_name": "klines",
+            "edge": "LAST",
+            "range_start": last_5m,
+            "range_end": last_5m + timedelta(days=1),
+        },
+        {
+            "hypertable_name": "klines_15m",
+            "edge": "FIRST",
+            "range_start": first_15m,
+            "range_end": first_15m + timedelta(days=7),
+        },
+        {
+            "hypertable_name": "klines_15m",
+            "edge": "LAST",
+            "range_start": last_15m,
+            "range_end": last_15m + timedelta(days=7),
+        },
+    ]
+
+    def bounds_result(available_from: datetime, available_to: datetime) -> MagicMock:
+        result = MagicMock()
+        result.mappings.return_value.one.return_value = {
+            "available_from": available_from,
+            "available_to": available_to,
+        }
+        return result
+
+    def symbols_result(*symbols: str) -> MagicMock:
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = list(symbols)
+        return result
+
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(
+            MagicMock(),
+            chunk_result,
+            bounds_result(first_5m, last_5m),
+            symbols_result("BTCUSDT", "ETHUSDT"),
+            bounds_result(first_15m, last_15m),
+            symbols_result("BTCUSDT"),
+        )
+    )
+    context = AsyncMock()
+    context.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = context
+
+    metadata = await BacktestManager(engine).metadata()
+
+    assert metadata.intervals["300"].symbols == ("BTCUSDT", "ETHUSDT")
+    assert metadata.intervals["900"].symbols == ("BTCUSDT",)
+    calls = connection.execute.await_args_list
+    assert "force_custom_plan" in str(calls[0].args[0])
+    assert "timescaledb_information.chunks" in str(calls[1].args[0])
+    for call in calls[2:]:
+        statement = str(call.args[0])
+        assert "CAST(:last_start AS timestamptz)" in statement
+        assert "CAST(:last_end AS timestamptz)" in statement
 
 
 async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.MonkeyPatch) -> None:
