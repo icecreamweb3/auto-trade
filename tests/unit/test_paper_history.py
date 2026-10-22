@@ -184,7 +184,7 @@ async def test_database_write_prefilters_existing_rows_without_conflict_scan() -
     existing_result.scalars.return_value = [opened]
     insert_result = MagicMock(rowcount=1)
     connection = AsyncMock()
-    connection.execute.side_effect = (existing_result, insert_result)
+    connection.execute.side_effect = (MagicMock(), existing_result, insert_result)
     transaction = AsyncMock()
     transaction.__aenter__.return_value = connection
     engine = MagicMock()
@@ -193,12 +193,14 @@ async def test_database_write_prefilters_existing_rows_without_conflict_scan() -
     inserted = await PaperHistoryRepository(engine)._write_kline_batch(1, rows)
 
     assert inserted == 1
-    lookup_sql = str(connection.execute.await_args_list[0].args[0])
+    plan_sql = str(connection.execute.await_args_list[0].args[0])
+    assert "force_custom_plan" in plan_sql
+    lookup_sql = str(connection.execute.await_args_list[1].args[0])
     assert "open_time >= :range_start" in lookup_sql
     assert "open_time < :range_end" in lookup_sql
-    insert_sql = str(connection.execute.await_args_list[1].args[0])
+    insert_sql = str(connection.execute.await_args_list[2].args[0])
     assert "ON CONFLICT" not in insert_sql
-    insert_params = connection.execute.await_args_list[1].args[1]
+    insert_params = connection.execute.await_args_list[2].args[1]
     serialized_rows = json.loads(insert_params["rows"])
     assert [row["open_time"] for row in serialized_rows] == [
         (opened + INTERVAL).isoformat()
@@ -257,19 +259,19 @@ async def test_status_aggregates_independent_scan_windows() -> None:
         query_result = MagicMock()
         query_result.mappings.return_value.one.return_value = row
         connection = AsyncMock()
-        connection.execute.return_value = query_result
+        connection.execute.side_effect = (MagicMock(), query_result)
         context = AsyncMock()
         context.__aenter__.return_value = connection
         contexts.append(context)
     engine = MagicMock()
-    engine.connect.side_effect = contexts
+    engine.begin.side_effect = contexts
     repository = PaperHistoryRepository(engine)
     repository.instrument_id = AsyncMock(return_value=1)  # type: ignore[method-assign]
     repository.first_missing = AsyncMock()  # type: ignore[method-assign]
 
     status = await repository.status("BTCUSDT", range_start, range_end)
 
-    assert engine.connect.call_count == 2
+    assert engine.begin.call_count == 2
     assert status.valid_count == status.expected_count
     assert status.first_open_time == range_start
     assert status.last_open_time == second_window

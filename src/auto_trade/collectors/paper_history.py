@@ -289,6 +289,12 @@ class PaperHistoryRepository:
         range_start = rows[0].open_time
         range_end = rows[-1].open_time + INTERVAL
         async with self._engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'plan_cache_mode', 'force_custom_plan', true)"
+                )
+            )
             existing_open_times: set[datetime] = set(
                 (
                     await connection.execute(
@@ -382,7 +388,12 @@ class PaperHistoryRepository:
         for window_start, window_end in scan_windows(range_start, range_end):
             async with self._engine.begin() as connection:
                 await connection.execute(
-                    text("SELECT set_config('statement_timeout', '300s', true)")
+                    text(
+                        "SELECT "
+                        "set_config('statement_timeout', '300s', true), "
+                        "set_config("
+                        "'plan_cache_mode', 'force_custom_plan', true)"
+                    )
                 )
                 value: object = (
                     await connection.execute(
@@ -430,7 +441,13 @@ class PaperHistoryRepository:
         first_open_time: datetime | None = None
         last_open_time: datetime | None = None
         for window_start, window_end in scan_windows(range_start, range_end):
-            async with self._engine.connect() as connection:
+            async with self._engine.begin() as connection:
+                await connection.execute(
+                    text(
+                        "SELECT set_config("
+                        "'plan_cache_mode', 'force_custom_plan', true)"
+                    )
+                )
                 row = (
                     await connection.execute(
                         text(
