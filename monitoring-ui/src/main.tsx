@@ -253,12 +253,14 @@ interface PaperMetadata {
   ranges: Array<{ symbol: string; available_from: string | null; available_to: string | null }>;
 }
 
+type NumericInput = number | "";
+
 interface RankingFilters {
   dateFrom: string;
   dateTo: string;
   symbol: string;
-  rankFrom: number;
-  rankTo: number;
+  rankFrom: NumericInput;
+  rankTo: NumericInput;
 }
 
 type FactorName = "bullish_candle_sequence" | "single_bar_price_rise" | "volume_acceleration" | "ema_bullish_setup" | "ema_bullish_cross" | "rapid_price_rise" | "open_interest_rise" | "volume_surge" | "amplitude_spike_streak" | "low_average_amplitude";
@@ -348,29 +350,27 @@ interface SavedBacktestStrategy {
   updated_at: string;
 }
 
-type BacktestNumericInput = number | "";
-
 interface BacktestParameterValues {
-  averageDays: BacktestNumericInput;
-  bullishSequenceBars: BacktestNumericInput;
-  bullishMinClosePositionPercent: BacktestNumericInput;
-  bullishLastClosePositionPercent: BacktestNumericInput;
-  bullishLastMaxUpperShadowPercent: BacktestNumericInput;
-  singleBarPriceRisePercent: BacktestNumericInput;
-  volumeAccelerationAverageBars: BacktestNumericInput;
-  volumeAccelerationAverageMultiple: BacktestNumericInput;
-  volumeAccelerationPreviousMultiple: BacktestNumericInput;
-  emaNearCrossGapPercent: BacktestNumericInput;
-  emaGapShrinkMinPercent: BacktestNumericInput;
-  emaCrossBars: BacktestNumericInput;
-  priceWindowBars: BacktestNumericInput;
-  priceRisePercent: BacktestNumericInput;
-  oiWindowBars: BacktestNumericInput;
-  oiRisePercent: BacktestNumericInput;
-  volumeMultiple: BacktestNumericInput;
-  amplitudeMultiple: BacktestNumericInput;
-  amplitudeConsecutiveBars: BacktestNumericInput;
-  averageAmplitudeMaxPercent: BacktestNumericInput;
+  averageDays: NumericInput;
+  bullishSequenceBars: NumericInput;
+  bullishMinClosePositionPercent: NumericInput;
+  bullishLastClosePositionPercent: NumericInput;
+  bullishLastMaxUpperShadowPercent: NumericInput;
+  singleBarPriceRisePercent: NumericInput;
+  volumeAccelerationAverageBars: NumericInput;
+  volumeAccelerationAverageMultiple: NumericInput;
+  volumeAccelerationPreviousMultiple: NumericInput;
+  emaNearCrossGapPercent: NumericInput;
+  emaGapShrinkMinPercent: NumericInput;
+  emaCrossBars: NumericInput;
+  priceWindowBars: NumericInput;
+  priceRisePercent: NumericInput;
+  oiWindowBars: NumericInput;
+  oiRisePercent: NumericInput;
+  volumeMultiple: NumericInput;
+  amplitudeMultiple: NumericInput;
+  amplitudeConsecutiveBars: NumericInput;
+  averageAmplitudeMaxPercent: NumericInput;
 }
 
 const defaultBacktestParameters: Record<keyof BacktestParameterValues, number> = {
@@ -1125,6 +1125,10 @@ function RankingExplorer() {
   const [error, setError] = useState<string | null>(null);
 
   async function load(nextFilters: RankingFilters, page = 1) {
+    if (nextFilters.rankFrom === "" || nextFilters.rankTo === "") {
+      setError("请填写完整的排名范围");
+      return;
+    }
     setLoading(true);
     const params = new URLSearchParams({
       rank_from: String(nextFilters.rankFrom),
@@ -1216,8 +1220,8 @@ function RankingExplorer() {
           <label><span>开始交易日（UTC+8 08:00）</span><input type="date" value={filters.dateFrom} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateFrom: event.target.value })} /></label>
           <label><span>结束交易日（UTC+8 08:00）</span><input type="date" value={filters.dateTo} min={data?.available_first_date ?? undefined} max={data?.available_last_date ?? undefined} onChange={(event) => setFilters({ ...filters, dateTo: event.target.value })} /></label>
           <label className="symbol-field"><span>交易对</span><input type="search" placeholder="例如 BTC 或 USDT" value={filters.symbol} onChange={(event) => setFilters({ ...filters, symbol: event.target.value.toUpperCase() })} /></label>
-          <label><span>排名从</span><input type="number" min="1" max="50" value={filters.rankFrom} onChange={(event) => setFilters({ ...filters, rankFrom: Number(event.target.value) })} /></label>
-          <label><span>排名至</span><input type="number" min="1" max="50" value={filters.rankTo} onChange={(event) => setFilters({ ...filters, rankTo: Number(event.target.value) })} /></label>
+          <label><span>排名从</span><input type="number" min="1" max="50" value={filters.rankFrom} onChange={(event) => setFilters({ ...filters, rankFrom: event.target.value === "" ? "" : Number(event.target.value) })} /></label>
+          <label><span>排名至</span><input type="number" min="1" max="50" value={filters.rankTo} onChange={(event) => setFilters({ ...filters, rankTo: event.target.value === "" ? "" : Number(event.target.value) })} /></label>
           <button className="primary-button" type="submit" disabled={loading}>{loading ? "查询中…" : "查询"}</button>
         </form>
         <div className="quick-ranges">
@@ -1959,9 +1963,9 @@ function PaperTraderWorkspace() {
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
   const [speedSeconds, setSpeedSeconds] = useState(10);
-  const [notional, setNotional] = useState(100);
+  const [notional, setNotional] = useState<NumericInput>(100);
   const [notionalUnit, setNotionalUnit] = useState<PaperNotionalUnit>("USDT");
-  const [leverage, setLeverage] = useState(100);
+  const [leverage, setLeverage] = useState<NumericInput>(100);
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperCandle[]>([]);
   const [playing, setPlaying] = useState(false);
@@ -2079,6 +2083,10 @@ function PaperTraderWorkspace() {
 
   async function openPosition(side: PaperSide) {
     if (!snapshot) return;
+    if (notional === "" || leverage === "") {
+      setError("请填写名义下单价值和杠杆倍数");
+      return;
+    }
     setError(null);
     try {
       applySnapshot(await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/orders`, {
@@ -2101,20 +2109,47 @@ function PaperTraderWorkspace() {
     }
   }
 
+  function applyNotionalPercentage(percentage: number) {
+    if (maximumNotional === undefined || maximumNotional <= 0) return;
+    const precision = notionalUnit === "USDT" ? 2 : 6;
+    setNotional(Number((maximumNotional * percentage).toFixed(precision)));
+  }
+
   const gameEnded = snapshot?.status === "COMPLETED" || snapshot?.status === "LIQUIDATED";
   const pnl = snapshot?.position?.unrealized_pnl ?? 0;
   const baseAsset = (snapshot?.symbol ?? symbol).replace("USDT", "");
   const orderPrice = snapshot?.current_candle.close_price ?? 0;
-  const notionalUsdt = notionalUnit === "USDT" ? notional : notional * orderPrice;
-  const estimatedMargin = leverage > 0 ? notionalUsdt / leverage : 0;
-  const maximumNotional = snapshot && orderPrice > 0
+  const numericNotional = notional === "" ? null : notional;
+  const numericLeverage = leverage === "" ? null : leverage;
+  const notionalUsdt = numericNotional === null
+    ? null
+    : notionalUnit === "USDT" ? numericNotional : numericNotional * orderPrice;
+  const estimatedMargin = notionalUsdt !== null && numericLeverage !== null && numericLeverage > 0
+    ? notionalUsdt / numericLeverage
+    : null;
+  const maximumNotional = snapshot && orderPrice > 0 && numericLeverage !== null
     ? notionalUnit === "USDT"
-      ? snapshot.available_balance * leverage
-      : snapshot.available_balance * leverage / orderPrice
+      ? snapshot.available_balance * numericLeverage
+      : snapshot.available_balance * numericLeverage / orderPrice
+    : undefined;
+  const invalidOrder = numericNotional === null || !Number.isFinite(numericNotional) || numericNotional <= 0 ||
+    numericLeverage === null || !Number.isInteger(numericLeverage) || numericLeverage < 1 || numericLeverage > 100 ||
+    estimatedMargin === null || !Number.isFinite(estimatedMargin) || estimatedMargin > (snapshot?.available_balance ?? 0);
+  const maintenanceMarginRate = metadata?.maintenance_margin_rate ?? 0.005;
+  const estimatedLongLiquidation = numericLeverage !== null && numericLeverage >= 1 && orderPrice > 0
+    ? orderPrice * (1 - 1 / numericLeverage) / (1 - maintenanceMarginRate)
+    : null;
+  const estimatedShortLiquidation = numericLeverage !== null && numericLeverage >= 1 && orderPrice > 0
+    ? orderPrice * (1 + 1 / numericLeverage) / (1 + maintenanceMarginRate)
+    : null;
+  const maximumBaseQuantity = snapshot && numericLeverage !== null && orderPrice > 0
+    ? snapshot.available_balance * numericLeverage / orderPrice
+    : null;
+  const positionNotional = snapshot?.position
+    ? snapshot.position.quantity * snapshot.position.mark_price
     : 0;
-  const invalidOrder = !Number.isFinite(notional) || notional <= 0 ||
-    !Number.isInteger(leverage) || leverage < 1 || leverage > 100 ||
-    !Number.isFinite(estimatedMargin) || estimatedMargin > (snapshot?.available_balance ?? 0);
+  const actualLeverage = snapshot && snapshot.equity > 0 ? positionNotional / snapshot.equity : 0;
+  const maintenanceMargin = positionNotional * maintenanceMarginRate;
   return <main className="paper-page">
     <header className="topbar">
       <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在 1000 USDT 模拟账户中练习仓位与杠杆。</p></div>
@@ -2151,17 +2186,33 @@ function PaperTraderWorkspace() {
           <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} />
         </div>
         <aside className="panel paper-order-panel">
-          <div className="panel-heading"><div><p className="eyebrow">ORDER</p><h3>模拟下单</h3></div><strong>{formatNumber(snapshot.current_candle.close_price, 2)}</strong></div>
+          <div className="panel-heading"><div><p className="eyebrow">ORDER</p><h3>模拟下单</h3></div></div>
           {snapshot.position ? <div className={`paper-position ${snapshot.position.side.toLowerCase()}`}>
             <div><span>{snapshot.position.side === "LONG" ? "多仓" : "空仓"} · {snapshot.position.leverage}x</span><strong>{formatNumber(snapshot.position.quantity, 6)} {snapshot.symbol.replace("USDT", "")}</strong></div>
             <dl><div><dt>开仓价</dt><dd>{formatNumber(snapshot.position.entry_price, 2)}</dd></div><div><dt>标记价</dt><dd>{formatNumber(snapshot.position.mark_price, 2)}</dd></div><div><dt>保证金</dt><dd>{formatNumber(snapshot.position.margin, 2)}</dd></div><div><dt>强平价</dt><dd className="paper-danger">{formatNumber(snapshot.position.liquidation_price, 2)}</dd></div></dl>
             <button type="button" className="paper-close-position" onClick={() => void closePosition()}>按当前收盘价平仓</button>
           </div> : <div className="paper-order-form">
-            <label><span>名义下单价值</span><div className="paper-notional-input"><input type="number" min={notionalUnit === "USDT" ? 1 : 0.000001} max={maximumNotional} step={notionalUnit === "USDT" ? 10 : 0.001} value={notional} onChange={(event) => setNotional(Number(event.target.value))} disabled={gameEnded} /><select value={notionalUnit} onChange={(event) => setNotionalUnit(event.target.value as PaperNotionalUnit)} disabled={gameEnded}><option value="USDT">USDT</option><option value="BASE">{baseAsset}</option></select></div></label>
-            <label><span>杠杆倍数</span><input type="number" min={1} max={100} value={leverage} onChange={(event) => setLeverage(Number(event.target.value))} disabled={gameEnded} /></label>
+            <div className="paper-market-price"><span>成交价格</span><strong>{formatNumber(orderPrice, 2)}</strong><em>USDT</em></div>
+            <label><span>名义下单价值</span><div className="paper-notional-input"><input type="number" min={notionalUnit === "USDT" ? 1 : 0.000001} max={maximumNotional} step={notionalUnit === "USDT" ? 10 : 0.001} value={notional} onChange={(event) => setNotional(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded} /><select value={notionalUnit} onChange={(event) => setNotionalUnit(event.target.value as PaperNotionalUnit)} disabled={gameEnded}><option value="USDT">USDT</option><option value="BASE">{baseAsset}</option></select></div></label>
+            <label><span>杠杆倍数</span><input type="number" min={1} max={100} value={leverage} onChange={(event) => setLeverage(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded} /></label>
+            <div className="paper-order-percentages" aria-label="按可用余额选择名义价值">{[.25, .5, .75, 1].map((percentage) => <button key={percentage} type="button" onClick={() => applyNotionalPercentage(percentage)} disabled={gameEnded || maximumNotional === undefined}>{percentage * 100}%</button>)}</div>
+            <p className="paper-order-warning">名义价值按可用余额和杠杆估算，实际下单前仍会校验保证金。</p>
+            <div className="paper-order-estimates">
+              <div><span>预计保证金{numericLeverage === null ? "" : `（${numericLeverage}x）`}</span><strong>{estimatedMargin === null ? "—" : `${formatNumber(estimatedMargin, 2)} USDT`}</strong></div>
+              <div className="paper-liquidation-estimate"><span>预计强平价</span><dl><div><dt>开多</dt><dd className="paper-long-price">{estimatedLongLiquidation === null ? "—" : formatNumber(estimatedLongLiquidation, 2)}</dd></div><div><dt>开空</dt><dd className="paper-short-price">{estimatedShortLiquidation === null ? "—" : formatNumber(estimatedShortLiquidation, 2)}</dd></div></dl></div>
+            </div>
             <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded || invalidOrder}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded || invalidOrder}>开空</button></div>
-            <small>预计占用保证金 {formatNumber(estimatedMargin, 2)} USDT · 按当前已揭示 K 线收盘价成交，不收手续费与资金费。</small>
+            <div className="paper-order-capacity"><span>最大可开</span><strong>{maximumBaseQuantity === null ? "—" : `${formatNumber(maximumBaseQuantity, 6)} ${baseAsset}`}</strong></div>
+            <small>按当前已揭示 K 线收盘价成交，不收手续费与资金费。</small>
           </div>}
+          <div className="paper-order-account-wrap"><span>账户</span><dl className="paper-order-account">
+              <div><dt>账户权益</dt><dd>{formatNumber(snapshot.equity, 2)} USDT</dd></div>
+              <div><dt>可用余额</dt><dd>{formatNumber(snapshot.available_balance, 2)} USDT</dd></div>
+              <div><dt>持仓价值</dt><dd>{formatNumber(positionNotional, 2)} USDT</dd></div>
+              <div><dt>实际杠杆</dt><dd>{formatNumber(actualLeverage, 2)}x</dd></div>
+              <div><dt>维持保证金</dt><dd>{formatNumber(maintenanceMargin, 2)} USDT</dd></div>
+              <div><dt>未实现盈亏</dt><dd className={pnl >= 0 ? "paper-long-price" : "paper-short-price"}>{pnl >= 0 ? "+" : ""}{formatNumber(pnl, 2)} USDT</dd></div>
+            </dl></div>
           <div className="paper-trade-log"><span>最近成交</span>{snapshot.trades.length === 0 ? <p>暂无成交记录</p> : snapshot.trades.slice().reverse().slice(0, 5).map((trade) => <div key={`${trade.opened_at}-${trade.closed_at}`}><strong className={trade.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{trade.realized_pnl >= 0 ? "+" : ""}{trade.realized_pnl.toFixed(2)}</strong><small>{trade.side} {trade.leverage}x · {trade.exit_reason}</small></div>)}</div>
         </aside>
       </section>

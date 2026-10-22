@@ -255,7 +255,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-empty p { margin: 10px 0 0; color: #7891a8; }
 .paper-account-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
 .paper-account-grid .summary-card { min-height: 120px; }
-.paper-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
+.paper-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; align-items: start; }
 .paper-chart-panel { min-width: 0; padding: 14px; }
 .paper-playback-bar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; padding: 3px 5px; }
 .paper-playback-bar > div:first-child { display: flex; align-items: baseline; gap: 12px; }
@@ -272,13 +272,38 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-liquidation-label { fill: #ff8997; }
 .paper-order-panel { position: sticky; top: 74px; }
 .paper-order-panel .panel-heading > strong { color: #e8f3ff; font-size: 23px; }
-.paper-order-form { display: grid; gap: 13px; margin-top: 23px; }
+.paper-order-form { display: grid; gap: 13px; margin-top: 20px; }
+.paper-market-price { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; min-height: 43px; border: 1px solid #29455e; border-radius: 9px; padding: 9px 12px; background: #0b1a2a; }
+.paper-market-price span { color: #8da4ba; font-size: 11px; font-weight: 700; }
+.paper-market-price strong { color: #e9f1ff; font-size: 15px; font-variant-numeric: tabular-nums; }
+.paper-market-price em { color: #6f9fc4; font-size: 10px; font-style: normal; }
 .paper-notional-input { display: grid; grid-template-columns: minmax(0, 1fr) 82px; gap: 7px; }
+.paper-order-percentages { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.paper-order-percentages button { padding: 7px 5px; border-radius: 5px; font-size: 11px; }
+.paper-order-warning { margin: -2px 0 0; color: #f3c64f; font-size: 10px; line-height: 1.5; }
+.paper-order-estimates { overflow: hidden; border: 1px solid #29455e; border-radius: 9px; background: #091725; }
+.paper-order-estimates > div { padding: 10px 12px; }
+.paper-order-estimates > div + div { border-top: 1px solid #1b3348; }
+.paper-order-estimates > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.paper-order-estimates span, .paper-order-capacity span { color: #8da4ba; font-size: 11px; }
+.paper-order-estimates strong, .paper-order-capacity strong { color: #e9f1ff; font-size: 12px; font-variant-numeric: tabular-nums; }
+.paper-liquidation-estimate dl { display: grid; gap: 5px; margin: 8px 0 0; }
+.paper-liquidation-estimate dl div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.paper-liquidation-estimate dt, .paper-liquidation-estimate dd { margin: 0; font-size: 11px; }
+.paper-long-price { color: #0ecb81 !important; }
+.paper-short-price { color: #f6465d !important; }
 .paper-order-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .paper-long-button { color: #061a15; border-color: #42d4ae; background: #42d4ae; font-weight: 900; }
 .paper-long-button:hover { background: #69e1c1; }
 .paper-short-button { color: #24070c; border-color: #ff7182; background: #ff7182; font-weight: 900; }
 .paper-short-button:hover { background: #ff93a0; }
+.paper-order-capacity { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid #1b3348; }
+.paper-order-account-wrap { margin-top: 20px; padding-top: 16px; border-top: 1px solid #1b3348; }
+.paper-order-account-wrap > span { color: #6f879e; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.paper-order-account { display: grid; gap: 7px; margin: 0; }
+.paper-order-account-wrap > span + .paper-order-account { margin-top: 12px; }
+.paper-order-account div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.paper-order-account dt, .paper-order-account dd { margin: 0; font-size: 11px; font-variant-numeric: tabular-nums; }
 .paper-position { margin-top: 20px; border: 1px solid #276c5d; border-radius: 11px; padding: 14px; background: #0c2925; }
 .paper-position.short { border-color: #773541; background: #301820; }
 .paper-position > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
