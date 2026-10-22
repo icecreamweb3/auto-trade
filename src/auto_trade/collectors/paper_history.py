@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -27,6 +28,7 @@ INTERVAL_SECONDS = 300
 INTERVAL = timedelta(seconds=INTERVAL_SECONDS)
 PAGE_LIMIT = 1000
 WRITE_BATCH_SIZE = 50
+STATUS_SCAN_WINDOW = timedelta(days=7)
 CHECKPOINT_PREFIX = "PAPER_HISTORY"
 CONFIG_SIGNATURE = "v1:BTCUSDT,ETHUSDT:TRADE:300:2020-04-01"
 
@@ -76,6 +78,16 @@ def latest_closed_boundary(
 
 def checkpoint_key(symbol: str) -> str:
     return f"{CHECKPOINT_PREFIX}_{symbol}_{INTERVAL_SECONDS}"
+
+
+def scan_windows(
+    range_start: datetime, range_end: datetime
+) -> Iterator[tuple[datetime, datetime]]:
+    window_start = range_start
+    while window_start < range_end:
+        window_end = min(window_start + STATUS_SCAN_WINDOW, range_end)
+        yield window_start, window_end
+        window_start = window_end
 
 
 def parse_binance_klines(
@@ -367,74 +379,95 @@ class PaperHistoryRepository:
     async def first_missing(
         self, instrument_id: int, range_start: datetime, range_end: datetime
     ) -> datetime | None:
-        async with self._engine.begin() as connection:
-            await connection.execute(
-                text("SELECT set_config('statement_timeout', '300s', true)")
-            )
-            value: object = (
+        for window_start, window_end in scan_windows(range_start, range_end):
+            async with self._engine.begin() as connection:
                 await connection.execute(
-                    text(
-                        """
-                        SELECT min(point)
-                        FROM generate_series(
-                            CAST(:range_start AS timestamptz),
-                            CAST(:range_end AS timestamptz) - interval '5 minutes',
-                            interval '5 minutes'
-                        ) point
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM market.klines k
-                            WHERE k.instrument_id = :instrument_id
-                              AND k.price_type = 'TRADE'
-                              AND k.interval_seconds = 300
-                              AND k.open_time = point
-                              AND k.is_current
-                              AND k.is_closed
-                              AND k.quality_status = 'VALID'
-                        )
-                        """
-                    ),
-                    {
-                        "instrument_id": instrument_id,
-                        "range_start": range_start,
-                        "range_end": range_end,
-                    },
+                    text("SELECT set_config('statement_timeout', '300s', true)")
                 )
-            ).scalar_one()
-        return cast(datetime | None, value)
+                value: object = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT min(point)
+                            FROM generate_series(
+                                CAST(:range_start AS timestamptz),
+                                CAST(:range_end AS timestamptz)
+                                    - interval '5 minutes',
+                                interval '5 minutes'
+                            ) point
+                            WHERE NOT EXISTS (
+                                SELECT 1
+                                FROM market.klines k
+                                WHERE k.instrument_id = :instrument_id
+                                  AND k.price_type = 'TRADE'
+                                  AND k.interval_seconds = 300
+                                  AND k.open_time >= :range_start
+                                  AND k.open_time < :range_end
+                                  AND k.open_time = point
+                                  AND k.is_current
+                                  AND k.is_closed
+                                  AND k.quality_status = 'VALID'
+                            )
+                            """
+                        ),
+                        {
+                            "instrument_id": instrument_id,
+                            "range_start": window_start,
+                            "range_end": window_end,
+                        },
+                    )
+                ).scalar_one()
+            missing_at = cast(datetime | None, value)
+            if missing_at is not None:
+                return missing_at
+        return None
 
     async def status(
         self, symbol: str, range_start: datetime, range_end: datetime
     ) -> HistoryStatus:
         instrument_id = await self.instrument_id(symbol)
-        async with self._engine.connect() as connection:
-            row = (
-                await connection.execute(
-                    text(
-                        """
-                        SELECT count(DISTINCT open_time) AS valid_count,
-                               min(open_time) AS first_open_time,
-                               max(open_time) AS last_open_time
-                        FROM market.klines
-                        WHERE instrument_id = :instrument_id
-                          AND price_type = 'TRADE'
-                          AND interval_seconds = 300
-                          AND open_time >= :range_start
-                          AND open_time < :range_end
-                          AND is_current
-                          AND is_closed
-                          AND quality_status = 'VALID'
-                        """
-                    ),
-                    {
-                        "instrument_id": instrument_id,
-                        "range_start": range_start,
-                        "range_end": range_end,
-                    },
-                )
-            ).mappings().one()
+        valid_count = 0
+        first_open_time: datetime | None = None
+        last_open_time: datetime | None = None
+        for window_start, window_end in scan_windows(range_start, range_end):
+            async with self._engine.connect() as connection:
+                row = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT count(*) AS valid_count,
+                                   min(open_time) AS first_open_time,
+                                   max(open_time) AS last_open_time
+                            FROM market.klines
+                            WHERE instrument_id = :instrument_id
+                              AND price_type = 'TRADE'
+                              AND interval_seconds = 300
+                              AND open_time >= :range_start
+                              AND open_time < :range_end
+                              AND is_current
+                              AND is_closed
+                              AND quality_status = 'VALID'
+                            """
+                        ),
+                        {
+                            "instrument_id": instrument_id,
+                            "range_start": window_start,
+                            "range_end": window_end,
+                        },
+                    )
+                ).mappings().one()
+            valid_count += cast(int, row["valid_count"])
+            window_first = cast(datetime | None, row["first_open_time"])
+            window_last = cast(datetime | None, row["last_open_time"])
+            if window_first is not None and (
+                first_open_time is None or window_first < first_open_time
+            ):
+                first_open_time = window_first
+            if window_last is not None and (
+                last_open_time is None or window_last > last_open_time
+            ):
+                last_open_time = window_last
         expected_count = int((range_end - range_start) / INTERVAL)
-        valid_count = cast(int, row["valid_count"])
         first_missing_at = (
             None
             if valid_count == expected_count
@@ -446,8 +479,8 @@ class PaperHistoryRepository:
             range_end=range_end,
             expected_count=expected_count,
             valid_count=valid_count,
-            first_open_time=cast(datetime | None, row["first_open_time"]),
-            last_open_time=cast(datetime | None, row["last_open_time"]),
+            first_open_time=first_open_time,
+            last_open_time=last_open_time,
             first_missing_at=first_missing_at,
         )
 

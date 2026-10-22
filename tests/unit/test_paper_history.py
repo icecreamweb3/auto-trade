@@ -7,12 +7,14 @@ import pytest
 
 from auto_trade.collectors.paper_history import (
     INTERVAL,
+    STATUS_SCAN_WINDOW,
     WRITE_BATCH_SIZE,
     HistoricalKline,
     PaperHistoryRepository,
     checkpoint_key,
     latest_closed_boundary,
     parse_binance_klines,
+    scan_windows,
 )
 
 
@@ -113,6 +115,20 @@ def test_checkpoint_key_is_isolated_per_symbol() -> None:
     assert checkpoint_key("ETHUSDT") == "PAPER_HISTORY_ETHUSDT_300"
 
 
+def test_status_scan_windows_are_bounded() -> None:
+    range_start = datetime(2020, 4, 1, tzinfo=UTC)
+    range_end = range_start + 2 * STATUS_SCAN_WINDOW + INTERVAL
+
+    assert list(scan_windows(range_start, range_end)) == [
+        (range_start, range_start + STATUS_SCAN_WINDOW),
+        (
+            range_start + STATUS_SCAN_WINDOW,
+            range_start + 2 * STATUS_SCAN_WINDOW,
+        ),
+        (range_start + 2 * STATUS_SCAN_WINDOW, range_end),
+    ]
+
+
 async def test_database_writes_are_split_into_bounded_transactions() -> None:
     repository = PaperHistoryRepository(MagicMock())
     write_batch = AsyncMock(
@@ -187,3 +203,75 @@ async def test_database_write_prefilters_existing_rows_without_conflict_scan() -
     assert [row["open_time"] for row in serialized_rows] == [
         (opened + INTERVAL).isoformat()
     ]
+
+
+async def test_first_missing_releases_transaction_between_scan_windows() -> None:
+    range_start = datetime(2020, 4, 1, tzinfo=UTC)
+    missing_at = range_start + STATUS_SCAN_WINDOW
+    connections = []
+    transactions = []
+    for result_value in (None, missing_at):
+        scalar_result = MagicMock()
+        scalar_result.scalar_one.return_value = result_value
+        connection = AsyncMock()
+        connection.execute.side_effect = (MagicMock(), scalar_result)
+        transaction = AsyncMock()
+        transaction.__aenter__.return_value = connection
+        connections.append(connection)
+        transactions.append(transaction)
+    engine = MagicMock()
+    engine.begin.side_effect = transactions
+
+    result = await PaperHistoryRepository(engine).first_missing(
+        1, range_start, missing_at + INTERVAL
+    )
+
+    assert result == missing_at
+    assert engine.begin.call_count == 2
+    first_params = connections[0].execute.await_args_list[1].args[1]
+    second_params = connections[1].execute.await_args_list[1].args[1]
+    assert first_params["range_start"] == range_start
+    assert first_params["range_end"] == missing_at
+    assert second_params["range_start"] == missing_at
+    assert second_params["range_end"] == missing_at + INTERVAL
+
+
+async def test_status_aggregates_independent_scan_windows() -> None:
+    range_start = datetime(2020, 4, 1, tzinfo=UTC)
+    second_window = range_start + STATUS_SCAN_WINDOW
+    range_end = second_window + INTERVAL
+    rows = (
+        {
+            "valid_count": int(STATUS_SCAN_WINDOW / INTERVAL),
+            "first_open_time": range_start,
+            "last_open_time": second_window - INTERVAL,
+        },
+        {
+            "valid_count": 1,
+            "first_open_time": second_window,
+            "last_open_time": second_window,
+        },
+    )
+    contexts = []
+    for row in rows:
+        query_result = MagicMock()
+        query_result.mappings.return_value.one.return_value = row
+        connection = AsyncMock()
+        connection.execute.return_value = query_result
+        context = AsyncMock()
+        context.__aenter__.return_value = connection
+        contexts.append(context)
+    engine = MagicMock()
+    engine.connect.side_effect = contexts
+    repository = PaperHistoryRepository(engine)
+    repository.instrument_id = AsyncMock(return_value=1)  # type: ignore[method-assign]
+    repository.first_missing = AsyncMock()  # type: ignore[method-assign]
+
+    status = await repository.status("BTCUSDT", range_start, range_end)
+
+    assert engine.connect.call_count == 2
+    assert status.valid_count == status.expected_count
+    assert status.first_open_time == range_start
+    assert status.last_open_time == second_window
+    assert status.first_missing_at is None
+    repository.first_missing.assert_not_awaited()
