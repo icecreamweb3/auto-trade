@@ -264,6 +264,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-playback-actions button { min-width: 78px; padding: 7px 12px; }
 .paper-chart-wrap { min-width: 0; }
 .paper-chart { display: block; width: 100%; border: 1px solid #173047; border-radius: 11px; }
+.paper-candle-group { transition: transform .24s ease-out; }
 .paper-entry-line { stroke: #58d6c2; stroke-width: 1.5; stroke-dasharray: 7 5; }
 .paper-liquidation-line { stroke: #ff6477; stroke-width: 1.5; stroke-dasharray: 5 4; }
 .paper-entry-label, .paper-liquidation-label { font-size: 10px; font-weight: 800; paint-order: stroke; stroke: #071522; stroke-width: 4px; }

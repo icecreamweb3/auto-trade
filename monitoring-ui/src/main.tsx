@@ -1874,8 +1874,13 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position }: { candles: PaperCandle[]; position: PaperPosition | null }) {
-  const points = candles.slice(-100);
+function PaperReplayChart({ candles, position, intervalSeconds }: {
+  candles: PaperCandle[];
+  position: PaperPosition | null;
+  intervalSeconds: number;
+}) {
+  const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
+  const points = candles.slice(-visibleCapacity);
   if (points.length === 0) return <div className="chart-state">载入行情后开始回放</div>;
   const width = 1100;
   const height = 520;
@@ -1894,10 +1899,10 @@ function PaperReplayChart({ candles, position }: { candles: PaperCandle[]; posit
   const priceMax = high + rawRange * .08;
   const priceRange = priceMax - priceMin;
   const priceHeight = priceBottom - top;
-  const slot = plotWidth / points.length;
-  const candleWidth = Math.max(3, Math.min(9, slot * .66));
+  const slot = plotWidth / visibleCapacity;
+  const candleWidth = Math.max(2, Math.min(8, slot * .68));
   const maxVolume = Math.max(...points.map((point) => point.quote_volume), 1);
-  const xAt = (index: number) => left + slot * (index + .5);
+  const xAt = (index: number) => left + slot * (points.length - index - .5);
   const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
   const ticks = Array.from({ length: 6 }, (_, index) => priceMax - priceRange * index / 5);
   const timeTicks = [0, Math.floor((points.length - 1) / 2), points.length - 1]
@@ -1924,10 +1929,10 @@ function PaperReplayChart({ candles, position }: { candles: PaperCandle[]; posit
         const closeY = yAt(point.close_price);
         const rising = point.close_price >= point.open_price;
         const barHeight = point.quote_volume / maxVolume * (volumeBottom - volumeTop);
-        return <g key={point.open_time} className={rising ? "chart-up" : "chart-down"}>
-          <line x1={x} x2={x} y1={yAt(point.high_price)} y2={yAt(point.low_price)} className="candle-wick" />
-          <rect x={x - candleWidth / 2} y={Math.min(openY, closeY)} width={candleWidth} height={Math.max(1, Math.abs(closeY - openY))} className="candle-body" />
-          <rect x={x - candleWidth / 2} y={volumeBottom - barHeight} width={candleWidth} height={barHeight} className="volume-bar" />
+        return <g key={point.open_time} className={`paper-candle-group ${rising ? "chart-up" : "chart-down"}`} transform={`translate(${x} 0)`}>
+          <line x1={0} x2={0} y1={yAt(point.high_price)} y2={yAt(point.low_price)} className="candle-wick" />
+          <rect x={-candleWidth / 2} y={Math.min(openY, closeY)} width={candleWidth} height={Math.max(1, Math.abs(closeY - openY))} className="candle-body" />
+          <rect x={-candleWidth / 2} y={volumeBottom - barHeight} width={candleWidth} height={barHeight} className="volume-bar" />
         </g>;
       })}
       {position && <>
@@ -2129,7 +2134,7 @@ function PaperTraderWorkspace() {
             <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
             <div className="paper-playback-actions"><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
           </div>
-          <PaperReplayChart candles={candles} position={snapshot.position} />
+          <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} />
         </div>
         <aside className="panel paper-order-panel">
           <div className="panel-heading"><div><p className="eyebrow">ORDER</p><h3>模拟下单</h3></div><strong>{formatNumber(snapshot.current_candle.close_price, 2)}</strong></div>
