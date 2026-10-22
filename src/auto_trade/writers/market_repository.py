@@ -466,6 +466,16 @@ class MarketRepository:
     async def _write_kline(self, event: IncomingEvent, payload: KlinePayload) -> None:
         kline_hash = payload_hash(payload.model_dump(mode="json"))
         async with self._engine.begin() as connection:
+            # asyncpg prepares repeated statements, and PostgreSQL may eventually
+            # switch them to a generic plan.  A generic plan cannot prune the
+            # TimescaleDB chunk from the open_time parameter at plan time, so the
+            # row lock query can take relation locks on every kline chunk.
+            await connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'plan_cache_mode', 'force_custom_plan', true)"
+                )
+            )
             instrument_id = await self._instrument_id(connection, payload.symbol)
             current = (
                 await connection.execute(
