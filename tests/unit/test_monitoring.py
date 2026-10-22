@@ -55,9 +55,19 @@ async def test_kline_coverage_uses_bounded_latest_index_lookup() -> None:
 
     await repository._kline_coverage(connection)
 
-    statement = str(connection.execute.await_args.args[0])
+    plan_call = connection.execute.await_args_list[0]
+    assert (
+        "set_config('plan_cache_mode', 'force_custom_plan', true)"
+        in str(plan_call.args[0])
+    )
+    coverage_call = connection.execute.await_args_list[1]
+    statement = str(coverage_call.args[0])
+    parameters = coverage_call.args[1]
     assert "ORDER BY k.open_time DESC" in statement
-    assert statement.count("k.open_time >= now() - interval '1 day'") == 2
+    assert (
+        statement.count("k.open_time >= CAST(:range_start AS timestamptz)") == 2
+    )
+    assert datetime.now(UTC) - timedelta(days=2) < parameters["range_start"]
     assert "max(open_time)" not in statement
 
 

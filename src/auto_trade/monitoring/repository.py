@@ -1072,6 +1072,13 @@ class MonitoringRepository:
     async def _kline_coverage(
         self, connection: AsyncConnection
     ) -> tuple[CoverageRow, ...]:
+        range_start = datetime.now(UTC) - timedelta(days=1)
+        await connection.execute(
+            text(
+                "SELECT set_config("
+                "'plan_cache_mode', 'force_custom_plan', true)"
+            )
+        )
         rows = (
             await connection.execute(
                 text(
@@ -1089,7 +1096,7 @@ class MonitoringRepository:
                             FROM market.klines k
                             WHERE k.price_type = series.price_type
                               AND k.interval_seconds = series.interval_seconds
-                              AND k.open_time >= now() - interval '1 day'
+                              AND k.open_time >= CAST(:range_start AS timestamptz)
                               AND k.is_current
                             ORDER BY k.open_time DESC
                             LIMIT 1
@@ -1104,15 +1111,16 @@ class MonitoringRepository:
                             FILTER (WHERE k.source = 'WEBSOCKET') AS websocket_symbols
                     FROM latest l
                     LEFT JOIN market.klines k
-                      ON k.price_type = l.price_type
+                     ON k.price_type = l.price_type
                      AND k.interval_seconds = l.interval_seconds
                      AND k.open_time = l.open_time
-                     AND k.open_time >= now() - interval '1 day'
+                     AND k.open_time >= CAST(:range_start AS timestamptz)
                      AND k.is_current
                     GROUP BY l.price_type, l.interval_seconds, l.open_time
                     ORDER BY 1
                     """
-                )
+                ),
+                {"range_start": range_start},
             )
         ).mappings().all()
         return tuple(
