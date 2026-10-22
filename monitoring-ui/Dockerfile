@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm ci --prefer-offline --no-audit --no-fund \
       --registry="${NPM_REGISTRY}" \
       --replace-registry-host=always \
+      --maxsockets=1 \
       --fetch-retries=5 \
       --fetch-retry-factor=2 \
       --fetch-retry-mintimeout=10000 \
