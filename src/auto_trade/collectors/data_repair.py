@@ -454,6 +454,12 @@ class DataRepairRepository:
 
     async def _actual_count(self, job: BackfillJob) -> int:
         async with self._engine.connect() as connection:
+            await connection.execute(
+                text(
+                    "SELECT set_config("
+                    "'plan_cache_mode', 'force_custom_plan', true)"
+                )
+            )
             return cast(
                 int,
                 (
@@ -466,8 +472,8 @@ class DataRepairRepository:
                               AND price_type = :price_type
                               AND interval_seconds = :interval_seconds
                               AND is_current
-                              AND open_time >= :range_start
-                              AND open_time < :range_end
+                              AND open_time >= CAST(:range_start AS timestamptz)
+                              AND open_time < CAST(:range_end AS timestamptz)
                             """
                         ),
                         {

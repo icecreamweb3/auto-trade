@@ -121,6 +121,40 @@ async def test_historical_checkpoint_casts_timestamp_parameters() -> None:
     assert "WHEN CAST(:cursor_at AS timestamptz)" in statement
 
 
+async def test_actual_count_prunes_kline_chunks_with_custom_plan() -> None:
+    start = datetime(2026, 10, 21, tzinfo=UTC)
+    job = BackfillJob(
+        UUID(int=1),
+        UUID(int=2),
+        1,
+        "BTCUSDT",
+        start,
+        start + timedelta(minutes=5),
+        1,
+        TRADE_5M_SERIES,
+    )
+    result = MagicMock()
+    result.scalar_one.return_value = 1
+    connection = MagicMock()
+    connection.execute = AsyncMock(side_effect=(MagicMock(), result))
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+    repository = DataRepairRepository(engine)
+
+    actual = await repository._actual_count(job)
+
+    assert actual == 1
+    plan_call, count_call = connection.execute.await_args_list
+    assert (
+        "set_config('plan_cache_mode', 'force_custom_plan', true)"
+        in str(plan_call.args[0])
+    )
+    statement = str(count_call.args[0])
+    assert "open_time >= CAST(:range_start AS timestamptz)" in statement
+    assert "open_time < CAST(:range_end AS timestamptz)" in statement
+
+
 def test_historical_gap_scan_advances_in_bounded_windows() -> None:
     settings = SimpleNamespace(
         gap_scan_lookback_hours=72,
