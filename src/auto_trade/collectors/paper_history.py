@@ -5,13 +5,14 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from auto_trade.collectors.binance_usdm import BinanceUsdMClient
@@ -29,9 +30,11 @@ INTERVAL = timedelta(seconds=INTERVAL_SECONDS)
 PAGE_LIMIT = 1000
 WRITE_BATCH_SIZE = 50
 STATUS_SCAN_WINDOW = timedelta(days=7)
+LOCK_RETRY_ATTEMPTS = 10
+LOCK_RETRY_INITIAL_SECONDS = 0.25
+LOCK_RETRY_MAX_SECONDS = 2.0
 CHECKPOINT_PREFIX = "PAPER_HISTORY"
 CONFIG_SIGNATURE = "v1:BTCUSDT,ETHUSDT:TRADE:300:2020-04-01"
-
 
 @dataclass(frozen=True, slots=True)
 class HistoricalKline:
@@ -88,6 +91,32 @@ def scan_windows(
         window_end = min(window_start + STATUS_SCAN_WINDOW, range_end)
         yield window_start, window_end
         window_start = window_end
+
+
+async def retry_shared_lock_pressure[T](
+    operation: Callable[[], Awaitable[T]], *, description: str
+) -> T:
+    delay = LOCK_RETRY_INITIAL_SECONDS
+    for attempt in range(1, LOCK_RETRY_ATTEMPTS + 1):
+        try:
+            return await operation()
+        except DBAPIError as error:
+            if (
+                "out of shared memory" not in str(error).lower()
+                or attempt == LOCK_RETRY_ATTEMPTS
+            ):
+                raise
+            logger.warning(
+                "database shared-lock pressure; retrying operation=%s "
+                "attempt=%d/%d delay_seconds=%.2f",
+                description,
+                attempt,
+                LOCK_RETRY_ATTEMPTS,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, LOCK_RETRY_MAX_SECONDS)
+    raise AssertionError("unreachable")
 
 
 def parse_binance_klines(
@@ -386,49 +415,58 @@ class PaperHistoryRepository:
         self, instrument_id: int, range_start: datetime, range_end: datetime
     ) -> datetime | None:
         for window_start, window_end in scan_windows(range_start, range_end):
-            async with self._engine.connect() as connection:
-                await connection.execute(
-                    text(
-                        "SELECT "
-                        "set_config('statement_timeout', '300s', true), "
-                        "set_config("
-                        "'plan_cache_mode', 'force_custom_plan', true)"
-                    )
-                )
-                value: object = (
+            async def find_in_window(
+                scan_start: datetime = window_start,
+                scan_end: datetime = window_end,
+            ) -> datetime | None:
+                async with self._engine.connect() as connection:
                     await connection.execute(
                         text(
-                            """
-                            SELECT min(point)
-                            FROM generate_series(
-                                CAST(:range_start AS timestamptz),
-                                CAST(:range_end AS timestamptz)
-                                    - interval '5 minutes',
-                                interval '5 minutes'
-                            ) point
-                            WHERE NOT EXISTS (
-                                SELECT 1
-                                FROM market.klines k
-                                WHERE k.instrument_id = :instrument_id
-                                  AND k.price_type = 'TRADE'
-                                  AND k.interval_seconds = 300
-                                  AND k.open_time >= :range_start
-                                  AND k.open_time < :range_end
-                                  AND k.open_time = point
-                                  AND k.is_current
-                                  AND k.is_closed
-                                  AND k.quality_status = 'VALID'
-                            )
-                            """
-                        ),
-                        {
-                            "instrument_id": instrument_id,
-                            "range_start": window_start,
-                            "range_end": window_end,
-                        },
+                            "SELECT "
+                            "set_config('statement_timeout', '300s', true), "
+                            "set_config("
+                            "'plan_cache_mode', 'force_custom_plan', true)"
+                        )
                     )
-                ).scalar_one()
-            missing_at = cast(datetime | None, value)
+                    value: object = (
+                        await connection.execute(
+                            text(
+                                """
+                                SELECT min(point)
+                                FROM generate_series(
+                                    CAST(:range_start AS timestamptz),
+                                    CAST(:range_end AS timestamptz)
+                                        - interval '5 minutes',
+                                    interval '5 minutes'
+                                ) point
+                                WHERE NOT EXISTS (
+                                    SELECT 1
+                                    FROM market.klines k
+                                    WHERE k.instrument_id = :instrument_id
+                                      AND k.price_type = 'TRADE'
+                                      AND k.interval_seconds = 300
+                                      AND k.open_time >= :range_start
+                                      AND k.open_time < :range_end
+                                      AND k.open_time = point
+                                      AND k.is_current
+                                      AND k.is_closed
+                                      AND k.quality_status = 'VALID'
+                                )
+                                """
+                            ),
+                            {
+                                "instrument_id": instrument_id,
+                                "range_start": scan_start,
+                                "range_end": scan_end,
+                            },
+                        )
+                    ).scalar_one()
+                return cast(datetime | None, value)
+
+            missing_at = await retry_shared_lock_pressure(
+                find_in_window,
+                description=f"first-missing:{window_start.isoformat()}",
+            )
             if missing_at is not None:
                 return missing_at
         return None
@@ -441,41 +479,55 @@ class PaperHistoryRepository:
         first_open_time: datetime | None = None
         last_open_time: datetime | None = None
         for window_start, window_end in scan_windows(range_start, range_end):
-            async with self._engine.connect() as connection:
-                await connection.execute(
-                    text(
-                        "SELECT set_config("
-                        "'plan_cache_mode', 'force_custom_plan', true)"
-                    )
-                )
-                row = (
+            async def load_window(
+                scan_start: datetime = window_start,
+                scan_end: datetime = window_end,
+            ) -> tuple[int, datetime | None, datetime | None]:
+                async with self._engine.connect() as connection:
                     await connection.execute(
                         text(
-                            """
-                            SELECT count(*) AS valid_count,
-                                   min(open_time) AS first_open_time,
-                                   max(open_time) AS last_open_time
-                            FROM market.klines
-                            WHERE instrument_id = :instrument_id
-                              AND price_type = 'TRADE'
-                              AND interval_seconds = 300
-                              AND open_time >= :range_start
-                              AND open_time < :range_end
-                              AND is_current
-                              AND is_closed
-                              AND quality_status = 'VALID'
-                            """
-                        ),
-                        {
-                            "instrument_id": instrument_id,
-                            "range_start": window_start,
-                            "range_end": window_end,
-                        },
+                            "SELECT set_config("
+                            "'plan_cache_mode', 'force_custom_plan', true)"
+                        )
                     )
-                ).mappings().one()
-            valid_count += cast(int, row["valid_count"])
-            window_first = cast(datetime | None, row["first_open_time"])
-            window_last = cast(datetime | None, row["last_open_time"])
+                    row = (
+                        await connection.execute(
+                            text(
+                                """
+                                SELECT count(*) AS valid_count,
+                                       min(open_time) AS first_open_time,
+                                       max(open_time) AS last_open_time
+                                FROM market.klines
+                                WHERE instrument_id = :instrument_id
+                                  AND price_type = 'TRADE'
+                                  AND interval_seconds = 300
+                                  AND open_time >= :range_start
+                                  AND open_time < :range_end
+                                  AND is_current
+                                  AND is_closed
+                                  AND quality_status = 'VALID'
+                                """
+                            ),
+                            {
+                                "instrument_id": instrument_id,
+                                "range_start": scan_start,
+                                "range_end": scan_end,
+                            },
+                        )
+                    ).mappings().one()
+                return (
+                    cast(int, row["valid_count"]),
+                    cast(datetime | None, row["first_open_time"]),
+                    cast(datetime | None, row["last_open_time"]),
+                )
+
+            window_count, window_first, window_last = (
+                await retry_shared_lock_pressure(
+                    load_window,
+                    description=f"status:{symbol}:{window_start.isoformat()}",
+                )
+            )
+            valid_count += window_count
             if window_first is not None and (
                 first_open_time is None or window_first < first_open_time
             ):

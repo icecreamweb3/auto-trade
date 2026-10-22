@@ -1,9 +1,10 @@
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import DBAPIError
 
 from auto_trade.collectors.paper_history import (
     INTERVAL,
@@ -14,6 +15,7 @@ from auto_trade.collectors.paper_history import (
     checkpoint_key,
     latest_closed_boundary,
     parse_binance_klines,
+    retry_shared_lock_pressure,
     scan_windows,
 )
 
@@ -127,6 +129,34 @@ def test_status_scan_windows_are_bounded() -> None:
         ),
         (range_start + 2 * STATUS_SCAN_WINDOW, range_end),
     ]
+
+
+async def test_shared_lock_pressure_is_retried() -> None:
+    lock_error = DBAPIError(
+        "SELECT 1", {}, RuntimeError("out of shared memory"), False
+    )
+    operation = AsyncMock(side_effect=(lock_error, "complete"))
+
+    with patch(
+        "auto_trade.collectors.paper_history.asyncio.sleep", new_callable=AsyncMock
+    ) as sleep:
+        result = await retry_shared_lock_pressure(operation, description="status")
+
+    assert result == "complete"
+    assert operation.await_count == 2
+    sleep.assert_awaited_once_with(0.25)
+
+
+async def test_unrelated_database_error_is_not_retried() -> None:
+    database_error = DBAPIError(
+        "SELECT 1", {}, RuntimeError("connection refused"), False
+    )
+    operation = AsyncMock(side_effect=database_error)
+
+    with pytest.raises(DBAPIError, match="connection refused"):
+        await retry_shared_lock_pressure(operation, description="status")
+
+    operation.assert_awaited_once()
 
 
 async def test_database_writes_are_split_into_bounded_transactions() -> None:
