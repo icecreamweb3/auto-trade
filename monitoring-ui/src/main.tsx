@@ -1902,7 +1902,7 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
   const slot = plotWidth / visibleCapacity;
   const candleWidth = Math.max(2, Math.min(8, slot * .68));
   const maxVolume = Math.max(...points.map((point) => point.quote_volume), 1);
-  const xAt = (index: number) => left + slot * (points.length - index - .5);
+  const xAt = (index: number) => width - right - slot * (points.length - index - .5);
   const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
   const ticks = Array.from({ length: 6 }, (_, index) => priceMax - priceRange * index / 5);
   const timeTicks = [0, Math.floor((points.length - 1) / 2), points.length - 1]
