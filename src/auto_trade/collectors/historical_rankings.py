@@ -339,12 +339,18 @@ async def materialize_local_daily_metrics(engine: AsyncEngine, day: date) -> tup
           AND is_current
           AND is_closed
           AND quality_status = 'VALID'
-          AND open_time >= :start
-          AND open_time < :snapshot_at
+          AND open_time >= CAST(:start AS timestamptz)
+          AND open_time < CAST(:snapshot_at AS timestamptz)
         ORDER BY instrument_id, open_time
         """
     ).bindparams(bindparam("instrument_ids", expanding=True))
     async with engine.connect() as connection:
+        await connection.execute(
+            text(
+                "SELECT set_config("
+                "'plan_cache_mode', 'force_custom_plan', true)"
+            )
+        )
         rows = (
             await connection.execute(
                 statement,

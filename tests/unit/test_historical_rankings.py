@@ -1,11 +1,13 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from auto_trade.collectors.historical_rankings import (
     Instrument,
     aggregate_daily_klines,
     aggregate_local_daily_rows,
     instrument_is_eligible,
+    materialize_local_daily_metrics,
 )
 
 
@@ -88,3 +90,39 @@ def test_local_daily_rows_include_missing_instrument_as_invalid() -> None:
     assert metrics[0][1].metrics["source"] == "LOCAL_DATABASE_TRADE_KLINE_5M"
     assert metrics[1][1].quality_status == "INVALID"
     assert metrics[1][1].metrics["reason"] == "NO_KLINES"
+
+
+async def test_local_daily_metrics_prune_kline_chunks_with_custom_plan() -> None:
+    query_result = MagicMock()
+    query_result.mappings.return_value.all.return_value = []
+    connection = MagicMock()
+    connection.execute = AsyncMock(side_effect=(MagicMock(), query_result))
+    context = AsyncMock()
+    context.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = context
+    instrument = Instrument(1, "BTCUSDT", None, None)
+
+    with (
+        patch(
+            "auto_trade.collectors.historical_rankings.load_instruments",
+            new=AsyncMock(return_value=[instrument]),
+        ),
+        patch(
+            "auto_trade.collectors.historical_rankings.save_metric_rows",
+            new_callable=AsyncMock,
+        ),
+    ):
+        total, valid = await materialize_local_daily_metrics(
+            engine, date(2026, 10, 21)
+        )
+
+    assert (total, valid) == (1, 0)
+    plan_call, query_call = connection.execute.await_args_list
+    assert (
+        "set_config('plan_cache_mode', 'force_custom_plan', true)"
+        in str(plan_call.args[0])
+    )
+    statement = str(query_call.args[0])
+    assert "open_time >= CAST(:start AS timestamptz)" in statement
+    assert "open_time < CAST(:snapshot_at AS timestamptz)" in statement
