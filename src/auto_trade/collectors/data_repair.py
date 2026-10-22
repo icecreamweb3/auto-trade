@@ -175,8 +175,11 @@ class DataRepairRepository:
         async with self._engine.connect() as connection:
             await connection.execute(
                 text(
-                    "SELECT set_config("
-                    "'statement_timeout', :statement_timeout, true)"
+                    "SELECT "
+                    "set_config("
+                    "'statement_timeout', :statement_timeout, true), "
+                    "set_config("
+                    "'plan_cache_mode', 'force_custom_plan', true)"
                 ),
                 {
                     "statement_timeout": (

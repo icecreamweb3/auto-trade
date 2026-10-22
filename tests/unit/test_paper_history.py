@@ -228,6 +228,41 @@ async def test_database_writes_are_split_into_bounded_transactions() -> None:
     ]
 
 
+async def test_database_write_retries_shared_lock_pressure() -> None:
+    repository = PaperHistoryRepository(MagicMock())
+    lock_error = DBAPIError(
+        "INSERT INTO market.klines",
+        {},
+        RuntimeError("out of shared memory"),
+        False,
+    )
+    write_batch = AsyncMock(side_effect=(lock_error, 1))
+    repository._write_kline_batch = write_batch  # type: ignore[method-assign]
+    opened = datetime(2020, 4, 1, tzinfo=UTC)
+    row = HistoricalKline(
+        open_time=opened,
+        close_time=opened + INTERVAL,
+        open_price=Decimal("100"),
+        high_price=Decimal("105"),
+        low_price=Decimal("95"),
+        close_price=Decimal("102"),
+        base_volume=Decimal("12.5"),
+        quote_volume=Decimal("1250"),
+        trade_count=42,
+        payload_hash="a" * 64,
+        collected_at=opened + INTERVAL,
+    )
+
+    with patch(
+        "auto_trade.collectors.paper_history.asyncio.sleep", new_callable=AsyncMock
+    ) as sleep:
+        inserted = await repository.write_klines(1, (row,))
+
+    assert inserted == 1
+    assert write_batch.await_count == 2
+    sleep.assert_awaited_once_with(0.25)
+
+
 async def test_database_write_prefilters_existing_rows_without_conflict_scan() -> None:
     opened = datetime(2020, 4, 1, tzinfo=UTC)
     rows = tuple(

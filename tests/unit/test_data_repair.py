@@ -92,6 +92,10 @@ async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
 
     timeout_call = connection.execute.await_args_list[0]
     assert "set_config('statement_timeout'" in str(timeout_call.args[0])
+    assert (
+        "set_config('plan_cache_mode', 'force_custom_plan', true)"
+        in str(timeout_call.args[0])
+    )
     assert timeout_call.args[1] == {"statement_timeout": "45s"}
     statement = str(connection.execute.await_args.args[0])
     assert "k.open_time >= CAST(:range_start AS timestamptz)" in statement

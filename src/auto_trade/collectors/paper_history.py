@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import cast
 
 from sqlalchemy import text
@@ -307,8 +308,12 @@ class PaperHistoryRepository:
             return 0
         inserted = 0
         for offset in range(0, len(rows), WRITE_BATCH_SIZE):
-            inserted += await self._write_kline_batch(
-                instrument_id, rows[offset : offset + WRITE_BATCH_SIZE]
+            batch = rows[offset : offset + WRITE_BATCH_SIZE]
+            inserted += await retry_shared_lock_pressure(
+                partial(self._write_kline_batch, instrument_id, batch),
+                description=(
+                    f"write:{instrument_id}:{batch[0].open_time.isoformat()}"
+                ),
             )
         return inserted
 
