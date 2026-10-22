@@ -185,6 +185,7 @@ interface LoadedKlineRange {
 }
 
 type PaperSide = "LONG" | "SHORT";
+type PaperNotionalUnit = "USDT" | "BASE";
 type PaperGameStatus = "READY" | "RUNNING" | "COMPLETED" | "LIQUIDATED";
 
 interface PaperCandle {
@@ -1958,8 +1959,9 @@ function PaperTraderWorkspace() {
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
   const [speedSeconds, setSpeedSeconds] = useState(10);
-  const [margin, setMargin] = useState(100);
-  const [leverage, setLeverage] = useState(10);
+  const [notional, setNotional] = useState(100);
+  const [notionalUnit, setNotionalUnit] = useState<PaperNotionalUnit>("USDT");
+  const [leverage, setLeverage] = useState(100);
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperCandle[]>([]);
   const [playing, setPlaying] = useState(false);
@@ -2082,7 +2084,7 @@ function PaperTraderWorkspace() {
       applySnapshot(await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ side, margin, leverage })
+        body: JSON.stringify({ side, notional, notional_unit: notionalUnit, leverage })
       }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "下单失败");
@@ -2101,6 +2103,18 @@ function PaperTraderWorkspace() {
 
   const gameEnded = snapshot?.status === "COMPLETED" || snapshot?.status === "LIQUIDATED";
   const pnl = snapshot?.position?.unrealized_pnl ?? 0;
+  const baseAsset = (snapshot?.symbol ?? symbol).replace("USDT", "");
+  const orderPrice = snapshot?.current_candle.close_price ?? 0;
+  const notionalUsdt = notionalUnit === "USDT" ? notional : notional * orderPrice;
+  const estimatedMargin = leverage > 0 ? notionalUsdt / leverage : 0;
+  const maximumNotional = snapshot && orderPrice > 0
+    ? notionalUnit === "USDT"
+      ? snapshot.available_balance * leverage
+      : snapshot.available_balance * leverage / orderPrice
+    : 0;
+  const invalidOrder = !Number.isFinite(notional) || notional <= 0 ||
+    !Number.isInteger(leverage) || leverage < 1 || leverage > 100 ||
+    !Number.isFinite(estimatedMargin) || estimatedMargin > (snapshot?.available_balance ?? 0);
   return <main className="paper-page">
     <header className="topbar">
       <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在 1000 USDT 模拟账户中练习仓位与杠杆。</p></div>
@@ -2143,10 +2157,10 @@ function PaperTraderWorkspace() {
             <dl><div><dt>开仓价</dt><dd>{formatNumber(snapshot.position.entry_price, 2)}</dd></div><div><dt>标记价</dt><dd>{formatNumber(snapshot.position.mark_price, 2)}</dd></div><div><dt>保证金</dt><dd>{formatNumber(snapshot.position.margin, 2)}</dd></div><div><dt>强平价</dt><dd className="paper-danger">{formatNumber(snapshot.position.liquidation_price, 2)}</dd></div></dl>
             <button type="button" className="paper-close-position" onClick={() => void closePosition()}>按当前收盘价平仓</button>
           </div> : <div className="paper-order-form">
-            <label><span>逐仓保证金 USDT</span><input type="number" min={1} max={snapshot.available_balance} step={10} value={margin} onChange={(event) => setMargin(Number(event.target.value))} disabled={gameEnded} /></label>
+            <label><span>名义下单价值</span><div className="paper-notional-input"><input type="number" min={notionalUnit === "USDT" ? 1 : 0.000001} max={maximumNotional} step={notionalUnit === "USDT" ? 10 : 0.001} value={notional} onChange={(event) => setNotional(Number(event.target.value))} disabled={gameEnded} /><select value={notionalUnit} onChange={(event) => setNotionalUnit(event.target.value as PaperNotionalUnit)} disabled={gameEnded}><option value="USDT">USDT</option><option value="BASE">{baseAsset}</option></select></div></label>
             <label><span>杠杆倍数</span><input type="number" min={1} max={100} value={leverage} onChange={(event) => setLeverage(Number(event.target.value))} disabled={gameEnded} /></label>
-            <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded}>开空</button></div>
-            <small>按当前已揭示 K 线收盘价成交，不收手续费与资金费。</small>
+            <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded || invalidOrder}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded || invalidOrder}>开空</button></div>
+            <small>预计占用保证金 {formatNumber(estimatedMargin, 2)} USDT · 按当前已揭示 K 线收盘价成交，不收手续费与资金费。</small>
           </div>}
           <div className="paper-trade-log"><span>最近成交</span>{snapshot.trades.length === 0 ? <p>暂无成交记录</p> : snapshot.trades.slice().reverse().slice(0, 5).map((trade) => <div key={`${trade.opened_at}-${trade.closed_at}`}><strong className={trade.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{trade.realized_pnl >= 0 ? "+" : ""}{trade.realized_pnl.toFixed(2)}</strong><small>{trade.side} {trade.leverage}x · {trade.exit_reason}</small></div>)}</div>
         </aside>

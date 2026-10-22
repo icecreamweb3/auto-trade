@@ -107,7 +107,10 @@ async def create_order(
 ) -> PaperSessionSnapshot:
     try:
         return _session(request, session_id).open_position(
-            payload.side, payload.margin, payload.leverage
+            payload.side,
+            payload.notional,
+            payload.leverage,
+            payload.notional_unit,
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error

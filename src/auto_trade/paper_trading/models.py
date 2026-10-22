@@ -11,6 +11,11 @@ class PositionSide(StrEnum):
     SHORT = "SHORT"
 
 
+class NotionalUnit(StrEnum):
+    USDT = "USDT"
+    BASE = "BASE"
+
+
 class GameStatus(StrEnum):
     READY = "READY"
     RUNNING = "RUNNING"
@@ -69,8 +74,9 @@ class PaperSessionCreate(BaseModel):
 
 class PaperOrderCreate(BaseModel):
     side: PositionSide
-    margin: float = Field(gt=0)
-    leverage: int = Field(ge=1, le=100)
+    notional: float = Field(gt=0)
+    notional_unit: NotionalUnit = NotionalUnit.USDT
+    leverage: int = Field(default=100, ge=1, le=100)
 
 
 class PaperSessionSnapshot(BaseModel):

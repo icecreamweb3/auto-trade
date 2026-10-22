@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from auto_trade.paper_trading.models import (
     GameStatus,
+    NotionalUnit,
     PaperCandle,
     PaperPosition,
     PaperSessionSnapshot,
@@ -44,7 +45,11 @@ class PaperSession:
     message: str | None = None
 
     def open_position(
-        self, side: PositionSide, margin: float, leverage: int
+        self,
+        side: PositionSide,
+        notional: float,
+        leverage: int,
+        notional_unit: NotionalUnit = NotionalUnit.USDT,
     ) -> PaperSessionSnapshot:
         if self.status in (GameStatus.COMPLETED, GameStatus.LIQUIDATED):
             raise ValueError("本轮游戏已经结束, 请重新开始")
@@ -52,11 +57,15 @@ class PaperSession:
             raise ValueError("当前已有持仓, 请先平仓")
         if leverage < 1 or leverage > 100:
             raise ValueError("杠杆倍数必须在 1 到 100 之间")
-        if margin <= 0 or margin > self.balance:
-            raise ValueError("保证金必须大于 0 且不能超过可用余额")
+        if notional <= 0:
+            raise ValueError("名义下单价值必须大于 0")
         candle = self.current_candle
         entry_price = candle.close_price
-        quantity = margin * leverage / entry_price
+        quantity = notional / entry_price if notional_unit is NotionalUnit.USDT else notional
+        notional_usdt = quantity * entry_price
+        margin = notional_usdt / leverage
+        if margin > self.balance:
+            raise ValueError("名义下单价值所需保证金不能超过可用余额")
         self.position = OpenPosition(
             side=side,
             leverage=leverage,
@@ -67,7 +76,10 @@ class PaperSession:
             opened_at=candle.close_time,
         )
         self.status = GameStatus.RUNNING
-        self.message = f"已按 {entry_price:.2f} 市价开{side.value}仓"
+        self.message = (
+            f"已按 {entry_price:.2f} 收盘价开{side.value}仓, "
+            f"名义价值 {notional_usdt:.2f} USDT"
+        )
         return self.snapshot()
 
     def close_position(self, reason: str = "MANUAL") -> PaperSessionSnapshot:

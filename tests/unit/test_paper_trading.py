@@ -3,7 +3,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from auto_trade.paper_trading.engine import PaperSession, liquidation_price
-from auto_trade.paper_trading.models import GameStatus, PaperCandle, PositionSide
+from auto_trade.paper_trading.models import (
+    GameStatus,
+    NotionalUnit,
+    PaperCandle,
+    PositionSide,
+)
 
 
 def candle(
@@ -39,11 +44,14 @@ def session(*candles: PaperCandle) -> PaperSession:
 def test_long_position_updates_unrealized_and_manual_close() -> None:
     game = session(candle(0), candle(1, close=110), candle(2, close=110))
 
-    opened = game.open_position(PositionSide.LONG, margin=100, leverage=10)
+    opened = game.open_position(PositionSide.LONG, notional=1000, leverage=10)
     advanced = game.advance()
     closed = game.close_position()
 
     assert opened.available_balance == 900
+    assert opened.position is not None
+    assert opened.position.entry_price == 100
+    assert opened.position.quantity == 10
     assert advanced.position is not None
     assert advanced.position.unrealized_pnl == pytest.approx(100)
     assert advanced.equity == pytest.approx(1100)
@@ -57,7 +65,7 @@ def test_long_liquidation_uses_intrabar_low_and_ends_game() -> None:
     expected_price = liquidation_price(PositionSide.LONG, 100, 10)
     assert expected_price == pytest.approx(90.4522613)
 
-    game.open_position(PositionSide.LONG, margin=250, leverage=10)
+    game.open_position(PositionSide.LONG, notional=2500, leverage=10)
     result = game.advance()
 
     assert result.status is GameStatus.LIQUIDATED
@@ -69,7 +77,7 @@ def test_long_liquidation_uses_intrabar_low_and_ends_game() -> None:
 
 def test_short_liquidation_uses_intrabar_high() -> None:
     game = session(candle(0), candle(1, close=100, high=111), candle(2))
-    game.open_position(PositionSide.SHORT, margin=100, leverage=10)
+    game.open_position(PositionSide.SHORT, notional=1000, leverage=10)
 
     result = game.advance()
 
@@ -79,7 +87,7 @@ def test_short_liquidation_uses_intrabar_high() -> None:
 
 def test_range_end_closes_open_position() -> None:
     game = session(candle(0), candle(1, close=105))
-    game.open_position(PositionSide.LONG, margin=100, leverage=2)
+    game.open_position(PositionSide.LONG, notional=200, leverage=2)
 
     result = game.advance()
 
@@ -92,8 +100,25 @@ def test_range_end_closes_open_position() -> None:
 def test_rejects_second_position_and_excess_margin() -> None:
     game = session(candle(0), candle(1))
     with pytest.raises(ValueError, match="保证金"):
-        game.open_position(PositionSide.LONG, margin=1001, leverage=1)
+        game.open_position(PositionSide.LONG, notional=1001, leverage=1)
 
-    game.open_position(PositionSide.LONG, margin=100, leverage=1)
+    game.open_position(PositionSide.LONG, notional=100, leverage=1)
     with pytest.raises(ValueError, match="已有持仓"):
-        game.open_position(PositionSide.SHORT, margin=100, leverage=1)
+        game.open_position(PositionSide.SHORT, notional=100, leverage=1)
+
+
+def test_base_asset_notional_uses_close_price_and_requested_quantity() -> None:
+    game = session(candle(0, close=125), candle(1, close=130))
+
+    opened = game.open_position(
+        PositionSide.LONG,
+        notional=2,
+        leverage=100,
+        notional_unit=NotionalUnit.BASE,
+    )
+
+    assert opened.position is not None
+    assert opened.position.entry_price == 125
+    assert opened.position.quantity == 2
+    assert opened.position.margin == pytest.approx(2.5)
+    assert opened.available_balance == pytest.approx(997.5)

@@ -273,6 +273,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-order-panel { position: sticky; top: 74px; }
 .paper-order-panel .panel-heading > strong { color: #e8f3ff; font-size: 23px; }
 .paper-order-form { display: grid; gap: 13px; margin-top: 23px; }
+.paper-notional-input { display: grid; grid-template-columns: minmax(0, 1fr) 82px; gap: 7px; }
 .paper-order-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .paper-long-button { color: #061a15; border-color: #42d4ae; background: #42d4ae; font-weight: 900; }
 .paper-long-button:hover { background: #69e1c1; }
