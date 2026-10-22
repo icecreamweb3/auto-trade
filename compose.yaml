@@ -315,6 +315,8 @@ services:
     profiles: ["runtime"]
     build:
       context: ./monitoring-ui
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
     image: auto-trade-monitor-ui:local
     container_name: auto-trade-monitor-ui
     restart: unless-stopped
