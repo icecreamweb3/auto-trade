@@ -159,6 +159,42 @@ async def test_unrelated_database_error_is_not_retried() -> None:
     operation.assert_awaited_once()
 
 
+async def test_status_invalidates_connection_before_lock_retry() -> None:
+    range_start = datetime(2020, 4, 1, tzinfo=UTC)
+    range_end = range_start + INTERVAL
+    lock_error = DBAPIError(
+        "SELECT 1", {}, RuntimeError("out of shared memory"), False
+    )
+    failed_connection = AsyncMock()
+    failed_connection.execute.side_effect = (MagicMock(), lock_error)
+    failed_context = AsyncMock()
+    failed_context.__aenter__.return_value = failed_connection
+    query_result = MagicMock()
+    query_result.mappings.return_value.one.return_value = {
+        "valid_count": 1,
+        "first_open_time": range_start,
+        "last_open_time": range_start,
+    }
+    successful_connection = AsyncMock()
+    successful_connection.execute.side_effect = (MagicMock(), query_result)
+    successful_context = AsyncMock()
+    successful_context.__aenter__.return_value = successful_connection
+    engine = MagicMock()
+    engine.connect.side_effect = (failed_context, successful_context)
+    repository = PaperHistoryRepository(engine)
+    repository.instrument_id = AsyncMock(return_value=1)  # type: ignore[method-assign]
+    repository.first_missing = AsyncMock()  # type: ignore[method-assign]
+
+    with patch(
+        "auto_trade.collectors.paper_history.asyncio.sleep", new_callable=AsyncMock
+    ):
+        status = await repository.status("BTCUSDT", range_start, range_end)
+
+    assert status.valid_count == 1
+    assert engine.connect.call_count == 2
+    failed_connection.invalidate.assert_awaited_once()
+
+
 async def test_database_writes_are_split_into_bounded_transactions() -> None:
     repository = PaperHistoryRepository(MagicMock())
     write_batch = AsyncMock(

@@ -420,47 +420,51 @@ class PaperHistoryRepository:
                 scan_end: datetime = window_end,
             ) -> datetime | None:
                 async with self._engine.connect() as connection:
-                    await connection.execute(
-                        text(
-                            "SELECT "
-                            "set_config('statement_timeout', '300s', true), "
-                            "set_config("
-                            "'plan_cache_mode', 'force_custom_plan', true)"
-                        )
-                    )
-                    value: object = (
+                    try:
                         await connection.execute(
                             text(
-                                """
-                                SELECT min(point)
-                                FROM generate_series(
-                                    CAST(:range_start AS timestamptz),
-                                    CAST(:range_end AS timestamptz)
-                                        - interval '5 minutes',
-                                    interval '5 minutes'
-                                ) point
-                                WHERE NOT EXISTS (
-                                    SELECT 1
-                                    FROM market.klines k
-                                    WHERE k.instrument_id = :instrument_id
-                                      AND k.price_type = 'TRADE'
-                                      AND k.interval_seconds = 300
-                                      AND k.open_time >= :range_start
-                                      AND k.open_time < :range_end
-                                      AND k.open_time = point
-                                      AND k.is_current
-                                      AND k.is_closed
-                                      AND k.quality_status = 'VALID'
-                                )
-                                """
-                            ),
-                            {
-                                "instrument_id": instrument_id,
-                                "range_start": scan_start,
-                                "range_end": scan_end,
-                            },
+                                "SELECT "
+                                "set_config('statement_timeout', '300s', true), "
+                                "set_config("
+                                "'plan_cache_mode', 'force_custom_plan', true)"
+                            )
                         )
-                    ).scalar_one()
+                        value: object = (
+                            await connection.execute(
+                                text(
+                                    """
+                                    SELECT min(point)
+                                    FROM generate_series(
+                                        CAST(:range_start AS timestamptz),
+                                        CAST(:range_end AS timestamptz)
+                                            - interval '5 minutes',
+                                        interval '5 minutes'
+                                    ) point
+                                    WHERE NOT EXISTS (
+                                        SELECT 1
+                                        FROM market.klines k
+                                        WHERE k.instrument_id = :instrument_id
+                                          AND k.price_type = 'TRADE'
+                                          AND k.interval_seconds = 300
+                                          AND k.open_time >= :range_start
+                                          AND k.open_time < :range_end
+                                          AND k.open_time = point
+                                          AND k.is_current
+                                          AND k.is_closed
+                                          AND k.quality_status = 'VALID'
+                                    )
+                                    """
+                                ),
+                                {
+                                    "instrument_id": instrument_id,
+                                    "range_start": scan_start,
+                                    "range_end": scan_end,
+                                },
+                            )
+                        ).scalar_one()
+                    except DBAPIError:
+                        await connection.invalidate()
+                        raise
                 return cast(datetime | None, value)
 
             missing_at = await retry_shared_lock_pressure(
@@ -484,37 +488,41 @@ class PaperHistoryRepository:
                 scan_end: datetime = window_end,
             ) -> tuple[int, datetime | None, datetime | None]:
                 async with self._engine.connect() as connection:
-                    await connection.execute(
-                        text(
-                            "SELECT set_config("
-                            "'plan_cache_mode', 'force_custom_plan', true)"
-                        )
-                    )
-                    row = (
+                    try:
                         await connection.execute(
                             text(
-                                """
-                                SELECT count(*) AS valid_count,
-                                       min(open_time) AS first_open_time,
-                                       max(open_time) AS last_open_time
-                                FROM market.klines
-                                WHERE instrument_id = :instrument_id
-                                  AND price_type = 'TRADE'
-                                  AND interval_seconds = 300
-                                  AND open_time >= :range_start
-                                  AND open_time < :range_end
-                                  AND is_current
-                                  AND is_closed
-                                  AND quality_status = 'VALID'
-                                """
-                            ),
-                            {
-                                "instrument_id": instrument_id,
-                                "range_start": scan_start,
-                                "range_end": scan_end,
-                            },
+                                "SELECT set_config("
+                                "'plan_cache_mode', 'force_custom_plan', true)"
+                            )
                         )
-                    ).mappings().one()
+                        row = (
+                            await connection.execute(
+                                text(
+                                    """
+                                    SELECT count(*) AS valid_count,
+                                           min(open_time) AS first_open_time,
+                                           max(open_time) AS last_open_time
+                                    FROM market.klines
+                                    WHERE instrument_id = :instrument_id
+                                      AND price_type = 'TRADE'
+                                      AND interval_seconds = 300
+                                      AND open_time >= :range_start
+                                      AND open_time < :range_end
+                                      AND is_current
+                                      AND is_closed
+                                      AND quality_status = 'VALID'
+                                    """
+                                ),
+                                {
+                                    "instrument_id": instrument_id,
+                                    "range_start": scan_start,
+                                    "range_end": scan_end,
+                                },
+                            )
+                        ).mappings().one()
+                    except DBAPIError:
+                        await connection.invalidate()
+                        raise
                 return (
                     cast(int, row["valid_count"]),
                     cast(datetime | None, row["first_open_time"]),
