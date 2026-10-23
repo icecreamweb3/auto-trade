@@ -29,6 +29,7 @@ from auto_trade.paper_trading.models import (
     PaperMarketRange,
     PaperMetadata,
     PaperOrderCreate,
+    PaperOrderType,
     PaperRiskUpdate,
     PaperSessionCreate,
     PaperSessionSnapshot,
@@ -72,6 +73,7 @@ async def _mutate_session(
         current = managed.game
         candidate = copy.copy(current)
         candidate.position = copy.copy(current.position)
+        candidate.pending_open_order = copy.copy(current.pending_open_order)
         candidate.trades = list(current.trades)
         previous_trade_count = len(current.trades)
         result = operation(candidate)
@@ -268,12 +270,42 @@ async def create_order(
         return await _mutate_session(
             request,
             _session(request, session_id, user),
-            lambda game: game.open_position(
-                payload.side,
-                payload.notional,
-                payload.leverage,
-                payload.notional_unit,
+            lambda game: (
+                game.place_limit_open_order(
+                    payload.side,
+                    payload.notional,
+                    payload.leverage,
+                    payload.price,
+                    payload.notional_unit,
+                )
+                if payload.order_type is PaperOrderType.LIMIT and payload.price is not None
+                else game.open_position(
+                    payload.side,
+                    payload.notional,
+                    payload.leverage,
+                    payload.notional_unit,
+                )
             ),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.delete(
+    "/sessions/{session_id}/orders/{order_id}",
+    response_model=PaperSessionSnapshot,
+)
+async def cancel_order(
+    session_id: str,
+    order_id: str,
+    request: Request,
+    user: AuthenticatedUser,
+) -> PaperSessionSnapshot:
+    try:
+        return await _mutate_session(
+            request,
+            _session(request, session_id, user),
+            lambda game: game.cancel_order(order_id),
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error

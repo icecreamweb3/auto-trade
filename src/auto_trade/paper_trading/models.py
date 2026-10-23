@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PositionSide(StrEnum):
@@ -21,6 +21,17 @@ class GameStatus(StrEnum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     LIQUIDATED = "LIQUIDATED"
+
+
+class PaperOrderKind(StrEnum):
+    OPEN = "OPEN"
+    CLOSE = "CLOSE"
+
+
+class PaperOrderType(StrEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP_MARKET = "STOP_MARKET"
 
 
 class PaperCandle(BaseModel):
@@ -68,6 +79,19 @@ class PaperTrade(BaseModel):
     exit_reason: str
 
 
+class PaperPendingOrder(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    order_id: str
+    order_kind: PaperOrderKind
+    order_type: PaperOrderType
+    position_side: PositionSide
+    price: float
+    quantity: float
+    leverage: int
+    created_at: datetime
+
+
 class PaperSessionCreate(BaseModel):
     symbol: str = Field(min_length=1, max_length=32)
     interval_seconds: int
@@ -80,6 +104,16 @@ class PaperOrderCreate(BaseModel):
     notional: float = Field(gt=0)
     notional_unit: NotionalUnit = NotionalUnit.USDT
     leverage: int = Field(default=100, ge=1, le=100)
+    order_type: PaperOrderType = PaperOrderType.MARKET
+    price: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def require_limit_price(self) -> PaperOrderCreate:
+        if self.order_type is PaperOrderType.STOP_MARKET:
+            raise ValueError("开仓委托只支持市价或限价")
+        if self.order_type is PaperOrderType.LIMIT and self.price is None:
+            raise ValueError("限价委托必须填写价格")
+        return self
 
 
 class PaperRiskUpdate(BaseModel):
@@ -114,6 +148,7 @@ class PaperSessionSnapshot(BaseModel):
     anchored_price_change: float | None = None
     anchored_price_change_percent: float | None = None
     position: PaperPosition | None = None
+    pending_orders: tuple[PaperPendingOrder, ...] = ()
     trades: tuple[PaperTrade, ...] = ()
     message: str | None = None
 

@@ -8,6 +8,9 @@ from auto_trade.paper_trading.models import (
     GameStatus,
     NotionalUnit,
     PaperCandle,
+    PaperOrderKind,
+    PaperOrderType,
+    PaperPendingOrder,
     PaperPosition,
     PaperSessionSnapshot,
     PaperTrade,
@@ -38,7 +41,22 @@ class OpenPosition:
     opened_at: datetime
     take_profit_price: float | None = None
     take_profit_quantity: float | None = None
+    take_profit_order_id: str | None = None
+    take_profit_created_at: datetime | None = None
     stop_loss_price: float | None = None
+    stop_loss_order_id: str | None = None
+    stop_loss_created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class PendingOpenOrder:
+    order_id: str
+    side: PositionSide
+    leverage: int
+    margin: float
+    quantity: float
+    price: float
+    created_at: datetime
 
 
 @dataclass(slots=True)
@@ -55,6 +73,7 @@ class PaperSession:
     balance: float = STARTING_BALANCE
     index: int = 0
     position: OpenPosition | None = None
+    pending_open_order: PendingOpenOrder | None = None
     trades: list[PaperTrade] = field(default_factory=list)
     message: str | None = None
 
@@ -69,12 +88,69 @@ class PaperSession:
             raise ValueError("本轮游戏已经结束, 请重新开始")
         if self.position is not None:
             raise ValueError("当前已有持仓, 请先平仓")
+        if self.pending_open_order is not None:
+            raise ValueError("当前已有开仓限价委托, 请先撤单")
         if leverage < 1 or leverage > 100:
             raise ValueError("杠杆倍数必须在 1 到 100 之间")
         if notional <= 0:
             raise ValueError("名义下单价值必须大于 0")
-        candle = self.current_candle
-        entry_price = candle.close_price
+        entry_price = self.current_candle.close_price
+        return self._open_position_at_price(
+            side,
+            notional,
+            leverage,
+            notional_unit,
+            entry_price,
+        )
+
+    def place_limit_open_order(
+        self,
+        side: PositionSide,
+        notional: float,
+        leverage: int,
+        price: float,
+        notional_unit: NotionalUnit = NotionalUnit.USDT,
+    ) -> PaperSessionSnapshot:
+        if self.status in (GameStatus.COMPLETED, GameStatus.LIQUIDATED):
+            raise ValueError("本轮游戏已经结束, 请重新开始")
+        if self.position is not None:
+            raise ValueError("当前已有持仓, 请先平仓")
+        if self.pending_open_order is not None:
+            raise ValueError("当前已有开仓限价委托, 请先撤单")
+        if leverage < 1 or leverage > 100:
+            raise ValueError("杠杆倍数必须在 1 到 100 之间")
+        if notional <= 0:
+            raise ValueError("名义下单价值必须大于 0")
+        mark_price = self.current_candle.close_price
+        if side is PositionSide.LONG and price >= mark_price:
+            raise ValueError("开多限价必须低于当前价格")
+        if side is PositionSide.SHORT and price <= mark_price:
+            raise ValueError("开空限价必须高于当前价格")
+        quantity = notional / price if notional_unit is NotionalUnit.USDT else notional
+        margin = quantity * price / leverage
+        if margin > self.balance:
+            raise ValueError("名义下单价值所需保证金不能超过可用余额")
+        self.pending_open_order = PendingOpenOrder(
+            order_id=str(uuid4()),
+            side=side,
+            leverage=leverage,
+            margin=margin,
+            quantity=quantity,
+            price=price,
+            created_at=self.current_candle.close_time,
+        )
+        self.status = GameStatus.RUNNING
+        self.message = f"已提交开{side.value}限价委托 {price:.2f}"
+        return self.snapshot()
+
+    def _open_position_at_price(
+        self,
+        side: PositionSide,
+        notional: float,
+        leverage: int,
+        notional_unit: NotionalUnit,
+        entry_price: float,
+    ) -> PaperSessionSnapshot:
         quantity = notional / entry_price if notional_unit is NotionalUnit.USDT else notional
         notional_usdt = quantity * entry_price
         margin = notional_usdt / leverage
@@ -92,7 +168,7 @@ class PaperSession:
                 quantity,
                 self.balance,
             ),
-            opened_at=candle.close_time,
+            opened_at=self.current_candle.close_time,
         )
         self.status = GameStatus.RUNNING
         self.message = (
@@ -100,6 +176,27 @@ class PaperSession:
             f"名义价值 {notional_usdt:.2f} USDT"
         )
         return self.snapshot()
+
+    def cancel_order(self, order_id: str) -> PaperSessionSnapshot:
+        if self.pending_open_order is not None and self.pending_open_order.order_id == order_id:
+            self.pending_open_order = None
+            self.message = "开仓限价委托已取消"
+            return self.snapshot()
+        position = self.position
+        if position is not None and position.take_profit_order_id == order_id:
+            position.take_profit_price = None
+            position.take_profit_quantity = None
+            position.take_profit_order_id = None
+            position.take_profit_created_at = None
+            self.message = "止盈限价委托已取消"
+            return self.snapshot()
+        if position is not None and position.stop_loss_order_id == order_id:
+            position.stop_loss_price = None
+            position.stop_loss_order_id = None
+            position.stop_loss_created_at = None
+            self.message = "止损委托已取消"
+            return self.snapshot()
+        raise ValueError("当前委托不存在或已成交")
 
     def close_position(
         self,
@@ -150,7 +247,15 @@ class PaperSession:
         replacing_take_profit = position.take_profit_price is not None
         position.take_profit_price = take_profit_price
         position.take_profit_quantity = take_profit_quantity
+        position.take_profit_order_id = str(uuid4()) if take_profit_price is not None else None
+        position.take_profit_created_at = (
+            self.current_candle.close_time if take_profit_price is not None else None
+        )
         position.stop_loss_price = stop_loss_price
+        position.stop_loss_order_id = str(uuid4()) if stop_loss_price is not None else None
+        position.stop_loss_created_at = (
+            self.current_candle.close_time if stop_loss_price is not None else None
+        )
         self.message = (
             "已取消原止盈委托, 并创建最新止盈委托"
             if replacing_take_profit and take_profit_price is not None
@@ -168,6 +273,24 @@ class PaperSession:
         self.index += 1
         self.status = GameStatus.RUNNING
         candle = self.current_candle
+        pending_open_order = self.pending_open_order
+        if pending_open_order is not None:
+            order_touched = (
+                candle.low_price <= pending_open_order.price
+                if pending_open_order.side is PositionSide.LONG
+                else candle.high_price >= pending_open_order.price
+            )
+            if order_touched:
+                self.pending_open_order = None
+                self._open_position_at_price(
+                    pending_open_order.side,
+                    pending_open_order.quantity,
+                    pending_open_order.leverage,
+                    NotionalUnit.BASE,
+                    pending_open_order.price,
+                )
+                self.message = f"开仓限价委托已按 {pending_open_order.price:.2f} 成交"
+                return self.snapshot()
         position = self.position
         if position is not None:
             stop_price = position.stop_loss_price
@@ -254,6 +377,51 @@ class PaperSession:
                 return_on_margin_percent=unrealized_pnl / self.position.margin * 100,
             )
         locked_margin = self.position.margin if self.position is not None else 0.0
+        reserved_margin = (
+            self.pending_open_order.margin
+            if self.pending_open_order is not None
+            else 0.0
+        )
+        pending_orders: list[PaperPendingOrder] = []
+        if self.pending_open_order is not None:
+            pending_orders.append(
+                PaperPendingOrder(
+                    order_id=self.pending_open_order.order_id,
+                    order_kind=PaperOrderKind.OPEN,
+                    order_type=PaperOrderType.LIMIT,
+                    position_side=self.pending_open_order.side,
+                    price=self.pending_open_order.price,
+                    quantity=self.pending_open_order.quantity,
+                    leverage=self.pending_open_order.leverage,
+                    created_at=self.pending_open_order.created_at,
+                )
+            )
+        if self.position is not None and self.position.take_profit_price is not None:
+            pending_orders.append(
+                PaperPendingOrder(
+                    order_id=self.position.take_profit_order_id or "take-profit",
+                    order_kind=PaperOrderKind.CLOSE,
+                    order_type=PaperOrderType.LIMIT,
+                    position_side=self.position.side,
+                    price=self.position.take_profit_price,
+                    quantity=self.position.take_profit_quantity or self.position.quantity,
+                    leverage=self.position.leverage,
+                    created_at=self.position.take_profit_created_at or self.position.opened_at,
+                )
+            )
+        if self.position is not None and self.position.stop_loss_price is not None:
+            pending_orders.append(
+                PaperPendingOrder(
+                    order_id=self.position.stop_loss_order_id or "stop-loss",
+                    order_kind=PaperOrderKind.CLOSE,
+                    order_type=PaperOrderType.STOP_MARKET,
+                    position_side=self.position.side,
+                    price=self.position.stop_loss_price,
+                    quantity=self.position.quantity,
+                    leverage=self.position.leverage,
+                    created_at=self.position.stop_loss_created_at or self.position.opened_at,
+                )
+            )
         return PaperSessionSnapshot(
             session_id=self.session_id,
             symbol=self.symbol,
@@ -263,7 +431,7 @@ class PaperSession:
             status=self.status,
             starting_balance=STARTING_BALANCE,
             balance=self.balance,
-            available_balance=max(0.0, self.balance - locked_margin),
+            available_balance=max(0.0, self.balance - locked_margin - reserved_margin),
             equity=max(0.0, self.balance + unrealized_pnl),
             realized_pnl=self.balance - STARTING_BALANCE,
             revealed_count=self.index + 1,
@@ -274,6 +442,7 @@ class PaperSession:
             anchored_price_change=anchored_change,
             anchored_price_change_percent=anchored_change_percent,
             position=position,
+            pending_orders=tuple(pending_orders),
             trades=tuple(self.trades),
             message=self.message,
         )
@@ -306,6 +475,7 @@ class PaperSession:
         return change, change / reference_price * 100
 
     def _complete(self) -> None:
+        self.pending_open_order = None
         if self.position is not None:
             self._settle_position(self.current_candle.close_price, "RANGE_END")
         self.status = GameStatus.COMPLETED
@@ -356,6 +526,8 @@ class PaperSession:
         position.margin -= closed_margin
         position.take_profit_price = None
         position.take_profit_quantity = None
+        position.take_profit_order_id = None
+        position.take_profit_created_at = None
         position.liquidation_price = liquidation_price(
             position.side,
             position.entry_price,

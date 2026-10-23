@@ -148,6 +148,49 @@ def test_base_asset_notional_uses_close_price_and_requested_quantity() -> None:
     assert opened.available_balance == pytest.approx(997.5)
 
 
+def test_limit_open_order_is_listed_reserves_margin_and_fills_when_touched() -> None:
+    game = session(
+        candle(0, close=100),
+        candle(1, close=97, high=101, low=94),
+        candle(2, close=98),
+    )
+
+    placed = game.place_limit_open_order(
+        PositionSide.LONG,
+        notional=1000,
+        leverage=10,
+        price=95,
+    )
+    filled = game.advance()
+
+    assert placed.position is None
+    assert placed.available_balance == pytest.approx(900)
+    assert len(placed.pending_orders) == 1
+    assert placed.pending_orders[0].order_kind.value == "OPEN"
+    assert placed.pending_orders[0].price == 95
+    assert filled.pending_orders == ()
+    assert filled.position is not None
+    assert filled.position.entry_price == 95
+    assert filled.position.quantity == pytest.approx(1000 / 95)
+
+
+def test_limit_open_order_can_be_cancelled_before_fill() -> None:
+    game = session(candle(0, close=100), candle(1, close=99, low=98))
+    placed = game.place_limit_open_order(
+        PositionSide.LONG,
+        notional=100,
+        leverage=2,
+        price=95,
+    )
+
+    cancelled = game.cancel_order(placed.pending_orders[0].order_id)
+    advanced = game.advance()
+
+    assert cancelled.pending_orders == ()
+    assert cancelled.available_balance == 1000
+    assert advanced.position is None
+
+
 def test_session_uses_persisted_account_balance_without_resetting_it() -> None:
     game = session(candle(0), candle(1, close=110))
     game.balance = 1250
@@ -241,10 +284,28 @@ def test_take_profit_closes_position_at_trigger_price() -> None:
     assert configured.position is not None
     assert configured.position.take_profit_price == 110
     assert configured.position.stop_loss_price == 95
+    assert [order.order_type.value for order in configured.pending_orders] == [
+        "LIMIT",
+        "STOP_MARKET",
+    ]
     assert result.position is None
     assert result.balance == pytest.approx(1100)
     assert result.trades[0].exit_price == 110
     assert result.trades[0].exit_reason == "TAKE_PROFIT"
+
+
+def test_take_profit_pending_order_can_be_cancelled() -> None:
+    game = session(candle(0), candle(1, close=105, high=111), candle(2))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    configured = game.set_risk_orders(take_profit_price=110, stop_loss_price=None)
+
+    cancelled = game.cancel_order(configured.pending_orders[0].order_id)
+    advanced = game.advance()
+
+    assert cancelled.position is not None
+    assert cancelled.position.take_profit_price is None
+    assert cancelled.pending_orders == ()
+    assert advanced.position is not None
 
 
 def test_replacing_take_profit_cancels_old_order_and_uses_latest_order() -> None:
