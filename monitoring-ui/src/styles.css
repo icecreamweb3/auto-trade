@@ -87,6 +87,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .storage-table td:nth-child(2) { color: #8da4ba; }
 .alert, .loading { margin: 0 0 18px; padding: 13px 16px; border: 1px solid #3b5870; border-radius: 10px; color: #b8cce0; background: #102337; }
 .alert-critical { color: #ffb0b9; border-color: #7a3540; background: #351920; }
+.paper-stop-loss-notice { color: #ffd58a; border-color: #755a27; background: #302714; }
 .data-range-badge { min-width: 280px; border: 1px solid #274258; border-radius: 12px; padding: 12px 15px; background: #0d1b2a; }
 .data-range-badge span { display: block; margin-bottom: 5px; color: #6f879e; font-size: 11px; text-transform: uppercase; }
 .data-range-badge strong { color: #c8d7e6; font-size: 13px; }

@@ -127,6 +127,19 @@ class PaperSession:
         candle = self.current_candle
         position = self.position
         if position is not None:
+            stop_price = position.stop_loss_price
+            stop_touched = (
+                stop_price is not None
+                and (
+                    candle.low_price <= stop_price
+                    if position.side is PositionSide.LONG
+                    else candle.high_price >= stop_price
+                )
+            )
+            if stop_touched and stop_price is not None:
+                self._settle_position(stop_price, "STOP_LOSS")
+                self.message = "价格触及止损价, 持仓已平仓, 可继续交易"
+                return self.snapshot()
             touched = (
                 candle.low_price <= position.liquidation_price
                 if position.side is PositionSide.LONG
@@ -140,19 +153,6 @@ class PaperSession:
                 )
                 self.status = GameStatus.LIQUIDATED
                 self.message = "价格触及强平价, 本轮游戏结束"
-                return self.snapshot()
-            stop_price = position.stop_loss_price
-            stop_touched = (
-                stop_price is not None
-                and (
-                    candle.low_price <= stop_price
-                    if position.side is PositionSide.LONG
-                    else candle.high_price >= stop_price
-                )
-            )
-            if stop_touched and stop_price is not None:
-                self._settle_position(stop_price, "STOP_LOSS")
-                self.message = "价格触及止损价, 持仓已平仓"
                 return self.snapshot()
             take_profit_price = position.take_profit_price
             take_profit_touched = (

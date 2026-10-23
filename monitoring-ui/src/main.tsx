@@ -2427,6 +2427,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       <p className="paper-random-hint">随机早盘范围：UTC+8 周一至周五 21:30—次日 04:30；设置面板用于指定交易对、K 线级别和自定义时间。</p>
     </section>}
     {error && <div className="alert alert-critical">{error}</div>}
+    {snapshot?.message?.startsWith("价格触及止损价") && snapshot.trades[snapshot.trades.length - 1]?.exit_reason === "STOP_LOSS" && <div className="alert paper-stop-loss-notice">{snapshot.message}</div>}
     {!snapshot ? <section className="panel paper-empty"><strong>准备开始</strong><p>载入后只会显示第一根 K 线，后续行情不会提前暴露。</p></section> : <>
       <section className="paper-workspace">
         <div className="paper-main-column">

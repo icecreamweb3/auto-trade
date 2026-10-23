@@ -166,6 +166,32 @@ def test_stop_loss_has_conservative_priority_when_both_triggers_touch() -> None:
     assert result.trades[0].exit_reason == "STOP_LOSS"
 
 
+def test_stop_loss_prevents_liquidation_and_session_can_continue() -> None:
+    game = session(
+        candle(0),
+        candle(1, close=92, low=89),
+        candle(2, close=98),
+        candle(3, close=101),
+    )
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    game.set_risk_orders(take_profit_price=None, stop_loss_price=95)
+
+    stopped = game.advance()
+
+    assert stopped.status is GameStatus.RUNNING
+    assert stopped.position is None
+    assert stopped.balance == pytest.approx(950)
+    assert stopped.trades[0].exit_reason == "STOP_LOSS"
+    assert stopped.message == "价格触及止损价, 持仓已平仓, 可继续交易"
+
+    continued = game.advance()
+    reopened = game.open_position(PositionSide.LONG, notional=100, leverage=2)
+
+    assert continued.status is GameStatus.RUNNING
+    assert continued.revealed_count == 3
+    assert reopened.position is not None
+
+
 def test_rejects_risk_prices_on_wrong_side_of_current_market() -> None:
     game = session(candle(0), candle(1))
     game.open_position(PositionSide.SHORT, notional=100, leverage=2)
