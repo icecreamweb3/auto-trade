@@ -40,6 +40,28 @@ def test_aggregate_15m_requires_all_three_source_bars() -> None:
     assert bars[0].source_bar_count == 3
 
 
+def test_aggregate_1h_requires_all_twelve_source_bars() -> None:
+    start = datetime(2026, 10, 18, tzinfo=UTC)
+    rows = [
+        {
+            "open_time": start + timedelta(minutes=offset),
+            "close_time": start + timedelta(minutes=offset + 5),
+            "open_price": 100 + offset,
+            "high_price": 102 + offset,
+            "low_price": 99 + offset,
+            "close_price": 101 + offset,
+        }
+        for offset in range(0, 60, 5)
+    ]
+
+    bars = aggregate_source_bars(rows, 3600)
+
+    assert len(bars) == 1
+    assert bars[0].open_time == start
+    assert bars[0].close_price == Decimal(156)
+    assert bars[0].source_bar_count == 12
+
+
 def test_calculate_indicators_continues_from_persisted_warm_state() -> None:
     start = datetime(2026, 10, 18, tzinfo=UTC)
     bars = (

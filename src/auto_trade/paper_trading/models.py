@@ -109,6 +109,8 @@ class PaperSessionSnapshot(BaseModel):
     revealed_count: int
     total_candles: int
     current_candle: PaperCandle
+    ema20: float | None = None
+    ema240: float | None = None
     anchored_price_change: float | None = None
     anchored_price_change_percent: float | None = None
     position: PaperPosition | None = None

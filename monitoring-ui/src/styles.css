@@ -156,6 +156,9 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-anchor-change em { color: #71899f; font-size: 9px; font-style: normal; letter-spacing: .08em; }
 .paper-anchor-change strong { min-width: 58px; margin: 0; text-align: right; }
 .paper-chart-wrap .chart-drag-hint { margin-left: 0; }
+.paper-ema-legend { display: inline-flex; gap: 12px; }
+.paper-ema-legend span:first-child strong { color: #e84a83; }
+.paper-ema-legend span:last-child strong { color: #35b768; }
 .chart-readout .ema20-label, .chart-summary .ema20-label { color: #a98cff; }
 .chart-readout .ema240-label, .chart-summary .ema240-label { color: #38a34a; }
 .chart-axis-reset { border-color: #29455e; padding: 3px 8px; color: #70cbbb; background: #0b1d2d; font-size: 10px; }

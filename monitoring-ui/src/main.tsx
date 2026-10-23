@@ -5,6 +5,7 @@ import {
   ColorType,
   createChart,
   HistogramSeries,
+  LineSeries,
   LineStyle,
   type IChartApi,
   type IPriceLine,
@@ -216,7 +217,7 @@ interface PaperCandle {
 type PaperCandleReadout = Pick<
   PaperCandle,
   "open_time" | "open_price" | "high_price" | "low_price" | "close_price"
->;
+> & { ema20: number | null; ema240: number | null };
 
 interface PaperPosition {
   side: PaperSide;
@@ -261,11 +262,18 @@ interface PaperSessionSnapshot {
   revealed_count: number;
   total_candles: number;
   current_candle: PaperCandle;
+  ema20: number | null;
+  ema240: number | null;
   anchored_price_change: number | null;
   anchored_price_change_percent: number | null;
   position: PaperPosition | null;
   trades: PaperTrade[];
   message: string | null;
+}
+
+interface PaperChartPoint extends PaperCandle {
+  ema20: number | null;
+  ema240: number | null;
 }
 
 interface PaperMetadata {
@@ -1979,7 +1987,7 @@ function BacktestWorkspace() {
 }
 
 function PaperReplayChart({ candles, position, intervalSeconds, sessionId, anchoredPriceChange, anchoredPriceChangePercent }: {
-  candles: PaperCandle[];
+  candles: PaperChartPoint[];
   position: PaperPosition | null;
   intervalSeconds: number;
   sessionId: string;
@@ -1990,6 +1998,8 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const ema20SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const ema240SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const positionLinesRef = useRef<IPriceLine[]>([]);
   const loadedSessionRef = useRef<string | null>(null);
   const loadedCountRef = useRef(0);
@@ -2055,6 +2065,20 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       lastValueVisible: false,
       priceLineVisible: false,
     });
+    const ema20Series = chart.addSeries(LineSeries, {
+      color: "#e84a83",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const ema240Series = chart.addSeries(LineSeries, {
+      color: "#35b768",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
     volumeSeries.priceScale().applyOptions({ scaleMargins: { top: .84, bottom: 0 } });
     const handlePriceScaleWheel = (event: WheelEvent) => {
       const priceScale = chart.priceScale("right");
@@ -2080,12 +2104,16 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
         setHoveredCandle(null);
         return;
       }
+      const ema20 = param.seriesData.get(ema20Series);
+      const ema240 = param.seriesData.get(ema240Series);
       setHoveredCandle({
         open_time: new Date(param.time * 1000).toISOString(),
         open_price: candle.open,
         high_price: candle.high,
         low_price: candle.low,
         close_price: candle.close,
+        ema20: ema20 && "value" in ema20 ? ema20.value : null,
+        ema240: ema240 && "value" in ema240 ? ema240.value : null,
       });
     };
     const handleVisibleRangeChange = (range: LogicalRange | null) => {
@@ -2098,6 +2126,8 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
+    ema20SeriesRef.current = ema20Series;
+    ema240SeriesRef.current = ema240Series;
     return () => {
       container.removeEventListener("wheel", handlePriceScaleWheel, true);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
@@ -2106,6 +2136,8 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      ema20SeriesRef.current = null;
+      ema240SeriesRef.current = null;
       positionLinesRef.current = [];
       loadedSessionRef.current = null;
       loadedCountRef.current = 0;
@@ -2119,7 +2151,9 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
     const volumeSeries = volumeSeriesRef.current;
-    if (!chart || !candleSeries || !volumeSeries) return;
+    const ema20Series = ema20SeriesRef.current;
+    const ema240Series = ema240SeriesRef.current;
+    if (!chart || !candleSeries || !volumeSeries || !ema20Series || !ema240Series) return;
     const candleData = (point: PaperCandle) => ({
       time: Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp,
       open: point.open_price,
@@ -2132,9 +2166,15 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       value: point.quote_volume,
       color: point.close_price >= point.open_price ? "rgba(14,203,129,.38)" : "rgba(246,70,93,.38)",
     });
+    const emaData = (point: PaperChartPoint, value: number | null) => value === null ? null : ({
+      time: Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp,
+      value,
+    });
     if (loadedSessionRef.current !== sessionId || points.length < loadedCountRef.current) {
       candleSeries.setData(points.map(candleData));
       volumeSeries.setData(points.map(volumeData));
+      ema20Series.setData(points.map((point) => emaData(point, point.ema20)).filter((point) => point !== null));
+      ema240Series.setData(points.map((point) => emaData(point, point.ema240)).filter((point) => point !== null));
       loadedSessionRef.current = sessionId;
       loadedCountRef.current = points.length;
       followingLatestRef.current = true;
@@ -2169,6 +2209,10 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
     for (const point of points.slice(loadedCountRef.current)) {
       candleSeries.update(candleData(point));
       volumeSeries.update(volumeData(point));
+      const ema20 = emaData(point, point.ema20);
+      const ema240 = emaData(point, point.ema240);
+      if (ema20) ema20Series.update(ema20);
+      if (ema240) ema240Series.update(ema240);
     }
     loadedCountRef.current = points.length;
     if (followingLatest && visibleRange) {
@@ -2220,6 +2264,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
         <span>振幅 <strong>{candleAmplitude === null ? "--" : `${candleAmplitude.toFixed(2)}%`}</strong></span>
         <span>涨跌值 <strong className={candleChangeClass}>{candleChange === null ? "--" : `${candleChange >= 0 ? "+" : ""}${formatNumber(candleChange, 2)}`}</strong></span>
       </span></> : <span>载入行情后开始回放</span>}
+      {current && <span className="paper-ema-legend"><span>EMA20 <strong>{current.ema20 === null ? "--" : formatNumber(current.ema20, 2)}</strong></span><span>EMA240 <strong>{current.ema240 === null ? "--" : formatNumber(current.ema240, 2)}</strong></span></span>}
       <span className="paper-anchor-change" title="以当前 UTC+8 交易日 08:00 K 线开盘价为基准"><em>08:00</em>{anchoredPriceChange === null || anchoredPriceChangePercent === null ? <strong>--</strong> : <><strong className={changeClass}>{anchoredPriceChangePercent >= 0 ? "+" : ""}{anchoredPriceChangePercent.toFixed(2)}%</strong><strong className={changeClass}>{anchoredPriceChange >= 0 ? "+" : ""}{formatNumber(anchoredPriceChange, 2)}</strong></>}</span>
       <span className="chart-drag-hint">默认窗口 {Math.min(points.length, visibleCapacity)} 根 · 已揭示 {candles.length} 根</span>
     </div>
@@ -2255,7 +2300,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [replayPresets, setReplayPresets] = useState<PaperReplayPreset[]>(loadPaperReplayPresets);
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
-  const [candles, setCandles] = useState<PaperCandle[]>([]);
+  const [candles, setCandles] = useState<PaperChartPoint[]>([]);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2323,9 +2368,10 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     setSnapshot(next);
     onBalanceChange(next.balance);
     setCandles((current) => {
-      if (reset) return [next.current_candle];
+      const point = { ...next.current_candle, ema20: next.ema20, ema240: next.ema240 };
+      if (reset) return [point];
       const last = current[current.length - 1];
-      return last?.open_time === next.current_candle.open_time ? current : [...current, next.current_candle];
+      return last?.open_time === next.current_candle.open_time ? current : [...current, point];
     });
   }
 

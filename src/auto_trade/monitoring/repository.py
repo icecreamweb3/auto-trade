@@ -1007,9 +1007,46 @@ class MonitoringRepository:
                     },
                 )
             ).mappings().all()
+            ema_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT e.open_time, e.ema20, e.ema240
+                        FROM market.kline_ema_indicators e
+                        JOIN core.instruments i USING (instrument_id)
+                        WHERE upper(i.symbol) = :symbol
+                          AND i.exchange = 'BINANCE'
+                          AND i.market = 'USD_M_FUTURES'
+                          AND i.contract_type = 'PERPETUAL'
+                          AND e.price_type = 'TRADE'
+                          AND e.interval_seconds = :interval_seconds
+                          AND e.open_time >= CAST(:range_start AS timestamptz)
+                          AND e.open_time < CAST(:range_end AS timestamptz)
+                        ORDER BY e.open_time ASC
+                        """
+                    ),
+                    {
+                        "symbol": symbol.strip().upper(),
+                        "interval_seconds": interval_seconds,
+                        "range_start": range_start,
+                        "range_end": range_end,
+                    },
+                )
+            ).mappings().all()
         points = aggregate_kline_rows(
             [cast(Mapping[str, object], row) for row in rows], interval_seconds
         )
+        indicators = {
+            cast(datetime, row["open_time"]): (
+                float(str(row["ema20"])),
+                float(str(row["ema240"])),
+            )
+            for row in ema_rows
+        }
+        for point in points:
+            stored = indicators.get(point.open_time)
+            if stored is not None:
+                point.ema20, point.ema240 = stored
         return tuple(
             point for point in points if point.source_bar_count == source_bars
         )[:limit]

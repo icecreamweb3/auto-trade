@@ -130,11 +130,21 @@ def attach_open_interest(
     )
 
 
-async def _instrument_ids(engine: AsyncEngine) -> tuple[int, ...]:
+async def _instrument_ids(
+    engine: AsyncEngine, symbols: Sequence[str] | None = None
+) -> tuple[int, ...]:
+    normalized_symbols = tuple(
+        symbol.strip().upper() for symbol in symbols or () if symbol.strip()
+    )
+    symbol_filter = (
+        "AND upper(i.symbol) = ANY(CAST(:symbols AS text[]))"
+        if normalized_symbols
+        else ""
+    )
     async with engine.connect() as connection:
         result = await connection.execute(
             text(
-                """
+                f"""
                 SELECT i.instrument_id
                 FROM core.instruments i
                 WHERE EXISTS (
@@ -147,9 +157,11 @@ async def _instrument_ids(engine: AsyncEngine) -> tuple[int, ...]:
                       AND k.is_closed
                       AND k.quality_status = 'VALID'
                 )
+                {symbol_filter}
                 ORDER BY i.instrument_id
                 """
-            )
+            ),
+            {"symbols": list(normalized_symbols)} if normalized_symbols else {},
         )
         return tuple(cast(Sequence[int], result.scalars().all()))
 
@@ -398,10 +410,14 @@ async def _recompute_instrument(
 
 
 async def update_15m_klines(
-    engine: AsyncEngine, *, checked_until: datetime, batch_size: int
+    engine: AsyncEngine,
+    *,
+    checked_until: datetime,
+    batch_size: int,
+    symbols: Sequence[str] | None = None,
 ) -> int:
     updated = 0
-    for instrument_id in await _instrument_ids(engine):
+    for instrument_id in await _instrument_ids(engine, symbols):
         try:
             async with engine.begin() as connection:
                 count = await _recompute_instrument(

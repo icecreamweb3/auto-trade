@@ -177,10 +177,14 @@ async def _create_session(
             range_end,
         )
         raise HTTPException(status_code=503, detail="paper trading data unavailable") from error
-    candles = tuple(
-        PaperCandle.model_validate(row)
-        for row in rows
-        if row.open_time >= range_start
+    visible_rows = tuple(row for row in rows if row.open_time >= range_start)
+    candles = tuple(PaperCandle.model_validate(row) for row in visible_rows)
+    ema_values = tuple(
+        (
+            row.ema20 if row.ema20 > 0 else None,
+            row.ema240 if row.ema240 > 0 else None,
+        )
+        for row in visible_rows
     )
     if not candles:
         raise HTTPException(status_code=404, detail="所选时间范围没有可用 K 线")
@@ -188,22 +192,17 @@ async def _create_session(
         raise HTTPException(status_code=422, detail=f"所选范围不能超过 {MAX_CANDLES} 根 K 线")
 
     lookback_candles: tuple[PaperCandle, ...] = ()
-    reference_start = utc8_price_anchor(range_start)
-    reference_end = reference_start + timedelta(seconds=payload.interval_seconds)
-    if reference_start < range_start:
-        reference_limit = min(
-            MAX_CANDLES,
-            int((reference_end - reference_start).total_seconds())
-            // payload.interval_seconds
-            + 1,
-        )
+    anchor_time = utc8_price_anchor(range_start)
+    reference_start = anchor_time - timedelta(seconds=payload.interval_seconds)
+    reference_end = anchor_time + timedelta(seconds=payload.interval_seconds)
+    if anchor_time < range_start:
         try:
             reference_rows = await repository.paper_trader_klines(
                 symbol=symbol,
                 range_start=reference_start,
                 range_end=reference_end,
                 interval_seconds=payload.interval_seconds,
-                limit=reference_limit,
+                limit=2,
             )
             lookback_candles = tuple(
                 PaperCandle.model_validate(row) for row in reference_rows
@@ -229,6 +228,7 @@ async def _create_session(
         range_start=range_start,
         range_end=range_end,
         lookback_candles=lookback_candles,
+        ema_values=ema_values,
         balance=account.balance,
     )
     sessions = _sessions(request)

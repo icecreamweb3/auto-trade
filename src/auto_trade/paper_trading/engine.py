@@ -49,6 +49,7 @@ class PaperSession:
     range_start: datetime
     range_end: datetime
     lookback_candles: tuple[PaperCandle, ...] = ()
+    ema_values: tuple[tuple[float | None, float | None], ...] = ()
     session_id: str = field(default_factory=lambda: str(uuid4()))
     status: GameStatus = GameStatus.READY
     balance: float = STARTING_BALANCE
@@ -229,6 +230,11 @@ class PaperSession:
     def snapshot(self) -> PaperSessionSnapshot:
         mark_price = self.current_candle.close_price
         anchored_change, anchored_change_percent = self._anchored_price_change()
+        ema20, ema240 = (
+            self.ema_values[self.index]
+            if self.index < len(self.ema_values)
+            else (None, None)
+        )
         position = None
         unrealized_pnl = 0.0
         if self.position is not None:
@@ -263,6 +269,8 @@ class PaperSession:
             revealed_count=self.index + 1,
             total_candles=len(self.candles),
             current_candle=self.current_candle,
+            ema20=ema20,
+            ema240=ema240,
             anchored_price_change=anchored_change,
             anchored_price_change_percent=anchored_change_percent,
             position=position,
@@ -281,10 +289,21 @@ class PaperSession:
             ),
             None,
         )
-        if reference is None or reference.open_price <= 0:
+        reference_price = reference.open_price if reference is not None else None
+        if reference_price is None:
+            previous = next(
+                (
+                    candle
+                    for candle in reversed(history)
+                    if candle.close_time == anchor_time
+                ),
+                None,
+            )
+            reference_price = previous.close_price if previous is not None else None
+        if reference_price is None or reference_price <= 0:
             return None, None
-        change = self.current_candle.close_price - reference.open_price
-        return change, change / reference.open_price * 100
+        change = self.current_candle.close_price - reference_price
+        return change, change / reference_price * 100
 
     def _complete(self) -> None:
         if self.position is not None:

@@ -637,3 +637,47 @@ async def test_kline_history_returns_older_page_and_has_more() -> None:
     assert "ORDER BY k.open_time DESC" in statement
     assert parameters["before"] == before
     assert parameters["raw_limit"] == 3
+
+
+async def test_paper_trader_klines_attach_only_precomputed_ema() -> None:
+    start = datetime(2026, 10, 18, tzinfo=UTC)
+    kline_rows = [
+        {
+            "open_time": start + timedelta(minutes=offset),
+            "close_time": start + timedelta(minutes=offset + 5),
+            "open_price": 100 + offset,
+            "high_price": 102 + offset,
+            "low_price": 99 + offset,
+            "close_price": 101 + offset,
+            "base_volume": 10,
+            "quote_volume": 100,
+        }
+        for offset in (0, 5, 10)
+    ]
+    kline_result = MagicMock()
+    kline_result.mappings.return_value.all.return_value = kline_rows
+    ema_result = MagicMock()
+    ema_result.mappings.return_value.all.return_value = [
+        {"open_time": start, "ema20": 103, "ema240": 98}
+    ]
+    connection = MagicMock()
+    connection.execute = AsyncMock(side_effect=[kline_result, ema_result])
+    context = AsyncMock()
+    context.__aenter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = context
+
+    points = await MonitoringRepository(engine).paper_trader_klines(
+        symbol="BTCUSDT",
+        range_start=start,
+        range_end=start + timedelta(minutes=15),
+        interval_seconds=900,
+        limit=1,
+    )
+
+    assert len(points) == 1
+    assert points[0].ema20 == 103
+    assert points[0].ema240 == 98
+    assert "market.kline_ema_indicators" in str(
+        connection.execute.await_args_list[1].args[0]
+    )

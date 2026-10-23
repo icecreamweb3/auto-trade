@@ -19,8 +19,8 @@ from auto_trade.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
-CALCULATION_VERSION = "ema-close-v2-change-amplitude"
-SUPPORTED_INTERVALS = (300, 900)
+CALCULATION_VERSION = "ema-close-v3-1h"
+SUPPORTED_INTERVALS = (300, 900, 3600)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +56,7 @@ def aggregate_source_bars(
     rows: Sequence[Mapping[str, object]], interval_seconds: int
 ) -> tuple[SourceBar, ...]:
     if interval_seconds not in SUPPORTED_INTERVALS:
-        raise ValueError("interval_seconds must be 300 or 900")
+        raise ValueError("interval_seconds must be 300, 900 or 3600")
 
     if interval_seconds == 300:
         return tuple(
@@ -79,13 +79,14 @@ def aggregate_source_bars(
 
     bars: list[SourceBar] = []
     five_minutes = 300
+    source_bar_count = interval_seconds // five_minutes
     for bucket, bucket_rows in sorted(buckets.items()):
         expected_times = {
             datetime.fromtimestamp(bucket.timestamp() + offset, tz=UTC)
-            for offset in (0, five_minutes, five_minutes * 2)
+            for offset in range(0, interval_seconds, five_minutes)
         }
         actual_times = {cast(datetime, row["open_time"]) for row in bucket_rows}
-        if len(bucket_rows) != 3 or actual_times != expected_times:
+        if len(bucket_rows) != source_bar_count or actual_times != expected_times:
             continue
         last = bucket_rows[-1]
         bars.append(
@@ -96,7 +97,7 @@ def aggregate_source_bars(
                 high_price=max(Decimal(str(row["high_price"])) for row in bucket_rows),
                 low_price=min(Decimal(str(row["low_price"])) for row in bucket_rows),
                 close_price=Decimal(str(last["close_price"])),
-                source_bar_count=3,
+                source_bar_count=source_bar_count,
             )
         )
     return tuple(bars)
@@ -139,11 +140,21 @@ def calculate_indicators(
     return tuple(indicators)
 
 
-async def _instrument_ids(engine: AsyncEngine) -> tuple[int, ...]:
+async def _instrument_ids(
+    engine: AsyncEngine, symbols: Sequence[str] | None = None
+) -> tuple[int, ...]:
+    normalized_symbols = tuple(
+        symbol.strip().upper() for symbol in symbols or () if symbol.strip()
+    )
+    symbol_filter = (
+        "AND upper(i.symbol) = ANY(CAST(:symbols AS text[]))"
+        if normalized_symbols
+        else ""
+    )
     async with engine.connect() as connection:
         result = await connection.execute(
             text(
-                """
+                f"""
                 SELECT i.instrument_id
                 FROM core.instruments i
                 WHERE EXISTS (
@@ -156,9 +167,11 @@ async def _instrument_ids(engine: AsyncEngine) -> tuple[int, ...]:
                       AND k.is_closed
                       AND k.quality_status = 'VALID'
                 )
+                {symbol_filter}
                 ORDER BY i.instrument_id
                 """
-            )
+            ),
+            {"symbols": list(normalized_symbols)} if normalized_symbols else {},
         )
         return tuple(cast(Sequence[int], result.scalars().all()))
 
@@ -395,10 +408,14 @@ async def _save_checkpoint(
     )
 
 
-async def update_ema_indicators(engine: AsyncEngine, settings: Settings) -> int:
+async def update_ema_indicators(
+    engine: AsyncEngine,
+    settings: Settings,
+    symbols: Sequence[str] | None = None,
+) -> int:
     checked_until = datetime.now(UTC)
     updated = 0
-    for instrument_id in await _instrument_ids(engine):
+    for instrument_id in await _instrument_ids(engine, symbols):
         for interval_seconds in SUPPORTED_INTERVALS:
             try:
                 async with engine.begin() as connection:
@@ -447,15 +464,23 @@ async def run_forever(settings: Settings) -> None:
         await engine.dispose()
 
 
-async def run_once(settings: Settings) -> tuple[int, int]:
+async def run_once(
+    settings: Settings,
+    symbols: Sequence[str] | None = None,
+    *,
+    update_derived_15m: bool = True,
+) -> tuple[int, int]:
     engine = create_database_engine(settings)
     try:
-        kline_rows = await update_15m_klines(
-            engine,
-            checked_until=datetime.now(UTC),
-            batch_size=settings.ema_indicator_write_batch_size,
-        )
-        ema_rows = await update_ema_indicators(engine, settings)
+        kline_rows = 0
+        if update_derived_15m:
+            kline_rows = await update_15m_klines(
+                engine,
+                checked_until=datetime.now(UTC),
+                batch_size=settings.ema_indicator_write_batch_size,
+                symbols=symbols,
+            )
+        ema_rows = await update_ema_indicators(engine, settings, symbols)
         return kline_rows, ema_rows
     finally:
         await engine.dispose()
@@ -464,11 +489,23 @@ async def run_once(settings: Settings) -> tuple[int, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Precompute EMA and K-line indicators")
     parser.add_argument("mode", choices=("run", "once"), nargs="?", default="run")
+    parser.add_argument("--symbols", nargs="+", help="Only update selected symbols")
+    parser.add_argument(
+        "--ema-only",
+        action="store_true",
+        help="Skip the separate persisted 15-minute K-line derivation step",
+    )
     args = parser.parse_args()
     settings = get_settings()
     configure_logging(settings, "ema-indicators")
     if args.mode == "once":
-        kline_rows, ema_rows = asyncio.run(run_once(settings))
+        kline_rows, ema_rows = asyncio.run(
+            run_once(
+                settings,
+                args.symbols,
+                update_derived_15m=not args.ema_only,
+            )
+        )
         logger.info(
             "Indicator one-shot completed kline_15m_rows=%d ema_rows=%d",
             kline_rows,

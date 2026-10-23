@@ -198,14 +198,37 @@ def test_snapshot_resets_anchored_change_at_next_utc8_0800() -> None:
     assert after_reset.anchored_price_change_percent == pytest.approx(1)
 
 
+def test_snapshot_uses_previous_close_when_utc8_0800_candle_is_missing() -> None:
+    game = session(candle(12, close=110), candle(13, close=115))
+    game.lookback_candles = (candle(-1, close=90),)
+
+    result = game.snapshot()
+
+    assert result.anchored_price_change == pytest.approx(20)
+    assert result.anchored_price_change_percent == pytest.approx(22.2222222)
+
+
 def test_snapshot_omits_anchored_change_when_reference_candle_is_missing() -> None:
     game = session(candle(12), candle(13))
-    game.lookback_candles = (candle(-1, close=80),)
+    game.lookback_candles = (candle(-2, close=80),)
 
     result = game.snapshot()
 
     assert result.anchored_price_change is None
     assert result.anchored_price_change_percent is None
+
+
+def test_snapshot_uses_precomputed_ema_for_current_revealed_candle() -> None:
+    game = session(candle(0, close=120), candle(1, close=140))
+    game.ema_values = ((110.0, 90.0), (120.0, 95.0))
+
+    initial = game.snapshot()
+    advanced = game.advance()
+
+    assert initial.ema20 == 110
+    assert initial.ema240 == 90
+    assert advanced.ema20 == 120
+    assert advanced.ema240 == 95
 
 
 def test_take_profit_closes_position_at_trigger_price() -> None:
