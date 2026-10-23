@@ -270,11 +270,11 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-chart-wrap { min-width: 0; }
 .paper-lightweight-chart { width: 100%; height: 650px; min-width: 760px; overflow: hidden; border: 1px solid #173047; border-radius: 11px; background: #071522; }
 .paper-order-panel { position: sticky; top: 74px; }
-.paper-order-panel .panel-heading > strong { color: #e8f3ff; font-size: 23px; }
-.paper-order-form { display: grid; gap: 13px; margin-top: 20px; }
-.paper-open-position-notice { display: grid; gap: 4px; border: 1px solid #31675e; border-radius: 9px; padding: 10px 12px; background: #0b2825; }
-.paper-open-position-notice strong { color: #71e1cf; font-size: 12px; }
-.paper-open-position-notice span { color: #84a79f; font-size: 10px; }
+.paper-order-tabs { display: grid; grid-template-columns: 1fr 1fr; margin: -7px -4px 17px; border-bottom: 1px solid #29455e; }
+.paper-order-tabs button { height: 47px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: #8299ae; background: transparent; font-size: 14px; font-weight: 900; }
+.paper-order-tabs button.active { color: #58d6c2; border-bottom-color: #58d6c2; }
+.paper-order-tabs button:hover { color: #d8e8fa; background: rgba(23, 48, 74, .35); }
+.paper-order-form { display: grid; gap: 13px; }
 .paper-market-price { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; min-height: 43px; border: 1px solid #29455e; border-radius: 9px; padding: 9px 12px; background: #0b1a2a; }
 .paper-market-price span { color: #8da4ba; font-size: 11px; font-weight: 700; }
 .paper-market-price strong { color: #e9f1ff; font-size: 15px; font-variant-numeric: tabular-nums; }
@@ -300,6 +300,16 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-short-button { color: #24070c; border-color: #ff7182; background: #ff7182; font-weight: 900; }
 .paper-short-button:hover { background: #ff93a0; }
 .paper-order-capacity { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid #1b3348; }
+.paper-close-form { display: grid; gap: 15px; }
+.paper-close-summary { display: grid; gap: 10px; margin: 0; border: 1px solid #29455e; border-radius: 9px; padding: 13px; background: #091725; }
+.paper-close-summary div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.paper-close-summary dt, .paper-close-summary dd { margin: 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+.paper-close-summary dt { color: #8da4ba; }
+.paper-close-summary dd { color: #e9f1ff; }
+.paper-close-all { width: 100%; color: #ffdce1; border-color: #d4485c; background: #9d2639; font-weight: 900; }
+.paper-close-all:hover { background: #bd3047; }
+.paper-close-form > small { color: #7891a8; font-size: 11px; line-height: 1.5; }
+.paper-close-empty { display: grid; min-height: 170px; place-items: center; color: #667f95; border: 1px dashed #29455e; border-radius: 9px; font-size: 12px; }
 .paper-order-account-wrap { margin-top: 20px; padding-top: 16px; border-top: 1px solid #1b3348; }
 .paper-order-account-wrap > span { color: #6f879e; font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .paper-order-account { display: grid; gap: 7px; margin: 0; }
@@ -318,17 +328,17 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-trade-log > p { margin: 12px 0 0; color: #637c92; font-size: 11px; }
 .paper-trade-log > div { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 10px 0; border-bottom: 1px solid #172c40; }
 .paper-trade-log small { font-size: 10px; }
-.paper-position-manager { width: 100%; margin: 0; padding: 0; overflow: hidden; border-color: #363b41; border-radius: 4px; background: #191c20; }
-.paper-position-tabs { display: flex; align-items: center; gap: 4px; min-height: 40px; padding: 0 8px; border-bottom: 1px solid #3a3f45; background: #202327; }
+.paper-position-manager { width: 100%; margin: 0; padding: 0; overflow: hidden; border-color: #1d3348; border-radius: 4px; background: rgba(10, 24, 39, .9); }
+.paper-position-tabs { display: flex; align-items: center; gap: 4px; min-height: 40px; padding: 0 8px; border-bottom: 1px solid #21384b; background: transparent; }
 .paper-position-tabs button { height: 40px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 0 12px; color: #8e969f; background: transparent; font-size: 12px; font-weight: 700; }
 .paper-position-tabs button.active { color: #58d6c2; border-bottom-color: #58d6c2; }
 .paper-position-tabs button span { margin-left: 4px; color: #678197; }
 .paper-position-table-wrap { width: 100%; overflow-x: auto; }
 .paper-position-table { width: 100%; min-width: 1120px; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
-.paper-position-table th, .paper-position-table td { height: 34px; padding: 6px 9px; border-bottom: 1px solid #2d3237; text-align: right; white-space: nowrap; }
-.paper-position-table th { color: #89929c; background: #1d2024; font-size: 10px; font-weight: 600; }
-.paper-position-table td { color: #d5dce4; background: #24272b; }
-.paper-position-table tbody tr:hover td { background: #292d31; }
+.paper-position-table th, .paper-position-table td { height: 34px; padding: 6px 9px; border-bottom: 1px solid #172c40; text-align: right; white-space: nowrap; }
+.paper-position-table th { color: #899aaa; background: #091522; font-size: 10px; font-weight: 600; }
+.paper-position-table td { color: #d5e0eb; background: rgba(10, 24, 39, .9); }
+.paper-position-table tbody tr:hover td { background: #102236; }
 .paper-position-table th:first-child, .paper-position-table td:first-child { text-align: left; }
 .paper-position-table td strong, .paper-position-table td small { display: block; }
 .paper-position-table td small { margin-top: 2px; color: inherit; font-size: 9px; }
@@ -337,7 +347,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-position-risk-summary > span { color: #bcc4cc; font-size: 10px; }
 .paper-position-risk-summary button { height: 24px; border-color: #927000; border-radius: 4px; padding: 2px 7px; color: #ffd24a; background: #302900; font-size: 9px; }
 .paper-position-table .paper-market-close { height: 27px; border-color: #d7354d; border-radius: 4px; padding: 3px 9px; color: #ff6679; background: #35171d; font-size: 10px; }
-.paper-position-empty { display: grid; min-height: 105px; place-items: center; color: #69727b; background: #1b1e22; font-size: 12px; }
+.paper-position-empty { display: grid; min-height: 105px; place-items: center; color: #667f95; background: transparent; font-size: 12px; }
 .paper-history-table { min-width: 900px; }
 .paper-risk-backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(2, 6, 11, .8); backdrop-filter: blur(7px); }
 .paper-risk-dialog { width: min(520px, 100%); overflow: hidden; border: 1px solid #3b4148; border-radius: 7px; color: #dce2e8; background: #23272d; box-shadow: 0 24px 80px rgba(0, 0, 0, .65); }
