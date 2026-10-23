@@ -333,6 +333,15 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-position-tabs button { height: 40px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 0 12px; color: #8e969f; background: transparent; font-size: 12px; font-weight: 700; }
 .paper-position-tabs button.active { color: #58d6c2; border-bottom-color: #58d6c2; }
 .paper-position-tabs button span { margin-left: 4px; color: #678197; }
+.paper-two-r-toggle { display: flex; align-items: center; gap: 7px; margin-left: auto; padding: 0 12px; cursor: pointer; }
+.paper-two-r-toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.paper-two-r-toggle > span { position: relative; width: 34px; height: 18px; border: 1px solid #466078; border-radius: 999px; background: #16293b; transition: .18s ease; }
+.paper-two-r-toggle > span::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #8397aa; transition: .18s ease; }
+.paper-two-r-toggle input:checked + span { border-color: #19b997; background: #087c68; }
+.paper-two-r-toggle input:checked + span::after { transform: translateX(16px); background: #eafffa; }
+.paper-two-r-toggle input:focus-visible + span { outline: 2px solid #58d6c2; outline-offset: 2px; }
+.paper-two-r-toggle strong { color: #8da4ba; font-size: 10px; white-space: nowrap; }
+.paper-two-r-toggle input:checked ~ strong { color: #58d6c2; }
 .paper-position-table-wrap { width: 100%; overflow-x: auto; }
 .paper-position-table { width: 100%; min-width: 1120px; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
 .paper-position-table th, .paper-position-table td { height: 34px; padding: 6px 9px; border-bottom: 1px solid #172c40; text-align: right; white-space: nowrap; }
