@@ -121,6 +121,26 @@ def test_range_end_closes_open_position() -> None:
     assert result.trades[0].exit_reason == "RANGE_END"
 
 
+def test_range_end_settles_untriggered_risk_orders_at_last_close() -> None:
+    game = session(
+        candle(0, close=100),
+        candle(1, close=105, high=110, low=95),
+    )
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    configured = game.set_risk_orders(take_profit_price=120, stop_loss_price=90)
+
+    result = game.advance()
+
+    assert len(configured.pending_orders) == 2
+    assert result.status is GameStatus.COMPLETED
+    assert result.position is None
+    assert result.pending_orders == ()
+    assert result.balance == pytest.approx(1050)
+    assert result.trades[0].exit_price == 105
+    assert result.trades[0].exit_reason == "RANGE_END"
+    assert result.message == "已回放到所选行情末尾, 剩余头寸已按最后一根 K 线收盘价结算"
+
+
 def test_rejects_second_position_and_excess_margin() -> None:
     game = session(candle(0), candle(1))
     with pytest.raises(ValueError, match="保证金"):

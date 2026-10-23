@@ -510,10 +510,15 @@ class PaperSession:
 
     def _complete(self) -> None:
         self.pending_open_order = None
-        if self.position is not None:
+        had_open_position = self.position is not None
+        if had_open_position:
             self._settle_position(self.current_candle.close_price, "RANGE_END")
         self.status = GameStatus.COMPLETED
-        self.message = "已回放到所选行情末尾, 本轮游戏结束"
+        self.message = (
+            "已回放到所选行情末尾, 剩余头寸已按最后一根 K 线收盘价结算"
+            if had_open_position
+            else "已回放到所选行情末尾, 本轮游戏结束"
+        )
 
     def _validate_close_quantity(self, quantity: float) -> None:
         position = self.position

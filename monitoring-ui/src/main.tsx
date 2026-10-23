@@ -202,6 +202,7 @@ interface LoadedKlineRange {
 type PaperSide = "LONG" | "SHORT";
 type PaperNotionalUnit = "USDT" | "BASE";
 type PaperGameStatus = "READY" | "RUNNING" | "COMPLETED" | "LIQUIDATED";
+type PaperReplaySource = "CUSTOM" | "US" | "ASIA";
 
 interface PaperCandle {
   open_time: string;
@@ -779,7 +780,7 @@ function randomTradingSession(
   const sessionStartMs = candidates[Math.floor(boundedRandom * candidates.length)];
   return {
     rangeStart: toUtc8Input(new Date(sessionStartMs).toISOString()),
-    rangeEnd: toUtc8Input(new Date(sessionStartMs + 7 * 60 * 60 * 1000).toISOString())
+    rangeEnd: toUtc8Input(new Date(sessionStartMs + durationHours * 60 * 60 * 1000).toISOString())
   };
 }
 
@@ -2535,6 +2536,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [replayPresets, setReplayPresets] = useState<PaperReplayPreset[]>(loadPaperReplayPresets);
+  const [replaySource, setReplaySource] = useState<PaperReplaySource>("CUSTOM");
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperChartPoint[]>([]);
   const [playing, setPlaying] = useState(false);
@@ -2622,7 +2624,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     selectedStart = rangeStart,
     selectedEnd = rangeEnd,
     selectedSymbol = symbol,
-    selectedInterval = intervalSeconds
+    selectedInterval = intervalSeconds,
+    selectedSource: PaperReplaySource = "CUSTOM"
   ) {
     if (startingSessionRef.current) return;
     if (!selectedStart || !selectedEnd) {
@@ -2646,6 +2649,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       setAutoTwoRTakeProfit(true);
       setRiskDialogOpen(false);
       setSettingsOpen(false);
+      setReplaySource(selectedSource);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "模拟账户创建失败");
     } finally {
@@ -2672,7 +2676,28 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     }
     setRangeStart(selected.rangeStart);
     setRangeEnd(selected.rangeEnd);
-    void startGame(selected.rangeStart, selected.rangeEnd);
+    void startGame(selected.rangeStart, selected.rangeEnd, symbol, intervalSeconds, kind);
+  }
+
+  function restartCurrentRound() {
+    if (!snapshot) return;
+    const selectedStart = toUtc8Input(snapshot.range_start);
+    const selectedEnd = toUtc8Input(snapshot.range_end);
+    setSymbol(snapshot.symbol);
+    setIntervalSeconds(snapshot.interval_seconds);
+    setRangeStart(selectedStart);
+    setRangeEnd(selectedEnd);
+    void startGame(
+      selectedStart,
+      selectedEnd,
+      snapshot.symbol,
+      snapshot.interval_seconds,
+      replaySource
+    );
+  }
+
+  function startRandomNextRound() {
+    startRandomSession(replaySource === "ASIA" ? "ASIA" : "US");
   }
 
   function selectReplaySymbol(nextSymbol: string) {
@@ -3039,7 +3064,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             </div>
             <div className="paper-chart-stage">
               <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} />
-              {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><button className="primary-button" type="button" onClick={() => void startGame()}>再来一轮</button></section>}
+              {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>
           <section className="panel paper-position-manager">
