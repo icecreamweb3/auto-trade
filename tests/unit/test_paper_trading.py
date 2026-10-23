@@ -135,3 +135,42 @@ def test_session_uses_persisted_account_balance_without_resetting_it() -> None:
     assert opened.available_balance == 1150
     assert closed.balance == pytest.approx(1350)
     assert closed.realized_pnl == pytest.approx(350)
+
+
+def test_take_profit_closes_position_at_trigger_price() -> None:
+    game = session(candle(0), candle(1, close=108, high=112, low=99), candle(2))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+
+    configured = game.set_risk_orders(take_profit_price=110, stop_loss_price=95)
+    result = game.advance()
+
+    assert configured.position is not None
+    assert configured.position.take_profit_price == 110
+    assert configured.position.stop_loss_price == 95
+    assert result.position is None
+    assert result.balance == pytest.approx(1100)
+    assert result.trades[0].exit_price == 110
+    assert result.trades[0].exit_reason == "TAKE_PROFIT"
+
+
+def test_stop_loss_has_conservative_priority_when_both_triggers_touch() -> None:
+    game = session(candle(0), candle(1, close=100, high=106, low=94), candle(2))
+    game.open_position(PositionSide.LONG, notional=200, leverage=2)
+    game.set_risk_orders(take_profit_price=105, stop_loss_price=95)
+
+    result = game.advance()
+
+    assert result.position is None
+    assert result.balance == pytest.approx(990)
+    assert result.trades[0].exit_price == 95
+    assert result.trades[0].exit_reason == "STOP_LOSS"
+
+
+def test_rejects_risk_prices_on_wrong_side_of_current_market() -> None:
+    game = session(candle(0), candle(1))
+    game.open_position(PositionSide.SHORT, notional=100, leverage=2)
+
+    with pytest.raises(ValueError, match="空仓止盈价"):
+        game.set_risk_orders(take_profit_price=101, stop_loss_price=None)
+    with pytest.raises(ValueError, match="空仓止损价"):
+        game.set_risk_orders(take_profit_price=None, stop_loss_price=99)

@@ -46,6 +46,8 @@ class PaperPosition(BaseModel):
     entry_price: float
     mark_price: float
     liquidation_price: float
+    take_profit_price: float | None = None
+    stop_loss_price: float | None = None
     unrealized_pnl: float
     return_on_margin_percent: float
 
@@ -77,6 +79,11 @@ class PaperOrderCreate(BaseModel):
     notional: float = Field(gt=0)
     notional_unit: NotionalUnit = NotionalUnit.USDT
     leverage: int = Field(default=100, ge=1, le=100)
+
+
+class PaperRiskUpdate(BaseModel):
+    take_profit_price: float | None = Field(default=None, gt=0)
+    stop_loss_price: float | None = Field(default=None, gt=0)
 
 
 class PaperSessionSnapshot(BaseModel):

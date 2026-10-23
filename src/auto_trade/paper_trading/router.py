@@ -26,6 +26,7 @@ from auto_trade.paper_trading.models import (
     PaperMarketRange,
     PaperMetadata,
     PaperOrderCreate,
+    PaperRiskUpdate,
     PaperSessionCreate,
     PaperSessionSnapshot,
 )
@@ -210,6 +211,26 @@ async def close_position(
             request,
             _session(request, session_id, user),
             lambda game: game.close_position(),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.put("/sessions/{session_id}/risk", response_model=PaperSessionSnapshot)
+async def update_risk_orders(
+    session_id: str,
+    payload: PaperRiskUpdate,
+    request: Request,
+    user: AuthenticatedUser,
+) -> PaperSessionSnapshot:
+    try:
+        return await _mutate_session(
+            request,
+            _session(request, session_id, user),
+            lambda game: game.set_risk_orders(
+                payload.take_profit_price,
+                payload.stop_loss_price,
+            ),
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error

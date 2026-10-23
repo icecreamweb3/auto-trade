@@ -27,6 +27,8 @@ class OpenPosition:
     entry_price: float
     liquidation_price: float
     opened_at: datetime
+    take_profit_price: float | None = None
+    stop_loss_price: float | None = None
 
 
 @dataclass(slots=True)
@@ -89,6 +91,30 @@ class PaperSession:
         self.message = "持仓已平仓"
         return self.snapshot()
 
+    def set_risk_orders(
+        self,
+        take_profit_price: float | None,
+        stop_loss_price: float | None,
+    ) -> PaperSessionSnapshot:
+        position = self.position
+        if position is None:
+            raise ValueError("当前没有可设置止盈止损的持仓")
+        mark_price = self.current_candle.close_price
+        if position.side is PositionSide.LONG:
+            if take_profit_price is not None and take_profit_price <= mark_price:
+                raise ValueError("多仓止盈价必须高于当前价格")
+            if stop_loss_price is not None and stop_loss_price >= mark_price:
+                raise ValueError("多仓止损价必须低于当前价格")
+        else:
+            if take_profit_price is not None and take_profit_price >= mark_price:
+                raise ValueError("空仓止盈价必须低于当前价格")
+            if stop_loss_price is not None and stop_loss_price <= mark_price:
+                raise ValueError("空仓止损价必须高于当前价格")
+        position.take_profit_price = take_profit_price
+        position.stop_loss_price = stop_loss_price
+        self.message = "止盈止损已更新"
+        return self.snapshot()
+
     def advance(self) -> PaperSessionSnapshot:
         if self.status in (GameStatus.COMPLETED, GameStatus.LIQUIDATED):
             return self.snapshot()
@@ -115,6 +141,32 @@ class PaperSession:
                 self.status = GameStatus.LIQUIDATED
                 self.message = "价格触及强平价, 本轮游戏结束"
                 return self.snapshot()
+            stop_price = position.stop_loss_price
+            stop_touched = (
+                stop_price is not None
+                and (
+                    candle.low_price <= stop_price
+                    if position.side is PositionSide.LONG
+                    else candle.high_price >= stop_price
+                )
+            )
+            if stop_touched and stop_price is not None:
+                self._settle_position(stop_price, "STOP_LOSS")
+                self.message = "价格触及止损价, 持仓已平仓"
+                return self.snapshot()
+            take_profit_price = position.take_profit_price
+            take_profit_touched = (
+                take_profit_price is not None
+                and (
+                    candle.high_price >= take_profit_price
+                    if position.side is PositionSide.LONG
+                    else candle.low_price <= take_profit_price
+                )
+            )
+            if take_profit_touched and take_profit_price is not None:
+                self._settle_position(take_profit_price, "TAKE_PROFIT")
+                self.message = "价格触及止盈价, 持仓已平仓"
+                return self.snapshot()
 
         if self.index >= len(self.candles) - 1:
             self._complete()
@@ -140,6 +192,8 @@ class PaperSession:
                 entry_price=self.position.entry_price,
                 mark_price=mark_price,
                 liquidation_price=self.position.liquidation_price,
+                take_profit_price=self.position.take_profit_price,
+                stop_loss_price=self.position.stop_loss_price,
                 unrealized_pnl=unrealized_pnl,
                 return_on_margin_percent=unrealized_pnl / self.position.margin * 100,
             )
