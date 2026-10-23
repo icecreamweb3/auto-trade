@@ -2053,13 +2053,11 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, intervalSeconds, sessionId, anchoredPriceChange, anchoredPriceChangePercent, showUpperOpeningRange, showLowerOpeningRange }: {
+function PaperReplayChart({ candles, position, intervalSeconds, sessionId, showUpperOpeningRange, showLowerOpeningRange }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   intervalSeconds: number;
   sessionId: string;
-  anchoredPriceChange: number | null;
-  anchoredPriceChangePercent: number | null;
   showUpperOpeningRange: boolean;
   showLowerOpeningRange: boolean;
 }) {
@@ -2421,7 +2419,6 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   const candleChangePercent = current && current.open_price > 0 ? candleChange! / current.open_price * 100 : null;
   const candleAmplitude = current && current.open_price > 0 ? (current.high_price - current.low_price) / current.open_price * 100 : null;
   const candleChangeClass = candleChange === null || candleChange >= 0 ? "candle-change-up" : "candle-change-down";
-  const changeClass = anchoredPriceChange === null || anchoredPriceChange >= 0 ? "candle-change-up" : "candle-change-down";
   return <div className="paper-chart-wrap">
     <div className="chart-readout">
       {current ? <><span>{formatKlineTime(current.open_time)}</span>
@@ -2435,8 +2432,6 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
         <span>涨跌值 <strong className={candleChangeClass}>{candleChange === null ? "--" : `${candleChange >= 0 ? "+" : ""}${formatNumber(candleChange, 2)}`}</strong></span>
       </span></> : <span>载入行情后开始回放</span>}
       {current && <span className="paper-ema-legend"><span>EMA20 <strong>{current.ema20 === null ? "--" : formatNumber(current.ema20, 2)}</strong></span><span>EMA240 <strong>{current.ema240 === null ? "--" : formatNumber(current.ema240, 2)}</strong></span></span>}
-      <span className="paper-anchor-change" title="以当前 UTC+8 交易日 08:00 K 线开盘价为基准"><em>08:00</em>{anchoredPriceChange === null || anchoredPriceChangePercent === null ? <strong>--</strong> : <><strong className={changeClass}>{anchoredPriceChangePercent >= 0 ? "+" : ""}{anchoredPriceChangePercent.toFixed(2)}%</strong><strong className={changeClass}>{anchoredPriceChange >= 0 ? "+" : ""}{formatNumber(anchoredPriceChange, 2)}</strong></>}</span>
-      <span className="chart-drag-hint">默认窗口 {Math.min(points.length, visibleCapacity)} 根 · 已揭示 {candles.length} 根</span>
     </div>
     <div className="paper-chart-canvas">
       <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
@@ -2857,6 +2852,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }
 
   const gameEnded = snapshot?.status === "COMPLETED" || snapshot?.status === "LIQUIDATED";
+  const anchoredChangeClass = snapshot?.anchored_price_change === null || (snapshot?.anchored_price_change ?? 0) >= 0 ? "candle-change-up" : "candle-change-down";
   const pnl = snapshot?.position?.unrealized_pnl ?? 0;
   const baseAsset = (snapshot?.symbol ?? symbol).replace("USDT", "");
   const orderPrice = snapshot?.current_candle.close_price ?? 0;
@@ -2944,7 +2940,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         <div className="paper-main-column">
           <div className="panel paper-chart-panel">
             <div className="paper-playback-bar">
-              <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
+              <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span><span className="paper-playback-change" title="以当前 UTC+8 交易日 08:00 K 线开盘价为基准"><em>Chg</em>{snapshot.anchored_price_change === null || snapshot.anchored_price_change_percent === null ? <strong>--</strong> : <><strong className={anchoredChangeClass}>{snapshot.anchored_price_change_percent >= 0 ? "+" : ""}{snapshot.anchored_price_change_percent.toFixed(2)}%</strong><strong className={anchoredChangeClass}>{snapshot.anchored_price_change >= 0 ? "+" : ""}{formatNumber(snapshot.anchored_price_change, 2)}</strong></>}</span></div>
               <div className="paper-playback-actions">
                 <div className="paper-opening-range-toggles" aria-label="美股早盘 TR 显示设置" title="UTC+8 21:30–23:00 开盘区间">
                   <label className="paper-range-toggle"><input type="checkbox" checked={showUpperOpeningRange} onChange={(event) => setShowUpperOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>上方 TR</strong></label>
@@ -2953,7 +2949,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} anchoredPriceChange={snapshot.anchored_price_change} anchoredPriceChangePercent={snapshot.anchored_price_change_percent} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} />
+              <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><button className="primary-button" type="button" onClick={() => void startGame()}>再来一轮</button></section>}
             </div>
           </div>
