@@ -301,7 +301,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-chart-wrap { min-width: 0; }
 .paper-chart-canvas { position: relative; min-width: 0; overflow: hidden; border-radius: 11px; }
 .paper-opening-range-overlay { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
-.paper-or-box { fill: rgba(245, 170, 25, .16); stroke: rgba(245, 170, 25, .88); stroke-width: 1; }
+.paper-or-box { fill: rgba(245, 170, 25, .15); stroke: rgba(245, 170, 25, .88); stroke-width: 1; }
 .paper-or-boundary { stroke: rgba(245, 170, 25, .9); stroke-width: 1; }
 .paper-or-label, .paper-or-price-label, .paper-or-upper text, .paper-or-lower text { font-size: 10px; font-weight: 400; text-anchor: middle; paint-order: stroke; stroke: rgba(7, 21, 34, .9); stroke-width: 3px; stroke-linejoin: round; }
 .paper-or-label, .paper-or-price-label { fill: #ffc34d; }
