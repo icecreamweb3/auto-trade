@@ -9,6 +9,7 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type LogicalRange,
   type MouseEventParams,
   type Time,
   type UTCTimestamp,
@@ -1975,19 +1976,23 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, intervalSeconds }: {
+function PaperReplayChart({ candles, position, intervalSeconds, sessionId }: {
   candles: PaperCandle[];
   position: PaperPosition | null;
   intervalSeconds: number;
+  sessionId: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const positionLinesRef = useRef<IPriceLine[]>([]);
+  const loadedSessionRef = useRef<string | null>(null);
+  const loadedCountRef = useRef(0);
+  const followingLatestRef = useRef(true);
   const [hoveredCandle, setHoveredCandle] = useState<PaperCandleReadout | null>(null);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
-  const points = candles.slice(-visibleCapacity);
+  const points = candles;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -2077,46 +2082,87 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
         close_price: candle.close,
       });
     };
+    const handleVisibleRangeChange = (range: LogicalRange | null) => {
+      if (!range || loadedCountRef.current === 0) return;
+      followingLatestRef.current = range.to >= loadedCountRef.current - 1;
+    };
     container.addEventListener("wheel", handlePriceScaleWheel, { passive: false, capture: true });
     chart.subscribeCrosshairMove(handleCrosshairMove);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
     return () => {
       container.removeEventListener("wheel", handlePriceScaleWheel, true);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       positionLinesRef.current = [];
+      loadedSessionRef.current = null;
+      loadedCountRef.current = 0;
+      followingLatestRef.current = true;
     };
   }, []);
 
-  useEffect(() => setHoveredCandle(null), [candles[0]?.open_time]);
+  useEffect(() => setHoveredCandle(null), [sessionId]);
 
   useEffect(() => {
     const chart = chartRef.current;
     const candleSeries = candleSeriesRef.current;
     const volumeSeries = volumeSeriesRef.current;
     if (!chart || !candleSeries || !volumeSeries) return;
-    candleSeries.setData(points.map((point) => ({
+    const candleData = (point: PaperCandle) => ({
       time: Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp,
       open: point.open_price,
       high: point.high_price,
       low: point.low_price,
       close: point.close_price,
-    })));
-    volumeSeries.setData(points.map((point) => ({
+    });
+    const volumeData = (point: PaperCandle) => ({
       time: Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp,
       value: point.quote_volume,
       color: point.close_price >= point.open_price ? "rgba(14,203,129,.38)" : "rgba(246,70,93,.38)",
-    })));
-    chart.timeScale().setVisibleLogicalRange({
-      from: points.length - visibleCapacity,
-      to: points.length + 5,
     });
-  }, [points, visibleCapacity]);
+    if (loadedSessionRef.current !== sessionId || points.length < loadedCountRef.current) {
+      candleSeries.setData(points.map(candleData));
+      volumeSeries.setData(points.map(volumeData));
+      loadedSessionRef.current = sessionId;
+      loadedCountRef.current = points.length;
+      followingLatestRef.current = true;
+      chart.priceScale("right").setAutoScale(true);
+      chart.timeScale().setVisibleLogicalRange({
+        from: points.length - visibleCapacity,
+        to: points.length + 5,
+      });
+      return;
+    }
+    if (points.length === loadedCountRef.current) return;
+
+    const visibleRange = chart.timeScale().getVisibleLogicalRange();
+    const followingLatest = followingLatestRef.current;
+    const priceScale = chart.priceScale("right");
+    const preservePriceRange = !priceScale.options().autoScale;
+    const priceRange = preservePriceRange ? priceScale.getVisibleRange() : null;
+    const addedCount = points.length - loadedCountRef.current;
+    for (const point of points.slice(loadedCountRef.current)) {
+      candleSeries.update(candleData(point));
+      volumeSeries.update(volumeData(point));
+    }
+    loadedCountRef.current = points.length;
+    if (followingLatest && visibleRange) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: visibleRange.from + addedCount,
+        to: visibleRange.to + addedCount,
+      });
+    }
+    if (priceRange) {
+      priceScale.setAutoScale(false);
+      priceScale.setVisibleRange(priceRange);
+    }
+  }, [points, sessionId, visibleCapacity]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -2145,7 +2191,7 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
       <span>高 <strong>{formatNumber(current.high_price, 2)}</strong></span>
       <span>低 <strong>{formatNumber(current.low_price, 2)}</strong></span>
       <span>收 <strong className={current.close_price >= current.open_price ? "candle-change-up" : "candle-change-down"}>{formatNumber(current.close_price, 2)}</strong></span></> : <span>载入行情后开始回放</span>}
-      <span className="chart-drag-hint">显示最近 {points.length} 根 · 已揭示 {candles.length} 根</span>
+      <span className="chart-drag-hint">默认窗口 {Math.min(points.length, visibleCapacity)} 根 · 已揭示 {candles.length} 根</span>
     </div>
     <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
   </div>;
@@ -2620,7 +2666,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
               <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
               <div className="paper-playback-actions"><label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
-            <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} />
+            <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} />
           </div>
           <section className="panel paper-position-manager">
             <div className="paper-position-tabs"><button type="button" className={positionTab === "position" ? "active" : ""} onClick={() => setPositionTab("position")}>当前持仓</button><button type="button" className={positionTab === "history" ? "active" : ""} onClick={() => setPositionTab("history")}>历史订单 <span>{snapshot.trades.length}</span></button><label className="paper-two-r-toggle"><input type="checkbox" checked={autoTwoRTakeProfit} onChange={toggleAutoTwoRTakeProfit} /><span aria-hidden="true" /><strong>自动 2R 止盈</strong></label></div>
