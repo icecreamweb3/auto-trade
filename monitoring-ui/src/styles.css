@@ -151,6 +151,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-readout strong { margin-left: 3px; color: #c8d7e6; }
 .chart-readout strong.candle-change-up { color: #0ecb81; }
 .chart-readout strong.candle-change-down { color: #f6465d; }
+.paper-candle-stats { display: inline-flex; align-items: center; gap: 17px; }
 .paper-anchor-change { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .paper-anchor-change em { color: #71899f; font-size: 9px; font-style: normal; letter-spacing: .08em; }
 .paper-anchor-change strong { min-width: 58px; margin: 0; text-align: right; }

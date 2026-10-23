@@ -2188,6 +2188,10 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   }, [position?.entry_price, position?.liquidation_price, position?.take_profit_price, position?.stop_loss_price]);
 
   const current = hoveredCandle ?? points[points.length - 1];
+  const candleChange = current ? current.close_price - current.open_price : null;
+  const candleChangePercent = current && current.open_price > 0 ? candleChange! / current.open_price * 100 : null;
+  const candleAmplitude = current && current.open_price > 0 ? (current.high_price - current.low_price) / current.open_price * 100 : null;
+  const candleChangeClass = candleChange === null || candleChange >= 0 ? "candle-change-up" : "candle-change-down";
   const changeClass = anchoredPriceChange === null || anchoredPriceChange >= 0 ? "candle-change-up" : "candle-change-down";
   return <div className="paper-chart-wrap">
     <div className="chart-readout">
@@ -2195,7 +2199,12 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       <span>开 <strong>{formatNumber(current.open_price, 2)}</strong></span>
       <span>高 <strong>{formatNumber(current.high_price, 2)}</strong></span>
       <span>低 <strong>{formatNumber(current.low_price, 2)}</strong></span>
-      <span>收 <strong className={current.close_price >= current.open_price ? "candle-change-up" : "candle-change-down"}>{formatNumber(current.close_price, 2)}</strong></span></> : <span>载入行情后开始回放</span>}
+      <span>收 <strong className={candleChangeClass}>{formatNumber(current.close_price, 2)}</strong></span>
+      <span className="paper-candle-stats" title="涨跌幅与涨跌值按开盘价至收盘价计算；振幅按最高价与最低价之差除以开盘价计算">
+        <span>涨跌幅 <strong className={candleChangeClass}>{candleChangePercent === null ? "--" : `${candleChangePercent >= 0 ? "+" : ""}${candleChangePercent.toFixed(2)}%`}</strong></span>
+        <span>振幅 <strong>{candleAmplitude === null ? "--" : `${candleAmplitude.toFixed(2)}%`}</strong></span>
+        <span>涨跌值 <strong className={candleChangeClass}>{candleChange === null ? "--" : `${candleChange >= 0 ? "+" : ""}${formatNumber(candleChange, 2)}`}</strong></span>
+      </span></> : <span>载入行情后开始回放</span>}
       <span className="paper-anchor-change" title="以当前 UTC+8 交易日 08:00 K 线开盘价为基准"><em>08:00</em>{anchoredPriceChange === null || anchoredPriceChangePercent === null ? <strong>--</strong> : <><strong className={changeClass}>{anchoredPriceChangePercent >= 0 ? "+" : ""}{anchoredPriceChangePercent.toFixed(2)}%</strong><strong className={changeClass}>{anchoredPriceChange >= 0 ? "+" : ""}{formatNumber(anchoredPriceChange, 2)}</strong></>}</span>
       <span className="chart-drag-hint">默认窗口 {Math.min(points.length, visibleCapacity)} 根 · 已揭示 {candles.length} 根</span>
     </div>
