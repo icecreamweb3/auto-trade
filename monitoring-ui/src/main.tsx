@@ -9,6 +9,7 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type MouseEventParams,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -210,6 +211,11 @@ interface PaperCandle {
   base_volume: number;
   quote_volume: number;
 }
+
+type PaperCandleReadout = Pick<
+  PaperCandle,
+  "open_time" | "open_price" | "high_price" | "low_price" | "close_price"
+>;
 
 interface PaperPosition {
   side: PaperSide;
@@ -1943,6 +1949,7 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const positionLinesRef = useRef<IPriceLine[]>([]);
+  const [hoveredCandle, setHoveredCandle] = useState<PaperCandleReadout | null>(null);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles.slice(-visibleCapacity);
 
@@ -2020,12 +2027,28 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
         to: anchor + (range.to - anchor) * factor,
       });
     };
+    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+      const candle = param.seriesData.get(candleSeries);
+      if (typeof param.time !== "number" || !candle || !("open" in candle)) {
+        setHoveredCandle(null);
+        return;
+      }
+      setHoveredCandle({
+        open_time: new Date(param.time * 1000).toISOString(),
+        open_price: candle.open,
+        high_price: candle.high,
+        low_price: candle.low,
+        close_price: candle.close,
+      });
+    };
     container.addEventListener("wheel", handlePriceScaleWheel, { passive: false, capture: true });
+    chart.subscribeCrosshairMove(handleCrosshairMove);
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
     return () => {
       container.removeEventListener("wheel", handlePriceScaleWheel, true);
+      chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
@@ -2033,6 +2056,8 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
       positionLinesRef.current = [];
     };
   }, []);
+
+  useEffect(() => setHoveredCandle(null), [candles[0]?.open_time]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -2076,7 +2101,7 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
     }));
   }, [position?.entry_price, position?.liquidation_price, position?.take_profit_price, position?.stop_loss_price]);
 
-  const current = points[points.length - 1];
+  const current = hoveredCandle ?? points[points.length - 1];
   return <div className="paper-chart-wrap">
     <div className="chart-readout">
       {current ? <><span>{formatKlineTime(current.open_time)}</span>
