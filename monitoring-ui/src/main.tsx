@@ -2084,6 +2084,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [stopLoss, setStopLoss] = useState<NumericInput>("");
   const [positionTab, setPositionTab] = useState<"position" | "history">("position");
   const [positionAction, setPositionAction] = useState(false);
+  const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperCandle[]>([]);
@@ -2251,11 +2252,20 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           stop_loss_price: stopLoss === "" ? null : stopLoss
         })
       }));
+      setRiskDialogOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "止盈止损设置失败");
     } finally {
       setPositionAction(false);
     }
+  }
+
+  function openRiskDialog() {
+    if (!snapshot?.position) return;
+    setPlaying(false);
+    setTakeProfit(snapshot.position.take_profit_price ?? "");
+    setStopLoss(snapshot.position.stop_loss_price ?? "");
+    setRiskDialogOpen(true);
   }
 
   function applyNotionalPercentage(percentage: number) {
@@ -2299,6 +2309,15 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     : 0;
   const actualLeverage = snapshot && snapshot.equity > 0 ? positionNotional / snapshot.equity : 0;
   const maintenanceMargin = positionNotional * maintenanceMarginRate;
+  const projectedPnl = (target: NumericInput) => {
+    if (!snapshot?.position || target === "" || target <= 0) return null;
+    const movement = snapshot.position.side === "LONG"
+      ? target - snapshot.position.entry_price
+      : snapshot.position.entry_price - target;
+    return movement * snapshot.position.quantity;
+  };
+  const projectedTakeProfit = projectedPnl(takeProfit);
+  const projectedStopLoss = projectedPnl(stopLoss);
   return <main className="paper-page">
     <header className="topbar">
       <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在个人模拟账户中练习仓位与杠杆。</p></div>
@@ -2323,12 +2342,35 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     {error && <div className="alert alert-critical">{error}</div>}
     {!snapshot ? <section className="panel paper-empty"><strong>准备开始</strong><p>载入后只会显示第一根 K 线，后续行情不会提前暴露。</p></section> : <>
       <section className="paper-workspace">
-        <div className="panel paper-chart-panel">
-          <div className="paper-playback-bar">
-            <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
-            <div className="paper-playback-actions"><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
+        <div className="paper-main-column">
+          <div className="panel paper-chart-panel">
+            <div className="paper-playback-bar">
+              <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
+              <div className="paper-playback-actions"><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
+            </div>
+            <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} />
           </div>
-          <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} />
+          <section className="panel paper-position-manager">
+            <div className="paper-position-tabs"><button type="button" className={positionTab === "position" ? "active" : ""} onClick={() => setPositionTab("position")}>当前持仓</button><button type="button" className={positionTab === "history" ? "active" : ""} onClick={() => setPositionTab("history")}>历史订单 <span>{snapshot.trades.length}</span></button></div>
+            {positionTab === "position" ? snapshot.position ? <div className="paper-position-table-wrap">
+              <table className="paper-position-table">
+                <thead><tr><th>合约</th><th>方向</th><th>状态</th><th>数量 ({baseAsset})</th><th>开仓均价</th><th>持仓方式</th><th>强平价</th><th>未实现盈亏</th><th>保证金</th><th>止盈 / 止损</th><th>操作</th></tr></thead>
+                <tbody><tr>
+                  <td><strong>{snapshot.symbol}</strong></td>
+                  <td className={snapshot.position.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{snapshot.position.side === "LONG" ? "多" : "空"}</td>
+                  <td><span className="paper-position-status">开仓</span></td>
+                  <td>{formatNumber(snapshot.position.quantity, 6)}</td>
+                  <td>{formatNumber(snapshot.position.entry_price, 2)}</td>
+                  <td>逐仓 · {snapshot.position.leverage}x</td>
+                  <td className="paper-danger">{formatNumber(snapshot.position.liquidation_price, 2)}</td>
+                  <td className={pnl >= 0 ? "paper-long-price" : "paper-short-price"}>{pnl >= 0 ? "+" : ""}{formatNumber(pnl, 2)}<small>{snapshot.position.return_on_margin_percent >= 0 ? "+" : ""}{snapshot.position.return_on_margin_percent.toFixed(2)}%</small></td>
+                  <td>{formatNumber(snapshot.position.margin, 2)} USDT</td>
+                  <td><div className="paper-position-risk-summary"><span>{snapshot.position.take_profit_price === null ? "--" : formatNumber(snapshot.position.take_profit_price, 2)} / {snapshot.position.stop_loss_price === null ? "--" : formatNumber(snapshot.position.stop_loss_price, 2)}</span><button type="button" onClick={openRiskDialog} disabled={positionAction} aria-label="设置止盈止损">设置</button></div></td>
+                  <td><button type="button" className="paper-market-close" onClick={() => void closePosition()} disabled={positionAction}>市价平仓</button></td>
+                </tr></tbody>
+              </table>
+            </div> : <div className="paper-position-empty">当前没有持仓，可在右侧下单面板开多或开空。</div> : snapshot.trades.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-history-table"><thead><tr><th>平仓时间</th><th>方向</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>杠杆</th><th>已实现盈亏</th><th>原因</th></tr></thead><tbody>{snapshot.trades.slice().reverse().map((trade) => <tr key={`${trade.opened_at}-${trade.closed_at}`}><td>{formatKlineTime(trade.closed_at)}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{formatNumber(trade.quantity, 6)} {baseAsset}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td>{trade.leverage}x</td><td className={trade.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="paper-position-empty">本轮暂无历史订单。</div>}
+          </section>
         </div>
         <aside className="panel paper-order-panel">
           <div className="panel-heading"><div><p className="eyebrow">ORDER</p><h3>模拟下单</h3></div></div>
@@ -2359,27 +2401,29 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             </dl></div>
         </aside>
       </section>
-      <section className="panel paper-position-manager">
-        <div className="paper-position-tabs"><button type="button" className={positionTab === "position" ? "active" : ""} onClick={() => setPositionTab("position")}>当前持仓</button><button type="button" className={positionTab === "history" ? "active" : ""} onClick={() => setPositionTab("history")}>历史订单 <span>{snapshot.trades.length}</span></button></div>
-        {positionTab === "position" ? snapshot.position ? <div className="paper-position-table-wrap">
-          <table className="paper-position-table">
-            <thead><tr><th>合约</th><th>方向</th><th>状态</th><th>数量 ({baseAsset})</th><th>开仓均价</th><th>持仓方式</th><th>强平价</th><th>未实现盈亏</th><th>保证金</th><th>止盈 / 止损</th><th>操作</th></tr></thead>
-            <tbody><tr>
-              <td><strong>{snapshot.symbol}</strong></td>
-              <td className={snapshot.position.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{snapshot.position.side === "LONG" ? "多" : "空"}</td>
-              <td><span className="paper-position-status">开仓</span></td>
-              <td>{formatNumber(snapshot.position.quantity, 6)}</td>
-              <td>{formatNumber(snapshot.position.entry_price, 2)}</td>
-              <td>逐仓 · {snapshot.position.leverage}x</td>
-              <td className="paper-danger">{formatNumber(snapshot.position.liquidation_price, 2)}</td>
-              <td className={pnl >= 0 ? "paper-long-price" : "paper-short-price"}>{pnl >= 0 ? "+" : ""}{formatNumber(pnl, 2)}<small>{snapshot.position.return_on_margin_percent >= 0 ? "+" : ""}{snapshot.position.return_on_margin_percent.toFixed(2)}%</small></td>
-              <td>{formatNumber(snapshot.position.margin, 2)} USDT</td>
-              <td><div className="paper-position-risk-controls"><input aria-label="止盈价" type="number" min="0" step="0.01" value={takeProfit} onChange={(event) => setTakeProfit(event.target.value === "" ? "" : Number(event.target.value))} placeholder="止盈" /><span>/</span><input aria-label="止损价" type="number" min="0" step="0.01" value={stopLoss} onChange={(event) => setStopLoss(event.target.value === "" ? "" : Number(event.target.value))} placeholder="止损" /><button type="button" onClick={() => void saveRiskOrders()} disabled={positionAction} title="保存止盈止损" aria-label="保存止盈止损">保存</button></div></td>
-              <td><button type="button" className="paper-market-close" onClick={() => void closePosition()} disabled={positionAction}>市价平仓</button></td>
-            </tr></tbody>
-          </table>
-        </div> : <div className="paper-position-empty">当前没有持仓，可在右侧下单面板开多或开空。</div> : snapshot.trades.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-history-table"><thead><tr><th>平仓时间</th><th>方向</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>杠杆</th><th>已实现盈亏</th><th>原因</th></tr></thead><tbody>{snapshot.trades.slice().reverse().map((trade) => <tr key={`${trade.opened_at}-${trade.closed_at}`}><td>{formatKlineTime(trade.closed_at)}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{formatNumber(trade.quantity, 6)} {baseAsset}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td>{trade.leverage}x</td><td className={trade.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="paper-position-empty">本轮暂无历史订单。</div>}
-      </section>
+      {riskDialogOpen && snapshot.position && <div className="paper-risk-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRiskDialogOpen(false); }}>
+        <section className="paper-risk-dialog" role="dialog" aria-modal="true" aria-labelledby="paper-risk-title">
+          <header><h2 id="paper-risk-title">整仓止盈/止损</h2><button type="button" onClick={() => setRiskDialogOpen(false)} aria-label="关闭止盈止损设置">×</button></header>
+          <div className="paper-risk-notice">ⓘ 在剧烈波动行情中，如果止损触发价过于接近强平价，订单可能无法成功执行。</div>
+          <dl className="paper-risk-position-summary">
+            <div><dt>合约</dt><dd className={snapshot.position.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{snapshot.symbol} 永续 / {snapshot.position.side === "LONG" ? "多" : "空"} {snapshot.position.leverage}x</dd></div>
+            <div><dt>开仓均价</dt><dd>{formatNumber(snapshot.position.entry_price, 2)} USDT</dd></div>
+            <div><dt>当前价</dt><dd>{formatNumber(snapshot.position.mark_price, 2)} USDT</dd></div>
+          </dl>
+          <div className="paper-risk-field">
+            <div className="paper-risk-field-heading"><span>触发价格 (USDT)</span><span>预计盈亏 (USDT)</span></div>
+            <div className="paper-risk-field-title"><strong>止盈价格</strong><button type="button" onClick={() => setTakeProfit("")}>取消</button></div>
+            <div className="paper-risk-input-row"><input aria-label="止盈价格" type="number" min="0" step="0.01" value={takeProfit} onChange={(event) => setTakeProfit(event.target.value === "" ? "" : Number(event.target.value))} placeholder="--" /><output className={projectedTakeProfit === null ? "" : projectedTakeProfit >= 0 ? "paper-long-price" : "paper-short-price"}>{projectedTakeProfit === null ? "--" : `${projectedTakeProfit >= 0 ? "+" : ""}${formatNumber(projectedTakeProfit, 2)}`}</output></div>
+            <p>当最新价达到设定价格时，将按当前 K 线收盘价平仓。</p>
+          </div>
+          <div className="paper-risk-field">
+            <div className="paper-risk-field-title"><strong>止损价格</strong><button type="button" onClick={() => setStopLoss("")}>取消</button></div>
+            <div className="paper-risk-input-row"><input aria-label="止损价格" type="number" min="0" step="0.01" value={stopLoss} onChange={(event) => setStopLoss(event.target.value === "" ? "" : Number(event.target.value))} placeholder="--" /><output className={projectedStopLoss === null ? "" : projectedStopLoss >= 0 ? "paper-long-price" : "paper-short-price"}>{projectedStopLoss === null ? "--" : `${projectedStopLoss >= 0 ? "+" : ""}${formatNumber(projectedStopLoss, 2)}`}</output></div>
+            <p>当最新价达到设定价格时，将按当前 K 线收盘价平仓。</p>
+          </div>
+          <footer><button type="button" onClick={() => void saveRiskOrders()} disabled={positionAction}>{positionAction ? "保存中…" : "确认"}</button></footer>
+        </section>
+      </div>}
       {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><button className="primary-button" type="button" onClick={() => void startGame()}>再来一轮</button></section>}
     </>}
   </main>;
