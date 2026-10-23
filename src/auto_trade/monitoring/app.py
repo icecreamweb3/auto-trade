@@ -49,6 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         admin_password_hash,
     )
     app.state.paper_trader_sessions = {}
+    app.state.paper_trader_session_creations = set()
     app.state.backtest_manager = BacktestManager(
         engine,
         Path(settings.file_log_directory) / "backtests",

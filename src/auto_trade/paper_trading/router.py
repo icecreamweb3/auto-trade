@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from auto_trade.paper_trading.models import (
 )
 
 router = APIRouter(prefix="/api/paper-trader", tags=["paper-trader"])
+logger = logging.getLogger(__name__)
 SUPPORTED_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 SUPPORTED_INTERVALS = (300, 900, 3600)
 MAX_CANDLES = 3000
@@ -47,6 +49,10 @@ class UserPaperSession:
 
 def _sessions(request: Request) -> dict[str, UserPaperSession]:
     return request.app.state.paper_trader_sessions  # type: ignore[no-any-return]
+
+
+def _session_creations(request: Request) -> set[UUID]:
+    return request.app.state.paper_trader_session_creations  # type: ignore[no-any-return]
 
 
 def _session(request: Request, session_id: str, user: CurrentUser) -> UserPaperSession:
@@ -126,29 +132,91 @@ async def create_session(
     if range_start >= range_end:
         raise HTTPException(status_code=422, detail="range_start must be before range_end")
 
+    creations = _session_creations(request)
+    if user.user_id in creations:
+        raise HTTPException(status_code=409, detail="模拟行情正在生成, 请稍候")
+    creations.add(user.user_id)
+    try:
+        return await _create_session(
+            payload,
+            request,
+            user,
+            symbol,
+            range_start,
+            range_end,
+        )
+    finally:
+        creations.discard(user.user_id)
+
+
+async def _create_session(
+    payload: PaperSessionCreate,
+    request: Request,
+    user: CurrentUser,
+    symbol: str,
+    range_start: datetime,
+    range_end: datetime,
+) -> PaperSessionSnapshot:
+
     repository = MonitoringRepository(request.app.state.database_engine)
-    lookback_bars = 24 * 60 * 60 // payload.interval_seconds
     try:
         rows = await repository.paper_trader_klines(
             symbol=symbol,
-            range_start=range_start - timedelta(hours=24),
+            range_start=range_start,
             range_end=range_end,
             interval_seconds=payload.interval_seconds,
-            limit=MAX_CANDLES + lookback_bars + 1,
+            limit=MAX_CANDLES + 1,
         )
     except Exception as error:
+        logger.exception(
+            "paper replay candle query failed symbol=%s interval=%s start=%s end=%s",
+            symbol,
+            payload.interval_seconds,
+            range_start,
+            range_end,
+        )
         raise HTTPException(status_code=503, detail="paper trading data unavailable") from error
-    all_candles = tuple(PaperCandle.model_validate(row) for row in rows)
     candles = tuple(
-        candle for candle in all_candles if candle.open_time >= range_start
-    )
-    lookback_candles = tuple(
-        candle for candle in all_candles if candle.open_time < range_start
+        PaperCandle.model_validate(row)
+        for row in rows
+        if row.open_time >= range_start
     )
     if not candles:
         raise HTTPException(status_code=404, detail="所选时间范围没有可用 K 线")
     if len(candles) > MAX_CANDLES:
         raise HTTPException(status_code=422, detail=f"所选范围不能超过 {MAX_CANDLES} 根 K 线")
+
+    lookback_candles: tuple[PaperCandle, ...] = ()
+    reference_start = range_start - timedelta(hours=24)
+    reference_end = min(range_start, range_end - timedelta(hours=24))
+    if reference_start < reference_end:
+        reference_limit = min(
+            MAX_CANDLES,
+            int((reference_end - reference_start).total_seconds())
+            // payload.interval_seconds
+            + 1,
+        )
+        try:
+            reference_rows = await repository.paper_trader_klines(
+                symbol=symbol,
+                range_start=reference_start,
+                range_end=reference_end,
+                interval_seconds=payload.interval_seconds,
+                limit=reference_limit,
+            )
+            lookback_candles = tuple(
+                PaperCandle.model_validate(row) for row in reference_rows
+            )
+        except Exception:
+            logger.warning(
+                "paper replay 24h reference query failed; continuing without 24h change "
+                "symbol=%s interval=%s start=%s end=%s",
+                symbol,
+                payload.interval_seconds,
+                reference_start,
+                reference_end,
+                exc_info=True,
+            )
 
     account = await AccountRepository(request.app.state.database_engine).account_summary(
         user.user_id

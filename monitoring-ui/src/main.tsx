@@ -2236,6 +2236,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const advancingRef = useRef(false);
+  const startingSessionRef = useRef(false);
 
   useEffect(() => {
     void fetch("/api/paper-trader/metadata", { cache: "no-store" })
@@ -2317,10 +2318,12 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     selectedSymbol = symbol,
     selectedInterval = intervalSeconds
   ) {
+    if (startingSessionRef.current) return;
     if (!selectedStart || !selectedEnd) {
       setError("请选择完整的行情开始和结束时间");
       return;
     }
+    startingSessionRef.current = true;
     setLoading(true);
     setPlaying(false);
     setError(null);
@@ -2338,11 +2341,13 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "模拟账户创建失败");
     } finally {
+      startingSessionRef.current = false;
       setLoading(false);
     }
   }
 
   function startRandomSession(kind: "US" | "ASIA") {
+    if (startingSessionRef.current) return;
     const coverage = metadata?.ranges.find((item) => item.symbol === symbol);
     if (!coverage?.available_from || !coverage.available_to) {
       setError(`${symbol} 暂无可用的本地历史行情`);
@@ -2399,6 +2404,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }
 
   function startReplayPreset(preset: PaperReplayPreset) {
+    if (startingSessionRef.current) return;
     setSymbol(preset.symbol);
     setIntervalSeconds(preset.intervalSeconds);
     setRangeStart(preset.rangeStart);
