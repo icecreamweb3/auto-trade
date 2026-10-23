@@ -2530,8 +2530,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [closePrice, setClosePrice] = useState<NumericInput>("");
   const [closeQuantity, setCloseQuantity] = useState<NumericInput>("");
   const [autoTwoRTakeProfit, setAutoTwoRTakeProfit] = useState(true);
-  const [showUpperOpeningRange, setShowUpperOpeningRange] = useState(true);
-  const [showLowerOpeningRange, setShowLowerOpeningRange] = useState(true);
+  const [showUpperOpeningRange, setShowUpperOpeningRange] = useState(false);
+  const [showLowerOpeningRange, setShowLowerOpeningRange] = useState(false);
   const [positionAction, setPositionAction] = useState(false);
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
