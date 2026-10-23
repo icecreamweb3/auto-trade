@@ -2017,6 +2017,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [stopLoss, setStopLoss] = useState<NumericInput>("");
   const [positionTab, setPositionTab] = useState<"position" | "history">("position");
   const [positionAction, setPositionAction] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperCandle[]>([]);
   const [playing, setPlaying] = useState(false);
@@ -2101,6 +2102,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         body: JSON.stringify({ symbol, interval_seconds: intervalSeconds, range_start: utc8InputToIso(selectedStart), range_end: utc8InputToIso(selectedEnd) })
       });
       applySnapshot(next, true);
+      setSettingsOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "模拟账户创建失败");
     } finally {
@@ -2233,9 +2235,12 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   return <main className="paper-page">
     <header className="topbar">
       <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在个人模拟账户中练习仓位与杠杆。</p></div>
-      <div className="paper-rule-badge"><span>首版撮合规则</span><strong>市价成交 · 单仓逐仓 · 维持保证金率 0.5%</strong></div>
+      <div className="paper-page-actions">
+        <div className="paper-rule-badge"><span>首版撮合规则</span><strong>市价成交 · 单仓逐仓 · 维持保证金率 0.5%</strong></div>
+        <div><button type="button" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>{settingsOpen ? "收起设置" : "⚙ 回放设置"}</button><button className="primary-button paper-random-start" type="button" onClick={startRandomEarlySession} disabled={loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机早盘开始"}</button></div>
+      </div>
     </header>
-    <section className="panel paper-config">
+    {settingsOpen && <section className="panel paper-config">
       <div className="paper-config-grid">
         <label><span>交易对</span><select value={symbol} onChange={(event) => setSymbol(event.target.value)} disabled={!!snapshot && !gameEnded}><option>BTCUSDT</option><option>ETHUSDT</option></select></label>
         <label><span>K 线级别</span><select value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} disabled={!!snapshot && !gameEnded}><option value={300}>5min</option><option value={900}>15min</option><option value={3600}>1h</option></select></label>
@@ -2243,12 +2248,11 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         <label><span>结束时间 UTC+8</span><input type="datetime-local" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} disabled={!!snapshot && !gameEnded} /></label>
         <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label>
         <div className="paper-start-actions">
-          <button type="button" onClick={startRandomEarlySession} disabled={loading || !metadata} title="UTC+8 开盘日周一至周五 21:30—次日 04:30">随机早盘</button>
-          <button className="primary-button" type="button" onClick={() => void startGame()} disabled={loading || !metadata}>{loading ? "正在载入…" : snapshot ? "重新开始" : "载入并开始"}</button>
+          <button className="primary-button" type="button" onClick={() => void startGame()} disabled={loading || !metadata}>{loading ? "正在载入…" : snapshot ? "按设置重新开始" : "按设置开始"}</button>
         </div>
       </div>
-      <p className="paper-random-hint">随机早盘：UTC+8 开盘日周一至周五 21:30—次日 04:30</p>
-    </section>
+      <p className="paper-random-hint">随机早盘范围：UTC+8 周一至周五 21:30—次日 04:30；设置面板用于指定交易对、K 线级别和自定义时间。</p>
+    </section>}
     {error && <div className="alert alert-critical">{error}</div>}
     {!snapshot ? <section className="panel paper-empty"><strong>准备开始</strong><p>载入后只会显示第一根 K 线，后续行情不会提前暴露。</p></section> : <>
       <section className="paper-workspace">
