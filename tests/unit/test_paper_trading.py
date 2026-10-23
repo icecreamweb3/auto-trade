@@ -172,6 +172,57 @@ def test_take_profit_closes_position_at_trigger_price() -> None:
     assert result.trades[0].exit_reason == "TAKE_PROFIT"
 
 
+def test_replacing_take_profit_cancels_old_order_and_uses_latest_order() -> None:
+    game = session(candle(0), candle(1, close=106, high=111, low=99), candle(2))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    game.set_risk_orders(
+        take_profit_price=105,
+        stop_loss_price=95,
+        take_profit_quantity=4,
+    )
+
+    replaced = game.set_risk_orders(
+        take_profit_price=110,
+        stop_loss_price=95,
+        take_profit_quantity=6,
+    )
+    result = game.advance()
+
+    assert replaced.message == "已取消原止盈委托, 并创建最新止盈委托"
+    assert replaced.position is not None
+    assert replaced.position.take_profit_price == 110
+    assert replaced.position.take_profit_quantity == 6
+    assert result.position is not None
+    assert result.position.quantity == pytest.approx(4)
+    assert result.position.take_profit_price is None
+    assert result.balance == pytest.approx(1060)
+    assert result.trades[0].quantity == pytest.approx(6)
+    assert result.trades[0].exit_price == 110
+
+
+def test_partial_market_close_keeps_remaining_position_open() -> None:
+    game = session(candle(0), candle(1, close=110), candle(2))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    game.advance()
+
+    result = game.close_position(quantity=2.5)
+
+    assert result.position is not None
+    assert result.position.quantity == pytest.approx(7.5)
+    assert result.position.margin == pytest.approx(75)
+    assert result.balance == pytest.approx(1025)
+    assert result.trades[0].quantity == pytest.approx(2.5)
+    assert result.trades[0].exit_reason == "MANUAL"
+
+
+def test_rejects_close_quantity_above_current_position() -> None:
+    game = session(candle(0), candle(1))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+
+    with pytest.raises(ValueError, match="不能超过"):
+        game.close_position(quantity=10.1)
+
+
 def test_stop_loss_has_conservative_priority_when_both_triggers_touch() -> None:
     game = session(candle(0), candle(1, close=100, high=106, low=94), candle(2))
     game.open_position(PositionSide.LONG, notional=200, leverage=2)

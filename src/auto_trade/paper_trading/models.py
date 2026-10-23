@@ -47,6 +47,7 @@ class PaperPosition(BaseModel):
     mark_price: float
     liquidation_price: float
     take_profit_price: float | None = None
+    take_profit_quantity: float | None = None
     stop_loss_price: float | None = None
     unrealized_pnl: float
     return_on_margin_percent: float
@@ -83,7 +84,12 @@ class PaperOrderCreate(BaseModel):
 
 class PaperRiskUpdate(BaseModel):
     take_profit_price: float | None = Field(default=None, gt=0)
+    take_profit_quantity: float | None = Field(default=None, gt=0)
     stop_loss_price: float | None = Field(default=None, gt=0)
+
+
+class PaperCloseOrderCreate(BaseModel):
+    quantity: float | None = Field(default=None, gt=0)
 
 
 class PaperSessionSnapshot(BaseModel):

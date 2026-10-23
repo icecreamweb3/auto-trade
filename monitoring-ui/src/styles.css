@@ -251,7 +251,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-page-actions .paper-random-start { min-width: 164px; padding-inline: 22px; font-size: 14px; }
 .paper-config { margin-bottom: 14px; }
 .paper-config-grid { display: grid; grid-template-columns: .72fr .72fr 1.2fr 1.2fr 1fr auto; gap: 11px; align-items: end; }
-.paper-config-grid label > span, .paper-order-form label > span { display: block; margin-bottom: 7px; color: #8da4ba; font-size: 11px; font-weight: 700; }
+.paper-config-grid label > span, .paper-order-form label > span, .paper-close-form label > span { display: block; margin-bottom: 7px; color: #8da4ba; font-size: 11px; font-weight: 700; }
 .paper-start-actions { display: flex; gap: 8px; }
 .paper-start-actions button { white-space: nowrap; }
 .paper-random-hint { margin: 10px 0 0; color: #6f879e; font-size: 10px; }
@@ -302,6 +302,12 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-short-button:hover { background: #ff93a0; }
 .paper-order-capacity { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid #1b3348; }
 .paper-close-form { display: grid; gap: 15px; }
+.paper-close-type-tabs { display: flex; align-items: center; gap: 18px; min-height: 31px; border-bottom: 1px solid #1b3348; }
+.paper-close-type-tabs button { height: 31px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 0 2px; color: #8da4ba; background: transparent; font-size: 11px; font-weight: 800; }
+.paper-close-type-tabs button.active { color: #58d6c2; border-bottom-color: #58d6c2; }
+.paper-close-input { position: relative; }
+.paper-close-input input { width: 100%; padding-right: 65px; }
+.paper-close-input em { position: absolute; top: 50%; right: 12px; color: #6f9fc4; font-size: 10px; font-style: normal; transform: translateY(-50%); pointer-events: none; }
 .paper-close-summary { display: grid; gap: 10px; margin: 0; border: 1px solid #29455e; border-radius: 9px; padding: 13px; background: #091725; }
 .paper-close-summary div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .paper-close-summary dt, .paper-close-summary dd { margin: 0; font-size: 11px; font-variant-numeric: tabular-nums; }

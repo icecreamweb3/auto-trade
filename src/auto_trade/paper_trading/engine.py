@@ -28,6 +28,7 @@ class OpenPosition:
     liquidation_price: float
     opened_at: datetime
     take_profit_price: float | None = None
+    take_profit_quantity: float | None = None
     stop_loss_price: float | None = None
 
 
@@ -89,17 +90,28 @@ class PaperSession:
         )
         return self.snapshot()
 
-    def close_position(self, reason: str = "MANUAL") -> PaperSessionSnapshot:
+    def close_position(
+        self,
+        reason: str = "MANUAL",
+        quantity: float | None = None,
+    ) -> PaperSessionSnapshot:
         if self.position is None:
             raise ValueError("当前没有可平持仓")
-        self._settle_position(self.current_candle.close_price, reason)
-        self.message = "持仓已平仓"
+        close_quantity = self.position.quantity if quantity is None else quantity
+        self._validate_close_quantity(close_quantity)
+        fully_closed = self._settle_position(
+            self.current_candle.close_price,
+            reason,
+            close_quantity,
+        )
+        self.message = "持仓已平仓" if fully_closed else "部分持仓已按市价平仓"
         return self.snapshot()
 
     def set_risk_orders(
         self,
         take_profit_price: float | None,
         stop_loss_price: float | None,
+        take_profit_quantity: float | None = None,
     ) -> PaperSessionSnapshot:
         position = self.position
         if position is None:
@@ -115,9 +127,24 @@ class PaperSession:
                 raise ValueError("空仓止盈价必须低于当前价格")
             if stop_loss_price is not None and stop_loss_price <= mark_price:
                 raise ValueError("空仓止损价必须高于当前价格")
+        if take_profit_price is not None:
+            take_profit_quantity = (
+                position.quantity
+                if take_profit_quantity is None
+                else take_profit_quantity
+            )
+            self._validate_close_quantity(take_profit_quantity)
+        else:
+            take_profit_quantity = None
+        replacing_take_profit = position.take_profit_price is not None
         position.take_profit_price = take_profit_price
+        position.take_profit_quantity = take_profit_quantity
         position.stop_loss_price = stop_loss_price
-        self.message = "止盈止损已更新"
+        self.message = (
+            "已取消原止盈委托, 并创建最新止盈委托"
+            if replacing_take_profit and take_profit_price is not None
+            else "止盈止损已更新"
+        )
         return self.snapshot()
 
     def advance(self) -> PaperSessionSnapshot:
@@ -166,8 +193,17 @@ class PaperSession:
                 )
             )
             if take_profit_touched and take_profit_price is not None:
-                self._settle_position(take_profit_price, "TAKE_PROFIT")
-                self.message = "价格触及止盈价, 持仓已平仓"
+                take_profit_quantity = position.take_profit_quantity or position.quantity
+                fully_closed = self._settle_position(
+                    take_profit_price,
+                    "TAKE_PROFIT",
+                    take_profit_quantity,
+                )
+                self.message = (
+                    "价格触及止盈价, 持仓已平仓"
+                    if fully_closed
+                    else "价格触及止盈价, 止盈委托已成交"
+                )
                 return self.snapshot()
 
         if self.index >= len(self.candles) - 1:
@@ -195,6 +231,7 @@ class PaperSession:
                 mark_price=mark_price,
                 liquidation_price=self.position.liquidation_price,
                 take_profit_price=self.position.take_profit_price,
+                take_profit_quantity=self.position.take_profit_quantity,
                 stop_loss_price=self.position.stop_loss_price,
                 unrealized_pnl=unrealized_pnl,
                 return_on_margin_percent=unrealized_pnl / self.position.margin * 100,
@@ -226,18 +263,36 @@ class PaperSession:
         self.status = GameStatus.COMPLETED
         self.message = "已回放到所选行情末尾, 本轮游戏结束"
 
-    def _settle_position(self, exit_price: float, reason: str) -> None:
+    def _validate_close_quantity(self, quantity: float) -> None:
         position = self.position
         if position is None:
-            return
-        pnl = position_pnl(position, exit_price)
+            raise ValueError("当前没有可平持仓")
+        if quantity <= 0:
+            raise ValueError("平仓数量必须大于 0")
+        if quantity > position.quantity + 1e-12:
+            raise ValueError("平仓数量不能超过当前持仓数量")
+
+    def _settle_position(
+        self,
+        exit_price: float,
+        reason: str,
+        quantity: float | None = None,
+    ) -> bool:
+        position = self.position
+        if position is None:
+            return True
+        close_quantity = position.quantity if quantity is None else min(quantity, position.quantity)
+        original_quantity = position.quantity
+        closed_margin = position.margin * close_quantity / original_quantity
+        direction = 1.0 if position.side is PositionSide.LONG else -1.0
+        pnl = direction * close_quantity * (exit_price - position.entry_price)
         self.balance = max(0.0, self.balance + pnl)
         self.trades.append(
             PaperTrade(
                 side=position.side,
                 leverage=position.leverage,
-                margin=position.margin,
-                quantity=position.quantity,
+                margin=closed_margin,
+                quantity=close_quantity,
                 entry_price=position.entry_price,
                 exit_price=exit_price,
                 realized_pnl=pnl,
@@ -246,7 +301,20 @@ class PaperSession:
                 exit_reason=reason,
             )
         )
-        self.position = None
+        if close_quantity >= original_quantity - 1e-12:
+            self.position = None
+            return True
+        position.quantity = original_quantity - close_quantity
+        position.margin -= closed_margin
+        position.take_profit_price = None
+        position.take_profit_quantity = None
+        position.liquidation_price = liquidation_price(
+            position.side,
+            position.entry_price,
+            position.quantity,
+            self.balance,
+        )
+        return False
 
 
 def position_pnl(position: OpenPosition, mark_price: float) -> float:

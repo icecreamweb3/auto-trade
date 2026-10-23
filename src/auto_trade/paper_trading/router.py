@@ -23,6 +23,7 @@ from auto_trade.paper_trading.engine import (
 )
 from auto_trade.paper_trading.models import (
     PaperCandle,
+    PaperCloseOrderCreate,
     PaperMarketRange,
     PaperMetadata,
     PaperOrderCreate,
@@ -63,6 +64,7 @@ async def _mutate_session(
     async with managed.lock:
         current = managed.game
         candidate = copy.copy(current)
+        candidate.position = copy.copy(current.position)
         candidate.trades = list(current.trades)
         previous_trade_count = len(current.trades)
         result = operation(candidate)
@@ -205,12 +207,15 @@ async def close_position(
     session_id: str,
     request: Request,
     user: AuthenticatedUser,
+    payload: PaperCloseOrderCreate | None = None,
 ) -> PaperSessionSnapshot:
     try:
         return await _mutate_session(
             request,
             _session(request, session_id, user),
-            lambda game: game.close_position(),
+            lambda game: game.close_position(
+                quantity=payload.quantity if payload is not None else None
+            ),
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -230,6 +235,7 @@ async def update_risk_orders(
             lambda game: game.set_risk_orders(
                 payload.take_profit_price,
                 payload.stop_loss_price,
+                payload.take_profit_quantity,
             ),
         )
     except ValueError as error:
