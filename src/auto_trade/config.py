@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     paper_history_request_interval_seconds: float = Field(
         default=0.5, ge=0, le=60
     )
+    auth_session_days: int = Field(default=30, ge=1, le=365)
+    auth_cookie_secure: bool = False
 
     @property
     def database_dsn(self) -> str:

@@ -253,6 +253,34 @@ interface PaperMetadata {
   ranges: Array<{ symbol: string; available_from: string | null; available_to: string | null }>;
 }
 
+interface AccountSummary {
+  starting_balance: number;
+  balance: number;
+  realized_pnl: number;
+  trade_count: number;
+}
+
+interface CurrentUser {
+  user_id: string;
+  email: string;
+  created_at: string;
+  account: AccountSummary;
+}
+
+interface AccountTrade extends PaperTrade {
+  trade_id: string;
+  session_id: string;
+  symbol: string;
+  interval_seconds: number;
+  balance_before: number;
+  balance_after: number;
+}
+
+interface AccountTradeHistory {
+  account: AccountSummary;
+  trades: AccountTrade[];
+}
+
 type NumericInput = number | "";
 
 interface RankingFilters {
@@ -1956,7 +1984,7 @@ function paperErrorMessage(value: unknown, fallback: string): string {
   return fallback;
 }
 
-function PaperTraderWorkspace() {
+function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: number) => void }) {
   const [metadata, setMetadata] = useState<PaperMetadata | null>(null);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [intervalSeconds, setIntervalSeconds] = useState(300);
@@ -2015,6 +2043,7 @@ function PaperTraderWorkspace() {
 
   function applySnapshot(next: PaperSessionSnapshot, reset = false) {
     setSnapshot(next);
+    onBalanceChange(next.balance);
     setCandles((current) => {
       if (reset) return [next.current_candle];
       const last = current[current.length - 1];
@@ -2221,16 +2250,152 @@ function PaperTraderWorkspace() {
   </main>;
 }
 
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: CurrentUser) => void }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (mode === "register" && password !== confirmation) {
+      setError("两次输入的密码不一致");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/auth/${mode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+      });
+      const body = await response.json() as CurrentUser | { detail?: string };
+      if (!response.ok) throw new Error(paperErrorMessage(body, `请求失败 (HTTP ${response.status})`));
+      onAuthenticated(body as CurrentUser);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "登录失败");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function switchMode(next: "login" | "register") {
+    setMode(next);
+    setPassword("");
+    setConfirmation("");
+    setError(null);
+  }
+
+  return <main className="auth-page">
+    <section className="auth-card">
+      <div className="auth-intro">
+        <p className="brand-mark">AUTO TRADE 2.0</p>
+        <h1>训练你的交易决策</h1>
+        <p>登录后使用行情研究、策略回测和 PaperTrader。新账户会获得 1000 USDT 模拟余额。</p>
+        <div className="auth-balance-promise"><span>新用户模拟资金</span><strong>1,000.00 USDT</strong></div>
+      </div>
+      <form className="auth-form" onSubmit={(event) => void submit(event)}>
+        <div className="auth-mode-switch">
+          <button type="button" className={mode === "login" ? "active" : ""} onClick={() => switchMode("login")}>登录</button>
+          <button type="button" className={mode === "register" ? "active" : ""} onClick={() => switchMode("register")}>注册</button>
+        </div>
+        <div><p className="eyebrow">{mode === "login" ? "WELCOME BACK" : "CREATE ACCOUNT"}</p><h2>{mode === "login" ? "登录账户" : "创建新账户"}</h2></div>
+        {error && <div className="alert alert-critical">{error}</div>}
+        <label><span>邮箱</span><input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required /></label>
+        <label><span>密码</span><input type="password" minLength={8} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" required /></label>
+        {mode === "register" && <label><span>确认密码</span><input type="password" minLength={8} maxLength={128} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="再次输入密码" required /></label>}
+        <button className="primary-button auth-submit" type="submit" disabled={submitting}>{submitting ? "处理中…" : mode === "login" ? "登录" : "注册并领取 1000 USDT"}</button>
+        <small>当前版本无需邮箱验证。密码经过加盐哈希后保存，系统不会存储明文密码。</small>
+      </form>
+    </section>
+  </main>;
+}
+
+function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAccountChange: (account: AccountSummary) => void }) {
+  const [history, setHistory] = useState<AccountTradeHistory | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    void fetch("/api/account/trades?limit=500", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as AccountTradeHistory | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "账户记录加载失败"));
+        const value = body as AccountTradeHistory;
+        setHistory(value);
+        onAccountChange(value.account);
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "账户记录加载失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const account = history?.account ?? user.account;
+  return <main className="account-page">
+    <header className="topbar"><div><p className="brand-mark">MY ACCOUNT</p><h1>模拟账户</h1><p className="subtitle">{user.email} · 注册于 {new Date(user.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</p></div></header>
+    <section className="paper-account-grid">
+      <article className="summary-card"><span>当前余额</span><strong>{formatNumber(account.balance, 2)}</strong><em>USDT</em></article>
+      <article className="summary-card"><span>初始资金</span><strong>{formatNumber(account.starting_balance, 2)}</strong><em>USDT</em></article>
+      <article className="summary-card"><span>累计已实现盈亏</span><strong className={account.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{account.realized_pnl >= 0 ? "+" : ""}{formatNumber(account.realized_pnl, 2)}</strong><em>USDT</em></article>
+      <article className="summary-card"><span>累计成交</span><strong>{account.trade_count}</strong><em>笔已平仓交易</em></article>
+    </section>
+    <section className="panel account-history-panel">
+      <div className="panel-heading"><div><p className="eyebrow">TRADE HISTORY</p><h3>全部模拟交易记录</h3></div></div>
+      {loading ? <div className="loading">正在读取账户记录…</div> : error ? <div className="alert alert-critical">{error}</div> : history?.trades.length ? <div className="table-scroll account-history-scroll"><table className="storage-table account-history-table"><thead><tr><th>平仓时间 UTC+8</th><th>交易对</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>已实现盈亏</th><th>平仓后余额</th><th>原因</th></tr></thead><tbody>{history.trades.map((trade) => <tr key={trade.trade_id}><td>{new Date(trade.closed_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{trade.symbol}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{trade.leverage}x</td><td>{formatNumber(trade.quantity, 6)}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td className={trade.realized_pnl >= 0 ? "change-positive" : "change-negative"}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{formatNumber(trade.balance_after, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">暂无交易记录，前往交易模拟器开始第一笔练习。</div>}
+    </section>
+  </main>;
+}
+
+type WorkspaceView = "rankings" | "backtest" | "paper" | "monitoring" | "account";
+
 function App() {
-  const [view, setView] = useState<"rankings" | "backtest" | "paper" | "monitoring">("rankings");
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [view, setView] = useState<WorkspaceView>("rankings");
+
+  useEffect(() => {
+    void fetch("/api/auth/me", { cache: "no-store" })
+      .then(async (response) => {
+        if (response.status === 401) return null;
+        const body = await response.json() as CurrentUser | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "账户状态读取失败"));
+        return body as CurrentUser;
+      })
+      .then((value) => setUser(value))
+      .catch(() => setUser(null))
+      .finally(() => setAuthLoading(false));
+  }, []);
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setUser(null);
+    setView("rankings");
+  }
+
+  function updateAccount(account: AccountSummary) {
+    setUser((current) => current ? { ...current, account } : current);
+  }
+
+  function updateBalance(balance: number) {
+    setUser((current) => current ? { ...current, account: { ...current.account, balance, realized_pnl: balance - current.account.starting_balance } } : current);
+  }
+
+  if (authLoading) return <main className="auth-loading"><div className="loading">正在检查登录状态…</div></main>;
+  if (!user) return <AuthScreen onAuthenticated={setUser} />;
   return <>
-    <nav className="workspace-tabs" aria-label="工具导航">
-      <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>
-      <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>
-      <button className={view === "paper" ? "active" : ""} onClick={() => setView("paper")}>交易模拟器</button>
-      <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>
-    </nav>
-    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "paper" ? <PaperTraderWorkspace /> : <MonitoringDashboard />}
+    <div className="workspace-header">
+      <nav className="workspace-tabs" aria-label="工具导航">
+        <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>
+        <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>
+        <button className={view === "paper" ? "active" : ""} onClick={() => setView("paper")}>交易模拟器</button>
+        <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>
+      </nav>
+      <div className="workspace-user"><button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}><span>{user.email}</span><strong>{formatNumber(user.account.balance, 2)} USDT</strong></button><button type="button" onClick={() => void logout()}>退出</button></div>
+    </div>
+    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "paper" ? <PaperTraderWorkspace onBalanceChange={updateBalance} /> : view === "account" ? <AccountWorkspace user={user} onAccountChange={updateAccount} /> : <MonitoringDashboard />}
   </>;
 }
 

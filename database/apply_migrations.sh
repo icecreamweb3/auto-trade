@@ -15,7 +15,7 @@ else
     psql --set=ON_ERROR_STOP=1 --file=/migrations/001_initial_schema.sql
 fi
 
-for migration in /migrations/[0-9][0-9][2-9]_*.sql; do
+for migration in /migrations/[0-9][0-9][0-9]_*.sql; do
     [ -f "${migration}" ] || continue
     version=$(basename "${migration}" .sql)
     applied=$(

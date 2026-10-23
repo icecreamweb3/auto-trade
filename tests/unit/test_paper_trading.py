@@ -122,3 +122,16 @@ def test_base_asset_notional_uses_close_price_and_requested_quantity() -> None:
     assert opened.position.quantity == 2
     assert opened.position.margin == pytest.approx(2.5)
     assert opened.available_balance == pytest.approx(997.5)
+
+
+def test_session_uses_persisted_account_balance_without_resetting_it() -> None:
+    game = session(candle(0), candle(1, close=110))
+    game.balance = 1250
+
+    opened = game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    closed = game.advance()
+
+    assert opened.balance == 1250
+    assert opened.available_balance == 1150
+    assert closed.balance == pytest.approx(1350)
+    assert closed.realized_pnl == pytest.approx(350)

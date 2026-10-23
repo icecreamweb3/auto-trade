@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from auto_trade.accounts.router import router as accounts_router
 from auto_trade.backtesting.router import router as backtest_router
 from auto_trade.backtesting.service import BacktestManager
 from auto_trade.config import get_settings
@@ -59,6 +60,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.include_router(accounts_router)
 app.include_router(backtest_router)
 app.include_router(paper_trader_router)
 
