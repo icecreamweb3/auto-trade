@@ -8,7 +8,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from auto_trade.accounts.models import AccountSummary, AccountTrade, CurrentUser
+from auto_trade.accounts.models import (
+    AccountSummary,
+    AccountTrade,
+    AdminUser,
+    CurrentUser,
+    UserRole,
+)
 from auto_trade.paper_trading.models import PaperTrade
 
 
@@ -53,6 +59,7 @@ class AccountRepository:
         return CurrentUser(
             user_id=user["user_id"],
             email=user["email"],
+            role=UserRole.NORMAL,
             created_at=user["created_at"],
             account=AccountSummary(
                 starting_balance=1000,
@@ -62,7 +69,7 @@ class AccountRepository:
             ),
         )
 
-    async def credentials(self, email: str) -> dict[str, Any] | None:
+    async def credentials(self, identifier: str) -> dict[str, Any] | None:
         async with self.engine.connect() as connection:
             row = (
                 await connection.execute(
@@ -70,10 +77,11 @@ class AccountRepository:
                         """
                         SELECT user_id, password_hash
                         FROM core.app_users
-                        WHERE email = :email
+                        WHERE lower(email) = lower(:identifier)
+                           OR lower(username) = lower(:identifier)
                         """
                     ),
-                    {"email": email},
+                    {"identifier": identifier},
                 )
             ).mappings().one_or_none()
         return dict(row) if row is not None else None
@@ -114,6 +122,8 @@ class AccountRepository:
                         """
                         SELECT u.user_id,
                                u.email,
+                               u.username,
+                               u.role,
                                u.created_at,
                                a.starting_balance,
                                a.balance,
@@ -124,7 +134,7 @@ class AccountRepository:
                         LEFT JOIN trade.paper_trades t ON t.user_id = u.user_id
                         WHERE s.token_hash = :token_hash
                           AND s.expires_at > now()
-                        GROUP BY u.user_id, u.email, u.created_at,
+                        GROUP BY u.user_id, u.email, u.username, u.role, u.created_at,
                                  a.starting_balance, a.balance
                         """
                     ),
@@ -152,6 +162,8 @@ class AccountRepository:
                         """
                         SELECT u.user_id,
                                u.email,
+                               u.username,
+                               u.role,
                                u.created_at,
                                a.starting_balance,
                                a.balance,
@@ -160,7 +172,7 @@ class AccountRepository:
                         JOIN trade.paper_accounts a ON a.user_id = u.user_id
                         LEFT JOIN trade.paper_trades t ON t.user_id = u.user_id
                         WHERE u.user_id = :user_id
-                        GROUP BY u.user_id, u.email, u.created_at,
+                        GROUP BY u.user_id, u.email, u.username, u.role, u.created_at,
                                  a.starting_balance, a.balance
                         """
                     ),
@@ -209,6 +221,98 @@ class AccountRepository:
                 )
             ).mappings().all()
         return tuple(AccountTrade.model_validate(row) for row in rows)
+
+    async def ensure_default_admin(
+        self, username: str, email: str, password_hash: str
+    ) -> None:
+        async with self.engine.begin() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO core.app_users (email, username, password_hash, role)
+                        VALUES (:email, :username, :password_hash, 'ADMIN')
+                        ON CONFLICT DO NOTHING
+                        RETURNING user_id
+                        """
+                    ),
+                    {
+                        "email": email,
+                        "username": username,
+                        "password_hash": password_hash,
+                    },
+                )
+            ).mappings().one_or_none()
+            if row is not None:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO trade.paper_accounts (user_id, starting_balance, balance)
+                        VALUES (:user_id, 1000, 1000)
+                        """
+                    ),
+                    {"user_id": row["user_id"]},
+                )
+                return
+            existing_role = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT role
+                        FROM core.app_users
+                        WHERE lower(username) = lower(:username)
+                        """
+                    ),
+                    {"username": username},
+                )
+            ).scalar_one_or_none()
+            if existing_role != UserRole.ADMIN.value:
+                raise RuntimeError(
+                    "default administrator could not be created because its "
+                    "username or reserved email is already in use"
+                )
+
+    async def users(self) -> tuple[AdminUser, ...]:
+        async with self.engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT u.user_id, u.email, u.username, u.role, u.created_at,
+                               a.balance, count(t.trade_id)::integer AS trade_count
+                        FROM core.app_users u
+                        JOIN trade.paper_accounts a ON a.user_id = u.user_id
+                        LEFT JOIN trade.paper_trades t ON t.user_id = u.user_id
+                        GROUP BY u.user_id, u.email, u.username, u.role,
+                                 u.created_at, a.balance
+                        ORDER BY u.created_at DESC, u.user_id DESC
+                        """
+                    )
+                )
+            ).mappings().all()
+        return tuple(AdminUser.model_validate(row) for row in rows)
+
+    async def update_user_role(
+        self, user_id: UUID, role: UserRole
+    ) -> AdminUser | None:
+        async with self.engine.begin() as connection:
+            updated = (
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE core.app_users
+                        SET role = :role
+                        WHERE user_id = :user_id
+                          AND role <> 'ADMIN'
+                        RETURNING user_id
+                        """
+                    ),
+                    {"user_id": user_id, "role": role.value},
+                )
+            ).scalar_one_or_none()
+        if updated is None:
+            return None
+        return next(user for user in await self.users() if user.user_id == user_id)
 
     async def record_trade(
         self,
@@ -299,6 +403,8 @@ class AccountRepository:
         return CurrentUser(
             user_id=row["user_id"],
             email=row["email"],
+            username=row["username"],
+            role=UserRole(row["role"]),
             created_at=row["created_at"],
             account=cls._account_summary(row),
         )

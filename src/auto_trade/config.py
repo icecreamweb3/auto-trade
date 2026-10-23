@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     )
     auth_session_days: int = Field(default=30, ge=1, le=365)
     auth_cookie_secure: bool = False
+    default_admin_username: str = Field(default="Admin", min_length=1, max_length=80)
+    default_admin_password: SecretStr = Field(
+        default=SecretStr("Admin@123"), min_length=8, max_length=128
+    )
 
     @property
     def database_dsn(self) -> str:

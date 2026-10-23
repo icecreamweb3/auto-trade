@@ -357,6 +357,16 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .account-history-table { min-width: 1180px; }
 .account-history-table th:first-child, .account-history-table td:first-child { text-align: left; }
 .account-history-empty { display: grid; min-height: 220px; place-items: center; color: #718ba1; }
+.admin-user-table { min-width: 920px; }
+.admin-user-table th:first-child, .admin-user-table td:first-child { text-align: left; }
+.admin-user-table td:first-child strong, .admin-user-table td:first-child small { display: block; }
+.admin-user-table td:first-child small { margin-top: 4px; }
+.admin-user-table select { min-width: 116px; padding: 7px 9px; }
+.user-role { display: inline-flex; border: 1px solid; border-radius: 999px; padding: 5px 9px; font-size: 10px; font-weight: 800; }
+.role-normal { color: #a5b8ca; border-color: #3b5368; background: #152638; }
+.role-advanced { color: #65dfcb; border-color: #287b6d; background: #0c302b; }
+.role-admin { color: #ffd378; border-color: #80632d; background: #302711; }
+.admin-locked { color: #6f879e; font-size: 11px; }
 
 @media (max-width: 1000px) {
   .workspace-header { position: relative; top: 0; display: flex; width: calc(100% - 20px); flex-wrap: wrap; justify-content: center; margin-bottom: -8px; }

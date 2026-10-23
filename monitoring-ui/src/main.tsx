@@ -263,8 +263,20 @@ interface AccountSummary {
 interface CurrentUser {
   user_id: string;
   email: string;
+  username: string | null;
+  role: "NORMAL" | "ADVANCED" | "ADMIN";
   created_at: string;
   account: AccountSummary;
+}
+
+interface AdminUser {
+  user_id: string;
+  email: string;
+  username: string | null;
+  role: "NORMAL" | "ADVANCED" | "ADMIN";
+  created_at: string;
+  balance: number;
+  trade_count: number;
 }
 
 interface AccountTrade extends PaperTrade {
@@ -2181,7 +2193,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const maintenanceMargin = positionNotional * maintenanceMarginRate;
   return <main className="paper-page">
     <header className="topbar">
-      <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在 1000 USDT 模拟账户中练习仓位与杠杆。</p></div>
+      <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在个人模拟账户中练习仓位与杠杆。</p></div>
       <div className="paper-rule-badge"><span>首版撮合规则</span><strong>市价成交 · 单仓逐仓 · 维持保证金率 0.5%</strong></div>
     </header>
     <section className="panel paper-config">
@@ -2252,7 +2264,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
 
 function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: CurrentUser) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -2270,7 +2282,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: CurrentUser) 
       const response = await fetch(`/api/auth/${mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify(mode === "login" ? { identifier, password } : { email: identifier, password })
       });
       const body = await response.json() as CurrentUser | { detail?: string };
       if (!response.ok) throw new Error(paperErrorMessage(body, `请求失败 (HTTP ${response.status})`));
@@ -2304,12 +2316,59 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: CurrentUser) 
         </div>
         <div><p className="eyebrow">{mode === "login" ? "WELCOME BACK" : "CREATE ACCOUNT"}</p><h2>{mode === "login" ? "登录账户" : "创建新账户"}</h2></div>
         {error && <div className="alert alert-critical">{error}</div>}
-        <label><span>邮箱</span><input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required /></label>
+        <label><span>{mode === "login" ? "邮箱或用户名" : "邮箱"}</span><input type={mode === "login" ? "text" : "email"} autoComplete="username" value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={mode === "login" ? "邮箱，或管理员用户名 Admin" : "name@example.com"} required /></label>
         <label><span>密码</span><input type="password" minLength={8} maxLength={128} autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 8 位" required /></label>
         {mode === "register" && <label><span>确认密码</span><input type="password" minLength={8} maxLength={128} autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="再次输入密码" required /></label>}
         <button className="primary-button auth-submit" type="submit" disabled={submitting}>{submitting ? "处理中…" : mode === "login" ? "登录" : "注册并领取 1000 USDT"}</button>
         <small>当前版本无需邮箱验证。密码经过加盐哈希后保存，系统不会存储明文密码。</small>
       </form>
+    </section>
+  </main>;
+}
+
+function UserManagementWorkspace() {
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/admin/users", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as AdminUser[] | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "用户列表加载失败"));
+        setUsers(body as AdminUser[]);
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "用户列表加载失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function updateRole(userId: string, role: "NORMAL" | "ADVANCED") {
+    setUpdating(userId);
+    setError(null);
+    try {
+      const response = await fetch(`/api/admin/users/${userId}/role`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role })
+      });
+      const body = await response.json() as AdminUser | { detail?: string };
+      if (!response.ok) throw new Error(paperErrorMessage(body, "用户等级更新失败"));
+      const updated = body as AdminUser;
+      setUsers((current) => current.map((user) => user.user_id === updated.user_id ? updated : user));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "用户等级更新失败");
+    } finally {
+      setUpdating(null);
+    }
+  }
+
+  return <main className="admin-page">
+    <header className="topbar"><div><p className="brand-mark">ADMINISTRATION</p><h1>用户管理</h1><p className="subtitle">查看用户账户并管理普通用户与高级用户等级。</p></div></header>
+    {error && <div className="alert alert-critical">{error}</div>}
+    <section className="panel account-history-panel">
+      <div className="panel-heading"><div><p className="eyebrow">USERS</p><h3>系统用户</h3></div><strong>{users.length} 位</strong></div>
+      {loading ? <div className="loading">正在读取用户列表…</div> : <div className="table-scroll"><table className="storage-table admin-user-table"><thead><tr><th>用户</th><th>等级</th><th>注册时间 UTC+8</th><th>余额</th><th>交易数</th><th>等级管理</th></tr></thead><tbody>{users.map((user) => <tr key={user.user_id}><td><strong>{user.username ?? user.email}</strong>{user.username && <small>{user.email}</small>}</td><td><span className={`user-role role-${user.role.toLowerCase()}`}>{user.role === "NORMAL" ? "普通用户" : user.role === "ADVANCED" ? "高级用户" : "管理员"}</span></td><td>{new Date(user.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{formatNumber(user.balance, 2)} USDT</td><td>{user.trade_count}</td><td>{user.role === "ADMIN" ? <span className="admin-locked">不可修改</span> : <select value={user.role} onChange={(event) => void updateRole(user.user_id, event.target.value as "NORMAL" | "ADVANCED")} disabled={updating === user.user_id}><option value="NORMAL">普通用户</option><option value="ADVANCED">高级用户</option></select>}</td></tr>)}</tbody></table></div>}
     </section>
   </main>;
 }
@@ -2335,7 +2394,7 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
 
   const account = history?.account ?? user.account;
   return <main className="account-page">
-    <header className="topbar"><div><p className="brand-mark">MY ACCOUNT</p><h1>模拟账户</h1><p className="subtitle">{user.email} · 注册于 {new Date(user.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</p></div></header>
+    <header className="topbar"><div><p className="brand-mark">MY ACCOUNT</p><h1>模拟账户</h1><p className="subtitle">{user.username ?? user.email} · {user.role === "NORMAL" ? "普通用户" : user.role === "ADVANCED" ? "高级用户" : "管理员"} · 注册于 {new Date(user.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</p></div></header>
     <section className="paper-account-grid">
       <article className="summary-card"><span>当前余额</span><strong>{formatNumber(account.balance, 2)}</strong><em>USDT</em></article>
       <article className="summary-card"><span>初始资金</span><strong>{formatNumber(account.starting_balance, 2)}</strong><em>USDT</em></article>
@@ -2349,12 +2408,12 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
   </main>;
 }
 
-type WorkspaceView = "rankings" | "backtest" | "paper" | "monitoring" | "account";
+type WorkspaceView = "rankings" | "backtest" | "paper" | "monitoring" | "account" | "admin";
 
 function App() {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [view, setView] = useState<WorkspaceView>("rankings");
+  const [view, setView] = useState<WorkspaceView>("paper");
 
   useEffect(() => {
     void fetch("/api/auth/me", { cache: "no-store" })
@@ -2364,7 +2423,10 @@ function App() {
         if (!response.ok) throw new Error(paperErrorMessage(body, "账户状态读取失败"));
         return body as CurrentUser;
       })
-      .then((value) => setUser(value))
+      .then((value) => {
+        setUser(value);
+        if (value?.role !== "NORMAL") setView("rankings");
+      })
       .catch(() => setUser(null))
       .finally(() => setAuthLoading(false));
   }, []);
@@ -2372,7 +2434,7 @@ function App() {
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setUser(null);
-    setView("rankings");
+    setView("paper");
   }
 
   function updateAccount(account: AccountSummary) {
@@ -2388,14 +2450,15 @@ function App() {
   return <>
     <div className="workspace-header">
       <nav className="workspace-tabs" aria-label="工具导航">
-        <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>
-        <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>
+        {user.role !== "NORMAL" && <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>}
+        {user.role !== "NORMAL" && <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>}
         <button className={view === "paper" ? "active" : ""} onClick={() => setView("paper")}>交易模拟器</button>
-        <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>
+        {user.role !== "NORMAL" && <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>}
+        {user.role === "ADMIN" && <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>用户管理</button>}
       </nav>
       <div className="workspace-user"><button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}><span>{user.email}</span><strong>{formatNumber(user.account.balance, 2)} USDT</strong></button><button type="button" onClick={() => void logout()}>退出</button></div>
     </div>
-    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "paper" ? <PaperTraderWorkspace onBalanceChange={updateBalance} /> : view === "account" ? <AccountWorkspace user={user} onAccountChange={updateAccount} /> : <MonitoringDashboard />}
+    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "paper" ? <PaperTraderWorkspace onBalanceChange={updateBalance} /> : view === "account" ? <AccountWorkspace user={user} onAccountChange={updateAccount} /> : view === "admin" ? <UserManagementWorkspace /> : <MonitoringDashboard />}
   </>;
 }
 

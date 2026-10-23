@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from auto_trade.accounts.access import api_access_error
+from auto_trade.accounts.repository import AccountRepository
+from auto_trade.accounts.router import AUTH_COOKIE
 from auto_trade.accounts.router import router as accounts_router
+from auto_trade.accounts.security import hash_password, session_token_hash
 from auto_trade.backtesting.router import router as backtest_router
 from auto_trade.backtesting.service import BacktestManager
 from auto_trade.config import get_settings
@@ -34,6 +40,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings, "monitor-api")
     engine = create_database_engine(settings)
     app.state.database_engine = engine
+    admin_password_hash = await asyncio.to_thread(
+        hash_password, settings.default_admin_password.get_secret_value()
+    )
+    await AccountRepository(engine).ensure_default_admin(
+        settings.default_admin_username,
+        "admin@auto-trade.local",
+        admin_password_hash,
+    )
     app.state.paper_trader_sessions = {}
     app.state.backtest_manager = BacktestManager(
         engine,
@@ -60,6 +74,31 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def enforce_user_access(request: Request, call_next):  # type: ignore[no-untyped-def]
+    path = request.url.path
+    if not path.startswith("/api/") or path.startswith("/api/auth/"):
+        return await call_next(request)
+    token = request.cookies.get(AUTH_COOKIE)
+    if not token:
+        return JSONResponse(status_code=401, content={"detail": "请先登录"})
+    user = await AccountRepository(request.app.state.database_engine).current_user(
+        session_token_hash(token)
+    )
+    if user is None:
+        return JSONResponse(
+            status_code=401, content={"detail": "登录已过期, 请重新登录"}
+        )
+    request.state.current_user = user
+    access_error = api_access_error(user.role, path)
+    if access_error is not None:
+        status_code, detail = access_error
+        return JSONResponse(status_code=status_code, content={"detail": detail})
+    return await call_next(request)
+
+
 app.include_router(accounts_router)
 app.include_router(backtest_router)
 app.include_router(paper_trader_router)

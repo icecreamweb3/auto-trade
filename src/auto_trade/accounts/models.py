@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -21,6 +22,12 @@ def normalize_email(value: str) -> str:
     return normalized
 
 
+class UserRole(StrEnum):
+    NORMAL = "NORMAL"
+    ADVANCED = "ADVANCED"
+    ADMIN = "ADMIN"
+
+
 class Credentials(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=8, max_length=128)
@@ -29,6 +36,19 @@ class Credentials(BaseModel):
     @classmethod
     def validate_email(cls, value: str) -> str:
         return normalize_email(value)
+
+
+class LoginCredentials(BaseModel):
+    identifier: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("identifier")
+    @classmethod
+    def normalize_identifier(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("请输入邮箱或用户名")
+        return normalized
 
 
 class AccountSummary(BaseModel):
@@ -45,8 +65,26 @@ class CurrentUser(BaseModel):
 
     user_id: UUID
     email: str
+    username: str | None = None
+    role: UserRole
     created_at: datetime
     account: AccountSummary
+
+
+class AdminUser(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    user_id: UUID
+    email: str
+    username: str | None = None
+    role: UserRole
+    created_at: datetime
+    balance: float
+    trade_count: int
+
+
+class UserRoleUpdate(BaseModel):
+    role: UserRole
 
 
 class AccountTrade(BaseModel):

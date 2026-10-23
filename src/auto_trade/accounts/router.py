@@ -9,8 +9,12 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, R
 
 from auto_trade.accounts.models import (
     AccountTradeHistory,
+    AdminUser,
     Credentials,
     CurrentUser,
+    LoginCredentials,
+    UserRole,
+    UserRoleUpdate,
 )
 from auto_trade.accounts.repository import (
     AccountRepository,
@@ -36,6 +40,9 @@ async def require_user(
     request: Request,
     auto_trade_session: str | None = Cookie(default=None),
 ) -> CurrentUser:
+    state_user = getattr(request.state, "current_user", None)
+    if isinstance(state_user, CurrentUser):
+        return state_user
     if not auto_trade_session:
         raise HTTPException(status_code=401, detail="请先登录")
     user = await _repository(request).current_user(session_token_hash(auto_trade_session))
@@ -45,6 +52,15 @@ async def require_user(
 
 
 AuthenticatedUser = Annotated[CurrentUser, Depends(require_user)]
+
+
+async def require_admin(user: AuthenticatedUser) -> CurrentUser:
+    if user.role is not UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="仅管理员可以执行此操作")
+    return user
+
+
+Administrator = Annotated[CurrentUser, Depends(require_admin)]
 
 
 async def _issue_session(
@@ -84,10 +100,10 @@ async def register(
 
 @router.post("/api/auth/login", response_model=CurrentUser)
 async def login(
-    payload: Credentials, request: Request, response: Response
+    payload: LoginCredentials, request: Request, response: Response
 ) -> CurrentUser:
     repository = _repository(request)
-    credentials = await repository.credentials(payload.email)
+    credentials = await repository.credentials(payload.identifier)
     if credentials is None:
         await asyncio.to_thread(hash_password, payload.password)
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
@@ -129,3 +145,25 @@ async def trade_history(
         account=await repository.account_summary(user.user_id),
         trades=await repository.trades(user.user_id, limit),
     )
+
+
+@router.get("/api/admin/users", response_model=tuple[AdminUser, ...])
+async def list_users(
+    request: Request, _administrator: Administrator
+) -> tuple[AdminUser, ...]:
+    return await _repository(request).users()
+
+
+@router.patch("/api/admin/users/{user_id}/role", response_model=AdminUser)
+async def update_user_role(
+    user_id: UUID,
+    payload: UserRoleUpdate,
+    request: Request,
+    _administrator: Administrator,
+) -> AdminUser:
+    if payload.role not in (UserRole.NORMAL, UserRole.ADVANCED):
+        raise HTTPException(status_code=422, detail="只能设置普通用户或高级用户")
+    user = await _repository(request).update_user_role(user_id, payload.role)
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在或管理员等级不可修改")
+    return user
