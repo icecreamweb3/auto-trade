@@ -1997,6 +1997,8 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   const [hoveredCandle, setHoveredCandle] = useState<PaperCandleReadout | null>(null);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles;
+  const initialLatestPosition = .8;
+  const initialCandleHeightRatio = .1;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -2136,10 +2138,23 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       loadedSessionRef.current = sessionId;
       loadedCountRef.current = points.length;
       followingLatestRef.current = true;
-      chart.priceScale("right").setAutoScale(true);
+      const lowestPrice = Math.min(...points.map((point) => point.low_price));
+      const highestPrice = Math.max(...points.map((point) => point.high_price));
+      const priceCenter = (lowestPrice + highestPrice) / 2;
+      const observedPriceSpan = highestPrice - lowestPrice;
+      const minimumPriceSpan = Math.max(Math.abs(priceCenter) * .0001, .01);
+      const visiblePriceSpan = Math.max(observedPriceSpan, minimumPriceSpan) / initialCandleHeightRatio;
+      const priceScale = chart.priceScale("right");
+      priceScale.setAutoScale(false);
+      priceScale.setVisibleRange({
+        from: priceCenter - visiblePriceSpan / 2,
+        to: priceCenter + visiblePriceSpan / 2,
+      });
+      const latestIndex = points.length - 1;
+      const logicalRangeFrom = latestIndex - visibleCapacity * initialLatestPosition;
       chart.timeScale().setVisibleLogicalRange({
-        from: points.length - visibleCapacity,
-        to: points.length + 5,
+        from: logicalRangeFrom,
+        to: logicalRangeFrom + visibleCapacity,
       });
       return;
     }
