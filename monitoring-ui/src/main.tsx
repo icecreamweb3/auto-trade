@@ -2672,7 +2672,10 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
               <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
               <div className="paper-playback-actions"><label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
-            <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} priceChange24h={snapshot.price_change_24h} priceChange24hPercent={snapshot.price_change_24h_percent} />
+            <div className="paper-chart-stage">
+              <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} priceChange24h={snapshot.price_change_24h} priceChange24hPercent={snapshot.price_change_24h_percent} />
+              {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><button className="primary-button" type="button" onClick={() => void startGame()}>再来一轮</button></section>}
+            </div>
           </div>
           <section className="panel paper-position-manager">
             <div className="paper-position-tabs"><button type="button" className={positionTab === "position" ? "active" : ""} onClick={() => setPositionTab("position")}>当前持仓</button><button type="button" className={positionTab === "history" ? "active" : ""} onClick={() => setPositionTab("history")}>历史订单 <span>{snapshot.trades.length}</span></button><label className="paper-two-r-toggle"><input type="checkbox" checked={autoTwoRTakeProfit} onChange={toggleAutoTwoRTakeProfit} /><span aria-hidden="true" /><strong>自动 2R 止盈</strong></label></div>
@@ -2768,7 +2771,6 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           <footer><button type="button" onClick={() => void saveRiskOrders()} disabled={positionAction}>{positionAction ? "保存中…" : "确认"}</button></footer>
         </section>
       </div>}
-      {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><button className="primary-button" type="button" onClick={() => void startGame()}>再来一轮</button></section>}
     </>}
   </main>;
 }
