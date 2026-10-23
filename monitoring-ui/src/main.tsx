@@ -282,6 +282,11 @@ interface PaperTimeAxisLabel {
   text: string;
 }
 
+interface PaperOpeningRange {
+  high: number;
+  low: number;
+}
+
 interface PaperMetadata {
   symbols: string[];
   intervals: number[];
@@ -638,6 +643,34 @@ function formatKlineTime(value: string, axis = false): string {
 
 function formatPaperAxisTime(value: string): string {
   return utc8Iso(value).slice(11, 16);
+}
+
+function calculatePaperOpeningRange(candles: PaperChartPoint[]): PaperOpeningRange | null {
+  const latest = candles[candles.length - 1];
+  if (!latest) return null;
+  const latestUtcMs = new Date(latest.open_time).getTime();
+  if (!Number.isFinite(latestUtcMs)) return null;
+
+  const latestLocal = new Date(latestUtcMs + UTC8_OFFSET_MS);
+  const localMidnightMs = Date.UTC(
+    latestLocal.getUTCFullYear(),
+    latestLocal.getUTCMonth(),
+    latestLocal.getUTCDate()
+  );
+  const latestLocalMinutes = latestLocal.getUTCHours() * 60 + latestLocal.getUTCMinutes();
+  const sessionStartLocalMs = localMidnightMs
+    + (latestLocalMinutes >= 21 * 60 + 30 ? 21 * 60 + 30 : -(24 * 60 - 21 * 60 - 30)) * 60 * 1000;
+  const sessionStartUtcMs = sessionStartLocalMs - UTC8_OFFSET_MS;
+  const sessionEndUtcMs = sessionStartUtcMs + 13.5 * 60 * 60 * 1000;
+  const rangeCandles = candles.filter((candle) => {
+    const openTimeMs = new Date(candle.open_time).getTime();
+    return openTimeMs >= sessionStartUtcMs && openTimeMs < sessionEndUtcMs;
+  });
+  if (rangeCandles.length === 0) return null;
+  return {
+    high: Math.max(...rangeCandles.map((candle) => candle.high_price)),
+    low: Math.min(...rangeCandles.map((candle) => candle.low_price)),
+  };
 }
 
 function formatKlineTradeWindow(utcTradeDate: string): string {
@@ -1996,13 +2029,15 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, intervalSeconds, sessionId, anchoredPriceChange, anchoredPriceChangePercent }: {
+function PaperReplayChart({ candles, position, intervalSeconds, sessionId, anchoredPriceChange, anchoredPriceChangePercent, showUpperOpeningRange, showLowerOpeningRange }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   intervalSeconds: number;
   sessionId: string;
   anchoredPriceChange: number | null;
   anchoredPriceChangePercent: number | null;
+  showUpperOpeningRange: boolean;
+  showLowerOpeningRange: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -2013,6 +2048,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   const chartPointsRef = useRef<PaperChartPoint[]>(candles);
   const refreshTimeAxisRef = useRef<() => void>(() => undefined);
   const positionLinesRef = useRef<IPriceLine[]>([]);
+  const openingRangeLinesRef = useRef<IPriceLine[]>([]);
   const loadedSessionRef = useRef<string | null>(null);
   const loadedCountRef = useRef(0);
   const followingLatestRef = useRef(true);
@@ -2171,6 +2207,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       ema240SeriesRef.current = null;
       setTimeAxisLabels([]);
       positionLinesRef.current = [];
+      openingRangeLinesRef.current = [];
       loadedSessionRef.current = null;
       loadedCountRef.current = 0;
       followingLatestRef.current = true;
@@ -2280,6 +2317,33 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
     }));
   }, [position?.entry_price, position?.liquidation_price, position?.take_profit_price, position?.stop_loss_price]);
 
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    for (const line of openingRangeLinesRef.current) series.removePriceLine(line);
+    openingRangeLinesRef.current = [];
+    const openingRange = calculatePaperOpeningRange(points);
+    if (!openingRange) return;
+    const trueRange = openingRange.high - openingRange.low;
+    const definitions = [
+      { price: openingRange.high, color: "#f5aa19", title: "ORH", style: LineStyle.Dashed },
+      { price: openingRange.low, color: "#f5aa19", title: "ORL", style: LineStyle.Dashed },
+      ...(showUpperOpeningRange && trueRange > 0 ? [
+        { price: openingRange.high + trueRange, color: "#ff6477", title: "OR +1×TR", style: LineStyle.Dashed },
+        { price: openingRange.high + trueRange * 2, color: "#ff6477", title: "OR +2×TR", style: LineStyle.Dashed },
+      ] : []),
+      ...(showLowerOpeningRange && trueRange > 0 ? [
+        { price: openingRange.low - trueRange, color: "#58d6c2", title: "OR -1×TR", style: LineStyle.Dashed },
+        { price: openingRange.low - trueRange * 2, color: "#58d6c2", title: "OR -2×TR", style: LineStyle.Dashed },
+      ] : []),
+    ];
+    openingRangeLinesRef.current = definitions.map((definition) => series.createPriceLine({
+      ...definition,
+      lineWidth: 1,
+      axisLabelVisible: true,
+    }));
+  }, [points, sessionId, showUpperOpeningRange, showLowerOpeningRange]);
+
   const current = hoveredCandle ?? points[points.length - 1];
   const candleChange = current ? current.close_price - current.open_price : null;
   const candleChangePercent = current && current.open_price > 0 ? candleChange! / current.open_price * 100 : null;
@@ -2332,6 +2396,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [closePrice, setClosePrice] = useState<NumericInput>("");
   const [closeQuantity, setCloseQuantity] = useState<NumericInput>("");
   const [autoTwoRTakeProfit, setAutoTwoRTakeProfit] = useState(true);
+  const [showUpperOpeningRange, setShowUpperOpeningRange] = useState(true);
+  const [showLowerOpeningRange, setShowLowerOpeningRange] = useState(true);
   const [positionAction, setPositionAction] = useState(false);
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2783,10 +2849,15 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           <div className="panel paper-chart-panel">
             <div className="paper-playback-bar">
               <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
-              <div className="paper-playback-actions"><label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
+              <div className="paper-playback-actions">
+                <div className="paper-opening-range-toggles" aria-label="美股早盘 TR 显示设置">
+                  <label className="paper-range-toggle"><input type="checkbox" checked={showUpperOpeningRange} onChange={(event) => setShowUpperOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>上方 TR</strong></label>
+                  <label className="paper-range-toggle"><input type="checkbox" checked={showLowerOpeningRange} onChange={(event) => setShowLowerOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>下方 TR</strong></label>
+                </div>
+                <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} anchoredPriceChange={snapshot.anchored_price_change} anchoredPriceChangePercent={snapshot.anchored_price_change_percent} />
+              <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} anchoredPriceChange={snapshot.anchored_price_change} anchoredPriceChangePercent={snapshot.anchored_price_change_percent} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><button className="primary-button" type="button" onClick={() => void startGame()}>再来一轮</button></section>}
             </div>
           </div>
