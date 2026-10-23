@@ -2906,20 +2906,25 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     setPositionAction(true);
     setError(null);
     try {
-      const next = await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/risk`, {
-        method: "PUT",
+      const next = await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/close`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          take_profit_price: closePrice,
-          take_profit_quantity: closeQuantity,
-          stop_loss_price: position.stop_loss_price
+          quantity: closeQuantity,
+          order_type: "LIMIT",
+          price: closePrice
         })
       });
       applySnapshot(next);
       setTakeProfit(next.position?.take_profit_price ?? "");
-      setClosePrice(next.position?.take_profit_price ?? "");
-      setCloseQuantity(next.position?.take_profit_quantity ?? "");
-      setPositionTab("orders");
+      if (next.position) {
+        setClosePrice(next.position.take_profit_price ?? next.position.mark_price);
+        setCloseQuantity(next.position.take_profit_quantity ?? next.position.quantity);
+        setPositionTab(next.pending_orders.some((order) => order.order_kind === "CLOSE" && order.order_type === "LIMIT") ? "orders" : "position");
+      } else {
+        setOrderTab("open");
+        setPositionTab("history");
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "止盈委托提交失败");
     } finally {
@@ -2980,7 +2985,11 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const projectedTakeProfit = projectedPnl(takeProfit);
   const projectedStopLoss = projectedPnl(stopLoss);
   const numericCloseQuantity = closeQuantity === "" ? null : closeQuantity;
-  const closeTargetPrice = closeOrderType === "MARKET" ? orderPrice : closePrice === "" ? null : closePrice;
+  const requestedClosePrice = closeOrderType === "MARKET" ? orderPrice : closePrice === "" ? null : closePrice;
+  const closeTargetPrice = snapshot?.position && requestedClosePrice !== null && closeOrderType === "LIMIT" && (
+    (snapshot.position.side === "LONG" && requestedClosePrice <= orderPrice)
+    || (snapshot.position.side === "SHORT" && requestedClosePrice >= orderPrice)
+  ) ? orderPrice : requestedClosePrice;
   const projectedClosePnl = snapshot?.position && numericCloseQuantity !== null && closeTargetPrice !== null
     ? (snapshot.position.side === "LONG" ? closeTargetPrice - snapshot.position.entry_price : snapshot.position.entry_price - closeTargetPrice) * numericCloseQuantity
     : null;
@@ -3092,7 +3101,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 </dl>
                 <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void submitCloseOrder()} disabled={gameEnded || positionAction || invalidCloseOrder || snapshot.position.side !== "SHORT"}>{positionAction ? "提交中…" : "平空"}</button><button type="button" className="paper-short-button" onClick={() => void submitCloseOrder()} disabled={gameEnded || positionAction || invalidCloseOrder || snapshot.position.side !== "LONG"}>{positionAction ? "提交中…" : "平多"}</button></div>
                 <div className="paper-order-capacity"><span>可平</span><strong>{formatNumber(snapshot.position.quantity, 6)} {baseAsset}</strong></div>
-                <small>{closeOrderType === "MARKET" ? "按当前已揭示 K 线收盘价成交。" : "限价平仓作为止盈委托，在后续 K 线触及价格时成交。"}</small>
+                <small>{closeOrderType === "MARKET" ? "按当前已揭示 K 线收盘价成交。" : "多仓限价低于或等于当前价、空仓限价高于或等于当前价时，按当前收盘价立即成交；否则作为止盈委托。"}</small>
               </> : <div className="paper-close-empty">当前没有可平仓的持仓</div>}
             </div>
           }

@@ -215,6 +215,40 @@ class PaperSession:
         self.message = "持仓已平仓" if fully_closed else "部分持仓已按市价平仓"
         return self.snapshot()
 
+    def place_limit_close_order(
+        self,
+        price: float,
+        quantity: float | None = None,
+    ) -> PaperSessionSnapshot:
+        position = self.position
+        if position is None:
+            raise ValueError("当前没有可平持仓")
+        close_quantity = position.quantity if quantity is None else quantity
+        self._validate_close_quantity(close_quantity)
+        mark_price = self.current_candle.close_price
+        is_marketable = (
+            position.side is PositionSide.LONG and price <= mark_price
+        ) or (
+            position.side is PositionSide.SHORT and price >= mark_price
+        )
+        if is_marketable:
+            fully_closed = self._settle_position(
+                mark_price,
+                "TAKE_PROFIT",
+                close_quantity,
+            )
+            self.message = (
+                "平仓限价已按当前收盘价成交"
+                if fully_closed
+                else "部分持仓已按当前收盘价成交"
+            )
+            return self.snapshot()
+        return self.set_risk_orders(
+            take_profit_price=price,
+            stop_loss_price=position.stop_loss_price,
+            take_profit_quantity=close_quantity,
+        )
+
     def set_risk_orders(
         self,
         take_profit_price: float | None,

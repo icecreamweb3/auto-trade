@@ -124,6 +124,16 @@ class PaperRiskUpdate(BaseModel):
 
 class PaperCloseOrderCreate(BaseModel):
     quantity: float | None = Field(default=None, gt=0)
+    order_type: PaperOrderType = PaperOrderType.MARKET
+    price: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def require_limit_price(self) -> PaperCloseOrderCreate:
+        if self.order_type is PaperOrderType.STOP_MARKET:
+            raise ValueError("平仓委托只支持市价或限价")
+        if self.order_type is PaperOrderType.LIMIT and self.price is None:
+            raise ValueError("限价平仓必须填写价格")
+        return self
 
 
 class PaperSessionSnapshot(BaseModel):

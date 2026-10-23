@@ -351,6 +351,49 @@ def test_partial_market_close_keeps_remaining_position_open() -> None:
     assert result.trades[0].exit_reason == "MANUAL"
 
 
+def test_marketable_long_limit_close_fills_at_current_close() -> None:
+    game = session(candle(0, close=100), candle(1, close=105), candle(2))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    game.advance()
+
+    result = game.place_limit_close_order(price=103)
+
+    assert result.position is None
+    assert result.pending_orders == ()
+    assert result.balance == pytest.approx(1050)
+    assert result.trades[0].exit_price == 105
+    assert result.trades[0].exit_reason == "TAKE_PROFIT"
+    assert result.message == "平仓限价已按当前收盘价成交"
+
+
+def test_marketable_short_limit_close_fills_at_current_close() -> None:
+    game = session(candle(0, close=100), candle(1, close=95), candle(2))
+    game.open_position(PositionSide.SHORT, notional=1000, leverage=10)
+    game.advance()
+
+    result = game.place_limit_close_order(price=97)
+
+    assert result.position is None
+    assert result.pending_orders == ()
+    assert result.balance == pytest.approx(1050)
+    assert result.trades[0].exit_price == 95
+    assert result.trades[0].exit_reason == "TAKE_PROFIT"
+
+
+def test_non_marketable_limit_close_remains_pending() -> None:
+    game = session(candle(0, close=100), candle(1, close=105), candle(2))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    game.advance()
+
+    result = game.place_limit_close_order(price=110, quantity=4)
+
+    assert result.position is not None
+    assert result.position.take_profit_price == 110
+    assert result.position.take_profit_quantity == 4
+    assert len(result.pending_orders) == 1
+    assert result.pending_orders[0].price == 110
+
+
 def test_rejects_close_quantity_above_current_position() -> None:
     game = session(candle(0), candle(1))
     game.open_position(PositionSide.LONG, notional=1000, leverage=10)

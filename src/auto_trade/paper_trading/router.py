@@ -322,8 +322,17 @@ async def close_position(
         return await _mutate_session(
             request,
             _session(request, session_id, user),
-            lambda game: game.close_position(
-                quantity=payload.quantity if payload is not None else None
+            lambda game: (
+                game.place_limit_close_order(
+                    price=payload.price,
+                    quantity=payload.quantity,
+                )
+                if payload is not None
+                and payload.order_type is PaperOrderType.LIMIT
+                and payload.price is not None
+                else game.close_position(
+                    quantity=payload.quantity if payload is not None else None
+                )
             ),
         )
     except ValueError as error:
