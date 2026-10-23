@@ -62,27 +62,46 @@ def test_long_position_updates_unrealized_and_manual_close() -> None:
 
 def test_long_liquidation_uses_intrabar_low_and_ends_game() -> None:
     game = session(candle(0), candle(1, close=100, low=89), candle(2))
-    expected_price = liquidation_price(PositionSide.LONG, 100, 10)
+    expected_price = liquidation_price(
+        PositionSide.LONG,
+        entry_price=100,
+        quantity=100,
+        account_balance=1000,
+    )
     assert expected_price == pytest.approx(90.4522613)
 
-    game.open_position(PositionSide.LONG, notional=2500, leverage=10)
+    game.open_position(PositionSide.LONG, notional=10000, leverage=10)
     result = game.advance()
 
     assert result.status is GameStatus.LIQUIDATED
     assert result.position is None
-    assert result.balance == 750
+    assert result.balance == pytest.approx(45.2261307)
     assert result.trades[0].exit_price == pytest.approx(expected_price)
-    assert result.trades[0].realized_pnl == -250
+    assert result.trades[0].realized_pnl == pytest.approx(-954.7738693)
 
 
 def test_short_liquidation_uses_intrabar_high() -> None:
     game = session(candle(0), candle(1, close=100, high=111), candle(2))
-    game.open_position(PositionSide.SHORT, notional=1000, leverage=10)
+    game.open_position(PositionSide.SHORT, notional=10000, leverage=10)
 
     result = game.advance()
 
     assert result.status is GameStatus.LIQUIDATED
-    assert result.balance == 900
+    assert result.balance == pytest.approx(54.7263682)
+
+
+def test_cross_margin_uses_full_account_balance_as_position_buffer() -> None:
+    game = session(candle(0), candle(1, close=50, low=1), candle(2))
+
+    opened = game.open_position(PositionSide.LONG, notional=1000, leverage=100)
+    advanced = game.advance()
+
+    assert opened.position is not None
+    assert opened.position.margin == pytest.approx(10)
+    assert opened.position.liquidation_price == 0
+    assert opened.available_balance == pytest.approx(990)
+    assert advanced.status is GameStatus.RUNNING
+    assert advanced.position is not None
 
 
 def test_range_end_closes_open_position() -> None:
@@ -173,14 +192,14 @@ def test_stop_loss_prevents_liquidation_and_session_can_continue() -> None:
         candle(2, close=98),
         candle(3, close=101),
     )
-    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    game.open_position(PositionSide.LONG, notional=10000, leverage=10)
     game.set_risk_orders(take_profit_price=None, stop_loss_price=95)
 
     stopped = game.advance()
 
     assert stopped.status is GameStatus.RUNNING
     assert stopped.position is None
-    assert stopped.balance == pytest.approx(950)
+    assert stopped.balance == pytest.approx(500)
     assert stopped.trades[0].exit_reason == "STOP_LOSS"
     assert stopped.message == "价格触及止损价, 持仓已平仓, 可继续交易"
 

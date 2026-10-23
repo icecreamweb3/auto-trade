@@ -2090,7 +2090,7 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
     if (!position) return;
     const definitions = [
       { price: position.entry_price, color: "#58d6c2", title: "开仓", style: LineStyle.Dashed },
-      { price: position.liquidation_price, color: "#ff6477", title: "强平", style: LineStyle.Dashed },
+      ...(position.liquidation_price <= 0 ? [] : [{ price: position.liquidation_price, color: "#ff6477", title: "强平", style: LineStyle.Dashed }]),
       ...(position.take_profit_price === null ? [] : [{ price: position.take_profit_price, color: "#0ecb81", title: "止盈", style: LineStyle.Dashed }]),
       ...(position.stop_loss_price === null ? [] : [{ price: position.stop_loss_price, color: "#ffb347", title: "止损", style: LineStyle.Dashed }]),
     ];
@@ -2382,11 +2382,14 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     numericLeverage === null || !Number.isInteger(numericLeverage) || numericLeverage < 1 || numericLeverage > 100 ||
     estimatedMargin === null || !Number.isFinite(estimatedMargin) || estimatedMargin > (snapshot?.available_balance ?? 0);
   const maintenanceMarginRate = metadata?.maintenance_margin_rate ?? 0.005;
-  const estimatedLongLiquidation = numericLeverage !== null && numericLeverage >= 1 && orderPrice > 0
-    ? orderPrice * (1 - 1 / numericLeverage) / (1 - maintenanceMarginRate)
+  const estimatedQuantity = notionalUsdt !== null && notionalUsdt > 0 && orderPrice > 0
+    ? notionalUsdt / orderPrice
     : null;
-  const estimatedShortLiquidation = numericLeverage !== null && numericLeverage >= 1 && orderPrice > 0
-    ? orderPrice * (1 + 1 / numericLeverage) / (1 + maintenanceMarginRate)
+  const estimatedLongLiquidation = snapshot && estimatedQuantity !== null
+    ? Math.max(0, (orderPrice - snapshot.balance / estimatedQuantity) / (1 - maintenanceMarginRate))
+    : null;
+  const estimatedShortLiquidation = snapshot && estimatedQuantity !== null
+    ? (orderPrice + snapshot.balance / estimatedQuantity) / (1 + maintenanceMarginRate)
     : null;
   const maximumBaseQuantity = snapshot && numericLeverage !== null && orderPrice > 0
     ? snapshot.available_balance * numericLeverage / orderPrice
@@ -2409,7 +2412,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     <header className="topbar">
       <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">指定历史行情或随机抽取工作日早盘，逐根回放 K 线，在个人模拟账户中练习仓位与杠杆。</p></div>
       <div className="paper-page-actions">
-        <div className="paper-rule-badge"><span>首版撮合规则</span><strong>市价成交 · 单仓逐仓 · 维持保证金率 0.5%</strong></div>
+        <div className="paper-rule-badge"><span>首版撮合规则</span><strong>市价成交 · 单持仓 · 全仓模式 · 维持保证金率 0.5%</strong></div>
         <div><button type="button" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>{settingsOpen ? "收起设置" : "⚙ 回放设置"}</button><button className="primary-button paper-random-start" type="button" onClick={startRandomEarlySession} disabled={loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机早盘开始"}</button></div>
       </div>
     </header>
@@ -2449,8 +2452,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                   <td><span className="paper-position-status">开仓</span></td>
                   <td>{formatNumber(snapshot.position.quantity, 6)}</td>
                   <td>{formatNumber(snapshot.position.entry_price, 2)}</td>
-                  <td>逐仓 · {snapshot.position.leverage}x</td>
-                  <td className="paper-danger">{formatNumber(snapshot.position.liquidation_price, 2)}</td>
+                  <td>全仓 · {snapshot.position.leverage}x</td>
+                  <td className="paper-danger">{snapshot.position.liquidation_price <= 0 ? "--" : formatNumber(snapshot.position.liquidation_price, 2)}</td>
                   <td className={pnl >= 0 ? "paper-long-price" : "paper-short-price"}>{pnl >= 0 ? "+" : ""}{formatNumber(pnl, 2)}<small>{snapshot.position.return_on_margin_percent >= 0 ? "+" : ""}{snapshot.position.return_on_margin_percent.toFixed(2)}%</small></td>
                   <td>{formatNumber(snapshot.position.margin, 2)} USDT</td>
                   <td><div className="paper-position-risk-summary"><span>{snapshot.position.take_profit_price === null ? "--" : formatNumber(snapshot.position.take_profit_price, 2)} / {snapshot.position.stop_loss_price === null ? "--" : formatNumber(snapshot.position.stop_loss_price, 2)}</span><button type="button" onClick={openRiskDialog} disabled={positionAction} aria-label="设置止盈止损">设置</button></div></td>
@@ -2470,7 +2473,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
               <p className="paper-order-warning">名义价值按可用余额和杠杆估算，实际下单前仍会校验保证金。</p>
               <div className="paper-order-estimates">
                 <div><span>预计保证金{numericLeverage === null ? "" : `（${numericLeverage}x）`}</span><strong>{estimatedMargin === null ? "—" : `${formatNumber(estimatedMargin, 2)} USDT`}</strong></div>
-                <div className="paper-liquidation-estimate"><span>预计强平价</span><dl><div><dt>开多</dt><dd className="paper-long-price">{estimatedLongLiquidation === null ? "—" : formatNumber(estimatedLongLiquidation, 2)}</dd></div><div><dt>开空</dt><dd className="paper-short-price">{estimatedShortLiquidation === null ? "—" : formatNumber(estimatedShortLiquidation, 2)}</dd></div></dl></div>
+                <div className="paper-liquidation-estimate"><span>预计全仓强平价</span><dl><div><dt>开多</dt><dd className="paper-long-price">{estimatedLongLiquidation === null || estimatedLongLiquidation <= 0 ? "—" : formatNumber(estimatedLongLiquidation, 2)}</dd></div><div><dt>开空</dt><dd className="paper-short-price">{estimatedShortLiquidation === null ? "—" : formatNumber(estimatedShortLiquidation, 2)}</dd></div></dl></div>
               </div>
               <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded || !!snapshot.position || invalidOrder}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded || !!snapshot.position || invalidOrder}>开空</button></div>
               <div className="paper-order-capacity"><span>最大可开</span><strong>{maximumBaseQuantity === null ? "—" : `${formatNumber(maximumBaseQuantity, 6)} ${baseAsset}`}</strong></div>

@@ -74,7 +74,12 @@ class PaperSession:
             margin=margin,
             quantity=quantity,
             entry_price=entry_price,
-            liquidation_price=liquidation_price(side, entry_price, leverage),
+            liquidation_price=liquidation_price(
+                side,
+                entry_price,
+                quantity,
+                self.balance,
+            ),
             opened_at=candle.close_time,
         )
         self.status = GameStatus.RUNNING
@@ -141,16 +146,13 @@ class PaperSession:
                 self.message = "价格触及止损价, 持仓已平仓, 可继续交易"
                 return self.snapshot()
             touched = (
-                candle.low_price <= position.liquidation_price
+                position.liquidation_price > 0
+                and candle.low_price <= position.liquidation_price
                 if position.side is PositionSide.LONG
                 else candle.high_price >= position.liquidation_price
             )
             if touched:
-                self._settle_position(
-                    position.liquidation_price,
-                    "LIQUIDATION",
-                    forced_loss=position.margin,
-                )
+                self._settle_position(position.liquidation_price, "LIQUIDATION")
                 self.status = GameStatus.LIQUIDATED
                 self.message = "价格触及强平价, 本轮游戏结束"
                 return self.snapshot()
@@ -224,13 +226,11 @@ class PaperSession:
         self.status = GameStatus.COMPLETED
         self.message = "已回放到所选行情末尾, 本轮游戏结束"
 
-    def _settle_position(
-        self, exit_price: float, reason: str, *, forced_loss: float | None = None
-    ) -> None:
+    def _settle_position(self, exit_price: float, reason: str) -> None:
         position = self.position
         if position is None:
             return
-        pnl = -forced_loss if forced_loss is not None else position_pnl(position, exit_price)
+        pnl = position_pnl(position, exit_price)
         self.balance = max(0.0, self.balance + pnl)
         self.trades.append(
             PaperTrade(
@@ -257,9 +257,18 @@ def position_pnl(position: OpenPosition, mark_price: float) -> float:
 def liquidation_price(
     side: PositionSide,
     entry_price: float,
-    leverage: int,
+    quantity: float,
+    account_balance: float,
     maintenance_margin_rate: float = MAINTENANCE_MARGIN_RATE,
 ) -> float:
+    """Return the single-position cross-margin liquidation price."""
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
     if side is PositionSide.LONG:
-        return entry_price * (1 - 1 / leverage) / (1 - maintenance_margin_rate)
-    return entry_price * (1 + 1 / leverage) / (1 + maintenance_margin_rate)
+        price = (entry_price - account_balance / quantity) / (
+            1 - maintenance_margin_rate
+        )
+        return max(0.0, price)
+    return (entry_price + account_balance / quantity) / (
+        1 + maintenance_margin_rate
+    )
