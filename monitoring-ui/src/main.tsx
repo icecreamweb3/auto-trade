@@ -285,6 +285,27 @@ interface PaperTimeAxisLabel {
 interface PaperOpeningRange {
   high: number;
   low: number;
+  sessionStartMs: number;
+  sessionEndMs: number;
+  completed: boolean;
+}
+
+interface PaperOpeningRangeOverlay {
+  width: number;
+  height: number;
+  rangeLeft: number;
+  rangeRight: number;
+  projectionRight: number;
+  highY: number;
+  lowY: number;
+  upperOneY: number;
+  upperTwoY: number;
+  lowerOneY: number;
+  lowerTwoY: number;
+  high: number;
+  low: number;
+  trueRange: number;
+  completed: boolean;
 }
 
 interface PaperMetadata {
@@ -661,7 +682,7 @@ function calculatePaperOpeningRange(candles: PaperChartPoint[]): PaperOpeningRan
   const sessionStartLocalMs = localMidnightMs
     + (latestLocalMinutes >= 21 * 60 + 30 ? 21 * 60 + 30 : -(24 * 60 - 21 * 60 - 30)) * 60 * 1000;
   const sessionStartUtcMs = sessionStartLocalMs - UTC8_OFFSET_MS;
-  const sessionEndUtcMs = sessionStartUtcMs + 13.5 * 60 * 60 * 1000;
+  const sessionEndUtcMs = sessionStartUtcMs + 90 * 60 * 1000;
   const rangeCandles = candles.filter((candle) => {
     const openTimeMs = new Date(candle.open_time).getTime();
     return openTimeMs >= sessionStartUtcMs && openTimeMs < sessionEndUtcMs;
@@ -670,6 +691,9 @@ function calculatePaperOpeningRange(candles: PaperChartPoint[]): PaperOpeningRan
   return {
     high: Math.max(...rangeCandles.map((candle) => candle.high_price)),
     low: Math.min(...rangeCandles.map((candle) => candle.low_price)),
+    sessionStartMs: sessionStartUtcMs,
+    sessionEndMs: sessionEndUtcMs,
+    completed: latestUtcMs >= sessionEndUtcMs,
   };
 }
 
@@ -2047,13 +2071,14 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   const ema240SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const chartPointsRef = useRef<PaperChartPoint[]>(candles);
   const refreshTimeAxisRef = useRef<() => void>(() => undefined);
+  const refreshOpeningRangeOverlayRef = useRef<() => void>(() => undefined);
   const positionLinesRef = useRef<IPriceLine[]>([]);
-  const openingRangeLinesRef = useRef<IPriceLine[]>([]);
   const loadedSessionRef = useRef<string | null>(null);
   const loadedCountRef = useRef(0);
   const followingLatestRef = useRef(true);
   const [hoveredCandle, setHoveredCandle] = useState<PaperCandleReadout | null>(null);
   const [timeAxisLabels, setTimeAxisLabels] = useState<PaperTimeAxisLabel[]>([]);
+  const [openingRangeOverlay, setOpeningRangeOverlay] = useState<PaperOpeningRangeOverlay | null>(null);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles;
   const initialLatestPosition = .8;
@@ -2148,6 +2173,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
         from: anchor - (anchor - range.from) * factor,
         to: anchor + (range.to - anchor) * factor,
       });
+      window.requestAnimationFrame(() => refreshOpeningRangeOverlayRef.current());
     };
     const handleCrosshairMove = (param: MouseEventParams<Time>) => {
       const candle = param.seriesData.get(candleSeries);
@@ -2171,6 +2197,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       if (!range || loadedCountRef.current === 0) return;
       followingLatestRef.current = range.to >= loadedCountRef.current - 1;
       refreshTimeAxisRef.current();
+      refreshOpeningRangeOverlayRef.current();
     };
     const refreshTimeAxis = () => {
       const plotWidth = container.clientWidth - chart.priceScale("right").width();
@@ -2183,9 +2210,19 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       }));
     };
     refreshTimeAxisRef.current = refreshTimeAxis;
-    const resizeObserver = new ResizeObserver(refreshTimeAxis);
+    const resizeObserver = new ResizeObserver(() => {
+      refreshTimeAxis();
+      refreshOpeningRangeOverlayRef.current();
+    });
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.buttons !== 0) window.requestAnimationFrame(() => refreshOpeningRangeOverlayRef.current());
+    };
+    const handlePointerEnd = () => window.requestAnimationFrame(() => refreshOpeningRangeOverlayRef.current());
     resizeObserver.observe(container);
     container.addEventListener("wheel", handlePriceScaleWheel, { passive: false, capture: true });
+    container.addEventListener("pointermove", handlePointerMove);
+    container.addEventListener("pointerup", handlePointerEnd);
+    container.addEventListener("dblclick", handlePointerEnd);
     chart.subscribeCrosshairMove(handleCrosshairMove);
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
     chartRef.current = chart;
@@ -2195,10 +2232,14 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
     ema240SeriesRef.current = ema240Series;
     return () => {
       container.removeEventListener("wheel", handlePriceScaleWheel, true);
+      container.removeEventListener("pointermove", handlePointerMove);
+      container.removeEventListener("pointerup", handlePointerEnd);
+      container.removeEventListener("dblclick", handlePointerEnd);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       resizeObserver.disconnect();
       refreshTimeAxisRef.current = () => undefined;
+      refreshOpeningRangeOverlayRef.current = () => undefined;
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
@@ -2206,8 +2247,8 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       ema20SeriesRef.current = null;
       ema240SeriesRef.current = null;
       setTimeAxisLabels([]);
+      setOpeningRangeOverlay(null);
       positionLinesRef.current = [];
-      openingRangeLinesRef.current = [];
       loadedSessionRef.current = null;
       loadedCountRef.current = 0;
       followingLatestRef.current = true;
@@ -2318,30 +2359,61 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   }, [position?.entry_price, position?.liquidation_price, position?.take_profit_price, position?.stop_loss_price]);
 
   useEffect(() => {
+    const chart = chartRef.current;
     const series = candleSeriesRef.current;
-    if (!series) return;
-    for (const line of openingRangeLinesRef.current) series.removePriceLine(line);
-    openingRangeLinesRef.current = [];
+    const container = containerRef.current;
+    if (!chart || !series || !container) return;
     const openingRange = calculatePaperOpeningRange(points);
-    if (!openingRange) return;
-    const trueRange = openingRange.high - openingRange.low;
-    const definitions = [
-      { price: openingRange.high, color: "#f5aa19", title: "ORH", style: LineStyle.Dashed },
-      { price: openingRange.low, color: "#f5aa19", title: "ORL", style: LineStyle.Dashed },
-      ...(showUpperOpeningRange && trueRange > 0 ? [
-        { price: openingRange.high + trueRange, color: "#ff6477", title: "OR +1×TR", style: LineStyle.Dashed },
-        { price: openingRange.high + trueRange * 2, color: "#ff6477", title: "OR +2×TR", style: LineStyle.Dashed },
-      ] : []),
-      ...(showLowerOpeningRange && trueRange > 0 ? [
-        { price: openingRange.low - trueRange, color: "#58d6c2", title: "OR -1×TR", style: LineStyle.Dashed },
-        { price: openingRange.low - trueRange * 2, color: "#58d6c2", title: "OR -2×TR", style: LineStyle.Dashed },
-      ] : []),
-    ];
-    openingRangeLinesRef.current = definitions.map((definition) => series.createPriceLine({
-      ...definition,
-      lineWidth: 1,
-      axisLabelVisible: true,
-    }));
+    if (!openingRange) {
+      setOpeningRangeOverlay(null);
+      refreshOpeningRangeOverlayRef.current = () => undefined;
+      return;
+    }
+    const refreshOpeningRangeOverlay = () => {
+      const trueRange = openingRange.high - openingRange.low;
+      const startX = chart.timeScale().timeToCoordinate(Math.floor(openingRange.sessionStartMs / 1000) as UTCTimestamp);
+      const endX = chart.timeScale().timeToCoordinate(Math.floor(openingRange.sessionEndMs / 1000) as UTCTimestamp);
+      const latest = points[points.length - 1];
+      const latestX = latest
+        ? chart.timeScale().timeToCoordinate(Math.floor(new Date(latest.open_time).getTime() / 1000) as UTCTimestamp)
+        : null;
+      const highY = series.priceToCoordinate(openingRange.high);
+      const lowY = series.priceToCoordinate(openingRange.low);
+      const upperOneY = series.priceToCoordinate(openingRange.high + trueRange);
+      const upperTwoY = series.priceToCoordinate(openingRange.high + trueRange * 2);
+      const lowerOneY = series.priceToCoordinate(openingRange.low - trueRange);
+      const lowerTwoY = series.priceToCoordinate(openingRange.low - trueRange * 2);
+      if ([startX, latestX, highY, lowY, upperOneY, upperTwoY, lowerOneY, lowerTwoY].some((value) => value === null)) {
+        setOpeningRangeOverlay(null);
+        return;
+      }
+      const barSpacing = chart.timeScale().options().barSpacing;
+      const rangeRight = openingRange.completed && endX !== null ? endX : latestX! + barSpacing / 2;
+      setOpeningRangeOverlay({
+        width: container.clientWidth,
+        height: container.clientHeight,
+        rangeLeft: startX!,
+        rangeRight,
+        projectionRight: Math.max(rangeRight, latestX! + barSpacing / 2),
+        highY: highY!,
+        lowY: lowY!,
+        upperOneY: upperOneY!,
+        upperTwoY: upperTwoY!,
+        lowerOneY: lowerOneY!,
+        lowerTwoY: lowerTwoY!,
+        high: openingRange.high,
+        low: openingRange.low,
+        trueRange,
+        completed: openingRange.completed,
+      });
+    };
+    refreshOpeningRangeOverlayRef.current = refreshOpeningRangeOverlay;
+    window.requestAnimationFrame(refreshOpeningRangeOverlay);
+    return () => {
+      if (refreshOpeningRangeOverlayRef.current === refreshOpeningRangeOverlay) {
+        refreshOpeningRangeOverlayRef.current = () => undefined;
+      }
+    };
   }, [points, sessionId, showUpperOpeningRange, showLowerOpeningRange]);
 
   const current = hoveredCandle ?? points[points.length - 1];
@@ -2366,9 +2438,33 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       <span className="paper-anchor-change" title="以当前 UTC+8 交易日 08:00 K 线开盘价为基准"><em>08:00</em>{anchoredPriceChange === null || anchoredPriceChangePercent === null ? <strong>--</strong> : <><strong className={changeClass}>{anchoredPriceChangePercent >= 0 ? "+" : ""}{anchoredPriceChangePercent.toFixed(2)}%</strong><strong className={changeClass}>{anchoredPriceChange >= 0 ? "+" : ""}{formatNumber(anchoredPriceChange, 2)}</strong></>}</span>
       <span className="chart-drag-hint">默认窗口 {Math.min(points.length, visibleCapacity)} 根 · 已揭示 {candles.length} 根</span>
     </div>
-    <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
-    <div className="paper-time-axis" aria-hidden="true">
-      {timeAxisLabels.map((label) => <span key={label.key} style={{ left: label.left }}>{label.text}</span>)}
+    <div className="paper-chart-canvas">
+      <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
+      {openingRangeOverlay && <svg className="paper-opening-range-overlay" viewBox={`0 0 ${openingRangeOverlay.width} ${openingRangeOverlay.height}`} aria-hidden="true">
+        <rect className="paper-or-box" x={openingRangeOverlay.rangeLeft} y={openingRangeOverlay.highY} width={Math.max(0, openingRangeOverlay.rangeRight - openingRangeOverlay.rangeLeft)} height={Math.max(0, openingRangeOverlay.lowY - openingRangeOverlay.highY)} />
+        <line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.highY} y2={openingRangeOverlay.highY} />
+        <line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.lowY} y2={openingRangeOverlay.lowY} />
+        <text className="paper-or-label" x={(openingRangeOverlay.rangeLeft + openingRangeOverlay.rangeRight) / 2} y={openingRangeOverlay.highY + 15}>区间振幅 {formatNumber(openingRangeOverlay.trueRange, 2)}</text>
+        <text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.highY - 5}>{formatNumber(openingRangeOverlay.high, 2)}</text>
+        <text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.lowY - 5}>{formatNumber(openingRangeOverlay.low, 2)}</text>
+        {openingRangeOverlay.completed && showUpperOpeningRange && openingRangeOverlay.trueRange > 0 && <g className="paper-or-upper">
+          <rect x={openingRangeOverlay.rangeRight} y={openingRangeOverlay.upperTwoY} width={Math.max(0, openingRangeOverlay.projectionRight - openingRangeOverlay.rangeRight)} height={Math.max(0, openingRangeOverlay.highY - openingRangeOverlay.upperTwoY)} />
+          <line x1={openingRangeOverlay.rangeRight} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.upperOneY} y2={openingRangeOverlay.upperOneY} />
+          <line x1={openingRangeOverlay.rangeRight} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.upperTwoY} y2={openingRangeOverlay.upperTwoY} />
+          <text x={(openingRangeOverlay.rangeRight + openingRangeOverlay.projectionRight) / 2} y={openingRangeOverlay.upperOneY - 5}>+1×TR {formatNumber(openingRangeOverlay.high + openingRangeOverlay.trueRange, 2)}</text>
+          <text x={(openingRangeOverlay.rangeRight + openingRangeOverlay.projectionRight) / 2} y={openingRangeOverlay.upperTwoY - 5}>+2×TR {formatNumber(openingRangeOverlay.high + openingRangeOverlay.trueRange * 2, 2)}</text>
+        </g>}
+        {openingRangeOverlay.completed && showLowerOpeningRange && openingRangeOverlay.trueRange > 0 && <g className="paper-or-lower">
+          <rect x={openingRangeOverlay.rangeRight} y={openingRangeOverlay.lowY} width={Math.max(0, openingRangeOverlay.projectionRight - openingRangeOverlay.rangeRight)} height={Math.max(0, openingRangeOverlay.lowerTwoY - openingRangeOverlay.lowY)} />
+          <line x1={openingRangeOverlay.rangeRight} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.lowerOneY} y2={openingRangeOverlay.lowerOneY} />
+          <line x1={openingRangeOverlay.rangeRight} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.lowerTwoY} y2={openingRangeOverlay.lowerTwoY} />
+          <text x={(openingRangeOverlay.rangeRight + openingRangeOverlay.projectionRight) / 2} y={openingRangeOverlay.lowerOneY - 5}>-1×TR {formatNumber(openingRangeOverlay.low - openingRangeOverlay.trueRange, 2)}</text>
+          <text x={(openingRangeOverlay.rangeRight + openingRangeOverlay.projectionRight) / 2} y={openingRangeOverlay.lowerTwoY - 5}>-2×TR {formatNumber(openingRangeOverlay.low - openingRangeOverlay.trueRange * 2, 2)}</text>
+        </g>}
+      </svg>}
+      <div className="paper-time-axis" aria-hidden="true">
+        {timeAxisLabels.map((label) => <span key={label.key} style={{ left: label.left }}>{label.text}</span>)}
+      </div>
     </div>
   </div>;
 }
@@ -2850,7 +2946,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             <div className="paper-playback-bar">
               <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
               <div className="paper-playback-actions">
-                <div className="paper-opening-range-toggles" aria-label="美股早盘 TR 显示设置">
+                <div className="paper-opening-range-toggles" aria-label="美股早盘 TR 显示设置" title="UTC+8 21:30–23:00 开盘区间">
                   <label className="paper-range-toggle"><input type="checkbox" checked={showUpperOpeningRange} onChange={(event) => setShowUpperOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>上方 TR</strong></label>
                   <label className="paper-range-toggle"><input type="checkbox" checked={showLowerOpeningRange} onChange={(event) => setShowLowerOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>下方 TR</strong></label>
                 </div>
