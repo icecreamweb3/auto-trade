@@ -276,6 +276,12 @@ interface PaperChartPoint extends PaperCandle {
   ema240: number | null;
 }
 
+interface PaperTimeAxisLabel {
+  key: string;
+  left: number;
+  text: string;
+}
+
 interface PaperMetadata {
   symbols: string[];
   intervals: number[];
@@ -628,6 +634,10 @@ function formatKlineTime(value: string, axis = false): string {
   const local = utc8Iso(value);
   const datePart = axis ? local.slice(5, 10) : local.slice(0, 10);
   return `${datePart} ${local.slice(11, 16)}${axis ? "" : " UTC+8"}`;
+}
+
+function formatPaperAxisTime(value: string): string {
+  return utc8Iso(value).slice(11, 16);
 }
 
 function formatKlineTradeWindow(utcTradeDate: string): string {
@@ -2000,15 +2010,19 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const ema20SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const ema240SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const chartPointsRef = useRef<PaperChartPoint[]>(candles);
+  const refreshTimeAxisRef = useRef<() => void>(() => undefined);
   const positionLinesRef = useRef<IPriceLine[]>([]);
   const loadedSessionRef = useRef<string | null>(null);
   const loadedCountRef = useRef(0);
   const followingLatestRef = useRef(true);
   const [hoveredCandle, setHoveredCandle] = useState<PaperCandleReadout | null>(null);
+  const [timeAxisLabels, setTimeAxisLabels] = useState<PaperTimeAxisLabel[]>([]);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles;
   const initialLatestPosition = .8;
   const initialCandleHeightRatio = .1;
+  chartPointsRef.current = candles;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -2030,6 +2044,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
         borderColor: "#29455e",
         timeVisible: true,
         secondsVisible: false,
+        tickMarkFormatter: () => "",
         rightOffset: 5,
         barSpacing: 8,
         minBarSpacing: 4,
@@ -2119,7 +2134,21 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
     const handleVisibleRangeChange = (range: LogicalRange | null) => {
       if (!range || loadedCountRef.current === 0) return;
       followingLatestRef.current = range.to >= loadedCountRef.current - 1;
+      refreshTimeAxisRef.current();
     };
+    const refreshTimeAxis = () => {
+      const plotWidth = container.clientWidth - chart.priceScale("right").width();
+      setTimeAxisLabels(chartPointsRef.current.flatMap((point, index) => {
+        if (index % 3 !== 0) return [];
+        const time = Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp;
+        const left = chart.timeScale().timeToCoordinate(time);
+        if (left === null || left < 18 || left > plotWidth - 18) return [];
+        return [{ key: point.open_time, left, text: formatPaperAxisTime(point.open_time) }];
+      }));
+    };
+    refreshTimeAxisRef.current = refreshTimeAxis;
+    const resizeObserver = new ResizeObserver(refreshTimeAxis);
+    resizeObserver.observe(container);
     container.addEventListener("wheel", handlePriceScaleWheel, { passive: false, capture: true });
     chart.subscribeCrosshairMove(handleCrosshairMove);
     chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
@@ -2132,12 +2161,15 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       container.removeEventListener("wheel", handlePriceScaleWheel, true);
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+      resizeObserver.disconnect();
+      refreshTimeAxisRef.current = () => undefined;
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       ema20SeriesRef.current = null;
       ema240SeriesRef.current = null;
+      setTimeAxisLabels([]);
       positionLinesRef.current = [];
       loadedSessionRef.current = null;
       loadedCountRef.current = 0;
@@ -2196,6 +2228,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
         from: logicalRangeFrom,
         to: logicalRangeFrom + visibleCapacity,
       });
+      window.requestAnimationFrame(() => refreshTimeAxisRef.current());
       return;
     }
     if (points.length === loadedCountRef.current) return;
@@ -2225,6 +2258,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       priceScale.setAutoScale(false);
       priceScale.setVisibleRange(priceRange);
     }
+    window.requestAnimationFrame(() => refreshTimeAxisRef.current());
   }, [points, sessionId, visibleCapacity]);
 
   useEffect(() => {
@@ -2269,6 +2303,9 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId, ancho
       <span className="chart-drag-hint">默认窗口 {Math.min(points.length, visibleCapacity)} 根 · 已揭示 {candles.length} 根</span>
     </div>
     <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
+    <div className="paper-time-axis" aria-hidden="true">
+      {timeAxisLabels.map((label) => <span key={label.key} style={{ left: label.left }}>{label.text}</span>)}
+    </div>
   </div>;
 }
 
