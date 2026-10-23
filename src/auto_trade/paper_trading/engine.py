@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta, timezone
 from uuid import uuid4
 
 from auto_trade.paper_trading.models import (
@@ -16,6 +16,15 @@ from auto_trade.paper_trading.models import (
 
 STARTING_BALANCE = 1000.0
 MAINTENANCE_MARGIN_RATE = 0.005
+UTC8 = timezone(timedelta(hours=8))
+
+
+def utc8_price_anchor(value: datetime) -> datetime:
+    local_value = value.astimezone(UTC8)
+    anchor = datetime.combine(local_value.date(), time(hour=8), tzinfo=UTC8)
+    if local_value < anchor:
+        anchor -= timedelta(days=1)
+    return anchor.astimezone(UTC)
 
 
 @dataclass(slots=True)
@@ -219,7 +228,7 @@ class PaperSession:
 
     def snapshot(self) -> PaperSessionSnapshot:
         mark_price = self.current_candle.close_price
-        price_change_24h, price_change_24h_percent = self._price_change_24h()
+        anchored_change, anchored_change_percent = self._anchored_price_change()
         position = None
         unrealized_pnl = 0.0
         if self.position is not None:
@@ -254,26 +263,28 @@ class PaperSession:
             revealed_count=self.index + 1,
             total_candles=len(self.candles),
             current_candle=self.current_candle,
-            price_change_24h=price_change_24h,
-            price_change_24h_percent=price_change_24h_percent,
+            anchored_price_change=anchored_change,
+            anchored_price_change_percent=anchored_change_percent,
             position=position,
             trades=tuple(self.trades),
             message=self.message,
         )
 
-    def _price_change_24h(self) -> tuple[float | None, float | None]:
-        target = self.current_candle.close_time - timedelta(hours=24)
+    def _anchored_price_change(self) -> tuple[float | None, float | None]:
+        anchor_time = utc8_price_anchor(self.current_candle.open_time)
         history = self.lookback_candles + self.candles[: self.index + 1]
         reference = next(
-            (candle for candle in reversed(history) if candle.close_time <= target),
+            (
+                candle
+                for candle in reversed(history)
+                if candle.open_time == anchor_time
+            ),
             None,
         )
-        if reference is None or reference.close_price <= 0:
+        if reference is None or reference.open_price <= 0:
             return None, None
-        if (target - reference.close_time).total_seconds() >= self.interval_seconds:
-            return None, None
-        change = self.current_candle.close_price - reference.close_price
-        return change, change / reference.close_price * 100
+        change = self.current_candle.close_price - reference.open_price
+        return change, change / reference.open_price * 100
 
     def _complete(self) -> None:
         if self.position is not None:

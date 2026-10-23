@@ -109,8 +109,8 @@ class PaperSessionSnapshot(BaseModel):
     revealed_count: int
     total_candles: int
     current_candle: PaperCandle
-    price_change_24h: float | None = None
-    price_change_24h_percent: float | None = None
+    anchored_price_change: float | None = None
+    anchored_price_change_percent: float | None = None
     position: PaperPosition | None = None
     trades: tuple[PaperTrade, ...] = ()
     message: str | None = None

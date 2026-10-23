@@ -21,6 +21,7 @@ from auto_trade.paper_trading.engine import (
     MAINTENANCE_MARGIN_RATE,
     STARTING_BALANCE,
     PaperSession,
+    utc8_price_anchor,
 )
 from auto_trade.paper_trading.models import (
     PaperCandle,
@@ -187,9 +188,9 @@ async def _create_session(
         raise HTTPException(status_code=422, detail=f"所选范围不能超过 {MAX_CANDLES} 根 K 线")
 
     lookback_candles: tuple[PaperCandle, ...] = ()
-    reference_start = range_start - timedelta(hours=24)
-    reference_end = min(range_start, range_end - timedelta(hours=24))
-    if reference_start < reference_end:
+    reference_start = utc8_price_anchor(range_start)
+    reference_end = reference_start + timedelta(seconds=payload.interval_seconds)
+    if reference_start < range_start:
         reference_limit = min(
             MAX_CANDLES,
             int((reference_end - reference_start).total_seconds())
@@ -209,7 +210,7 @@ async def _create_session(
             )
         except Exception:
             logger.warning(
-                "paper replay 24h reference query failed; continuing without 24h change "
+                "paper replay UTC+8 anchor query failed; continuing without anchored change "
                 "symbol=%s interval=%s start=%s end=%s",
                 symbol,
                 payload.interval_seconds,

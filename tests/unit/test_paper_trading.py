@@ -2,7 +2,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from auto_trade.paper_trading.engine import PaperSession, liquidation_price
+from auto_trade.paper_trading.engine import (
+    PaperSession,
+    liquidation_price,
+    utc8_price_anchor,
+)
 from auto_trade.paper_trading.models import (
     GameStatus,
     NotionalUnit,
@@ -14,6 +18,7 @@ from auto_trade.paper_trading.models import (
 def candle(
     index: int,
     *,
+    open_price: float = 100.0,
     close: float = 100.0,
     high: float | None = None,
     low: float | None = None,
@@ -22,9 +27,9 @@ def candle(
     return PaperCandle(
         open_time=opened,
         close_time=opened + timedelta(minutes=5),
-        open_price=100,
-        high_price=high if high is not None else max(100, close),
-        low_price=low if low is not None else min(100, close),
+        open_price=open_price,
+        high_price=high if high is not None else max(open_price, close),
+        low_price=low if low is not None else min(open_price, close),
         close_price=close,
         base_volume=1,
         quote_volume=100,
@@ -156,30 +161,51 @@ def test_session_uses_persisted_account_balance_without_resetting_it() -> None:
     assert closed.realized_pnl == pytest.approx(350)
 
 
-def test_snapshot_calculates_rolling_24_hour_price_change_from_hidden_history() -> None:
-    game = session(candle(0, close=100), candle(1, close=110))
-    game.lookback_candles = (
-        candle(-288, close=80),
-        candle(-287, close=90),
-    )
+def test_snapshot_calculates_change_from_utc8_0800_open_price() -> None:
+    game = session(candle(12, open_price=105, close=110), candle(13, close=115))
+    game.lookback_candles = (candle(0, open_price=100, close=101),)
 
     initial = game.snapshot()
     advanced = game.advance()
 
-    assert initial.price_change_24h == pytest.approx(20)
-    assert initial.price_change_24h_percent == pytest.approx(25)
-    assert advanced.price_change_24h == pytest.approx(20)
-    assert advanced.price_change_24h_percent == pytest.approx(22.2222222)
+    assert initial.anchored_price_change == pytest.approx(10)
+    assert initial.anchored_price_change_percent == pytest.approx(10)
+    assert advanced.anchored_price_change == pytest.approx(15)
+    assert advanced.anchored_price_change_percent == pytest.approx(15)
 
 
-def test_snapshot_omits_24_hour_change_when_reference_candle_is_missing() -> None:
-    game = session(candle(0), candle(1))
-    game.lookback_candles = (candle(-289, close=80),)
+def test_utc8_anchor_uses_previous_day_before_0800_and_resets_at_0800() -> None:
+    before_reset = datetime(2026, 1, 2, 23, 59, tzinfo=UTC)
+    at_reset = datetime(2026, 1, 3, 0, 0, tzinfo=UTC)
+
+    assert utc8_price_anchor(before_reset) == datetime(2026, 1, 2, tzinfo=UTC)
+    assert utc8_price_anchor(at_reset) == datetime(2026, 1, 3, tzinfo=UTC)
+
+
+def test_snapshot_resets_anchored_change_at_next_utc8_0800() -> None:
+    game = session(
+        candle(287, close=120),
+        candle(288, open_price=200, close=202),
+    )
+    game.lookback_candles = (candle(0, open_price=100, close=101),)
+
+    before_reset = game.snapshot()
+    after_reset = game.advance()
+
+    assert before_reset.anchored_price_change == pytest.approx(20)
+    assert before_reset.anchored_price_change_percent == pytest.approx(20)
+    assert after_reset.anchored_price_change == pytest.approx(2)
+    assert after_reset.anchored_price_change_percent == pytest.approx(1)
+
+
+def test_snapshot_omits_anchored_change_when_reference_candle_is_missing() -> None:
+    game = session(candle(12), candle(13))
+    game.lookback_candles = (candle(-1, close=80),)
 
     result = game.snapshot()
 
-    assert result.price_change_24h is None
-    assert result.price_change_24h_percent is None
+    assert result.anchored_price_change is None
+    assert result.anchored_price_change_percent is None
 
 
 def test_take_profit_closes_position_at_trigger_price() -> None:

@@ -151,9 +151,9 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .chart-readout strong { margin-left: 3px; color: #c8d7e6; }
 .chart-readout strong.candle-change-up { color: #0ecb81; }
 .chart-readout strong.candle-change-down { color: #f6465d; }
-.paper-24h-change { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
-.paper-24h-change em { color: #71899f; font-size: 9px; font-style: normal; letter-spacing: .08em; }
-.paper-24h-change strong { min-width: 58px; margin: 0; text-align: right; }
+.paper-anchor-change { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.paper-anchor-change em { color: #71899f; font-size: 9px; font-style: normal; letter-spacing: .08em; }
+.paper-anchor-change strong { min-width: 58px; margin: 0; text-align: right; }
 .paper-chart-wrap .chart-drag-hint { margin-left: 0; }
 .chart-readout .ema20-label, .chart-summary .ema20-label { color: #a98cff; }
 .chart-readout .ema240-label, .chart-summary .ema240-label { color: #38a34a; }
