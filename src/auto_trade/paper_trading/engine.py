@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from auto_trade.paper_trading.models import (
@@ -39,6 +39,7 @@ class PaperSession:
     candles: tuple[PaperCandle, ...]
     range_start: datetime
     range_end: datetime
+    lookback_candles: tuple[PaperCandle, ...] = ()
     session_id: str = field(default_factory=lambda: str(uuid4()))
     status: GameStatus = GameStatus.READY
     balance: float = STARTING_BALANCE
@@ -218,6 +219,7 @@ class PaperSession:
 
     def snapshot(self) -> PaperSessionSnapshot:
         mark_price = self.current_candle.close_price
+        price_change_24h, price_change_24h_percent = self._price_change_24h()
         position = None
         unrealized_pnl = 0.0
         if self.position is not None:
@@ -252,10 +254,26 @@ class PaperSession:
             revealed_count=self.index + 1,
             total_candles=len(self.candles),
             current_candle=self.current_candle,
+            price_change_24h=price_change_24h,
+            price_change_24h_percent=price_change_24h_percent,
             position=position,
             trades=tuple(self.trades),
             message=self.message,
         )
+
+    def _price_change_24h(self) -> tuple[float | None, float | None]:
+        target = self.current_candle.close_time - timedelta(hours=24)
+        history = self.lookback_candles + self.candles[: self.index + 1]
+        reference = next(
+            (candle for candle in reversed(history) if candle.close_time <= target),
+            None,
+        )
+        if reference is None or reference.close_price <= 0:
+            return None, None
+        if (target - reference.close_time).total_seconds() >= self.interval_seconds:
+            return None, None
+        change = self.current_candle.close_price - reference.close_price
+        return change, change / reference.close_price * 100
 
     def _complete(self) -> None:
         if self.position is not None:

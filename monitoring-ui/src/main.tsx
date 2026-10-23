@@ -261,6 +261,8 @@ interface PaperSessionSnapshot {
   revealed_count: number;
   total_candles: number;
   current_candle: PaperCandle;
+  price_change_24h: number | null;
+  price_change_24h_percent: number | null;
   position: PaperPosition | null;
   trades: PaperTrade[];
   message: string | null;
@@ -1976,11 +1978,13 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, intervalSeconds, sessionId }: {
+function PaperReplayChart({ candles, position, intervalSeconds, sessionId, priceChange24h, priceChange24hPercent }: {
   candles: PaperCandle[];
   position: PaperPosition | null;
   intervalSeconds: number;
   sessionId: string;
+  priceChange24h: number | null;
+  priceChange24hPercent: number | null;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -2184,6 +2188,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId }: {
   }, [position?.entry_price, position?.liquidation_price, position?.take_profit_price, position?.stop_loss_price]);
 
   const current = hoveredCandle ?? points[points.length - 1];
+  const changeClass = priceChange24h === null || priceChange24h >= 0 ? "candle-change-up" : "candle-change-down";
   return <div className="paper-chart-wrap">
     <div className="chart-readout">
       {current ? <><span>{formatKlineTime(current.open_time)}</span>
@@ -2191,6 +2196,7 @@ function PaperReplayChart({ candles, position, intervalSeconds, sessionId }: {
       <span>高 <strong>{formatNumber(current.high_price, 2)}</strong></span>
       <span>低 <strong>{formatNumber(current.low_price, 2)}</strong></span>
       <span>收 <strong className={current.close_price >= current.open_price ? "candle-change-up" : "candle-change-down"}>{formatNumber(current.close_price, 2)}</strong></span></> : <span>载入行情后开始回放</span>}
+      <span className="paper-24h-change"><em>24H</em>{priceChange24h === null || priceChange24hPercent === null ? <strong>--</strong> : <><strong className={changeClass}>{priceChange24hPercent >= 0 ? "+" : ""}{priceChange24hPercent.toFixed(2)}%</strong><strong className={changeClass}>{priceChange24h >= 0 ? "+" : ""}{formatNumber(priceChange24h, 2)}</strong></>}</span>
       <span className="chart-drag-hint">默认窗口 {Math.min(points.length, visibleCapacity)} 根 · 已揭示 {candles.length} 根</span>
     </div>
     <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
@@ -2666,7 +2672,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
               <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span></div>
               <div className="paper-playback-actions"><label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
-            <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} />
+            <PaperReplayChart candles={candles} position={snapshot.position} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} priceChange24h={snapshot.price_change_24h} priceChange24hPercent={snapshot.price_change_24h_percent} />
           </div>
           <section className="panel paper-position-manager">
             <div className="paper-position-tabs"><button type="button" className={positionTab === "position" ? "active" : ""} onClick={() => setPositionTab("position")}>当前持仓</button><button type="button" className={positionTab === "history" ? "active" : ""} onClick={() => setPositionTab("history")}>历史订单 <span>{snapshot.trades.length}</span></button><label className="paper-two-r-toggle"><input type="checkbox" checked={autoTwoRTakeProfit} onChange={toggleAutoTwoRTakeProfit} /><span aria-hidden="true" /><strong>自动 2R 止盈</strong></label></div>

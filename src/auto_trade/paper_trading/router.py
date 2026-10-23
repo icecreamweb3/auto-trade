@@ -4,7 +4,7 @@ import asyncio
 import copy
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
@@ -127,22 +127,29 @@ async def create_session(
         raise HTTPException(status_code=422, detail="range_start must be before range_end")
 
     repository = MonitoringRepository(request.app.state.database_engine)
+    lookback_bars = 24 * 60 * 60 // payload.interval_seconds
     try:
         rows = await repository.paper_trader_klines(
             symbol=symbol,
-            range_start=range_start,
+            range_start=range_start - timedelta(hours=24),
             range_end=range_end,
             interval_seconds=payload.interval_seconds,
-            limit=MAX_CANDLES + 1,
+            limit=MAX_CANDLES + lookback_bars + 1,
         )
     except Exception as error:
         raise HTTPException(status_code=503, detail="paper trading data unavailable") from error
-    if not rows:
+    all_candles = tuple(PaperCandle.model_validate(row) for row in rows)
+    candles = tuple(
+        candle for candle in all_candles if candle.open_time >= range_start
+    )
+    lookback_candles = tuple(
+        candle for candle in all_candles if candle.open_time < range_start
+    )
+    if not candles:
         raise HTTPException(status_code=404, detail="所选时间范围没有可用 K 线")
-    if len(rows) > MAX_CANDLES:
+    if len(candles) > MAX_CANDLES:
         raise HTTPException(status_code=422, detail=f"所选范围不能超过 {MAX_CANDLES} 根 K 线")
 
-    candles = tuple(PaperCandle.model_validate(row) for row in rows)
     account = await AccountRepository(request.app.state.database_engine).account_summary(
         user.user_id
     )
@@ -152,6 +159,7 @@ async def create_session(
         candles=candles,
         range_start=range_start,
         range_end=range_end,
+        lookback_candles=lookback_candles,
         balance=account.balance,
     )
     sessions = _sessions(request)

@@ -156,6 +156,32 @@ def test_session_uses_persisted_account_balance_without_resetting_it() -> None:
     assert closed.realized_pnl == pytest.approx(350)
 
 
+def test_snapshot_calculates_rolling_24_hour_price_change_from_hidden_history() -> None:
+    game = session(candle(0, close=100), candle(1, close=110))
+    game.lookback_candles = (
+        candle(-288, close=80),
+        candle(-287, close=90),
+    )
+
+    initial = game.snapshot()
+    advanced = game.advance()
+
+    assert initial.price_change_24h == pytest.approx(20)
+    assert initial.price_change_24h_percent == pytest.approx(25)
+    assert advanced.price_change_24h == pytest.approx(20)
+    assert advanced.price_change_24h_percent == pytest.approx(22.2222222)
+
+
+def test_snapshot_omits_24_hour_change_when_reference_candle_is_missing() -> None:
+    game = session(candle(0), candle(1))
+    game.lookback_candles = (candle(-289, close=80),)
+
+    result = game.snapshot()
+
+    assert result.price_change_24h is None
+    assert result.price_change_24h_percent is None
+
+
 def test_take_profit_closes_position_at_trigger_price() -> None:
     game = session(candle(0), candle(1, close=108, high=112, low=99), candle(2))
     game.open_position(PositionSide.LONG, notional=1000, leverage=10)
