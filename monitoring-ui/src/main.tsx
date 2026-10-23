@@ -1,5 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  CandlestickSeries,
+  ColorType,
+  createChart,
+  HistogramSeries,
+  LineStyle,
+  type IChartApi,
+  type IPriceLine,
+  type ISeriesApi,
+  type Time,
+  type UTCTimestamp,
+} from "lightweight-charts";
 import "./styles.css";
 
 type HealthStatus = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
@@ -1926,75 +1938,130 @@ function PaperReplayChart({ candles, position, intervalSeconds }: {
   position: PaperPosition | null;
   intervalSeconds: number;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const positionLinesRef = useRef<IPriceLine[]>([]);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles.slice(-visibleCapacity);
-  if (points.length === 0) return <div className="chart-state">载入行情后开始回放</div>;
-  const width = 1100;
-  const height = 650;
-  const left = 72;
-  const right = 92;
-  const top = 28;
-  const priceBottom = 515;
-  const volumeTop = 550;
-  const volumeBottom = 615;
-  const plotWidth = width - left - right;
-  const referencePrices = position
-    ? [position.entry_price, position.liquidation_price, position.take_profit_price, position.stop_loss_price]
-      .filter((price): price is number => price !== null)
-    : [];
-  const low = Math.min(...points.map((point) => point.low_price), ...referencePrices);
-  const high = Math.max(...points.map((point) => point.high_price), ...referencePrices);
-  const rawRange = Math.max(high - low, high * .001, 1e-9);
-  const priceMin = low - rawRange * .08;
-  const priceMax = high + rawRange * .08;
-  const priceRange = priceMax - priceMin;
-  const priceHeight = priceBottom - top;
-  const slot = plotWidth / visibleCapacity;
-  const candleWidth = Math.max(2, Math.min(8, slot * .68));
-  const maxVolume = Math.max(...points.map((point) => point.quote_volume), 1);
-  const xAt = (index: number) => width - right - slot * (points.length - index - .5);
-  const yAt = (price: number) => top + (priceMax - price) / priceRange * priceHeight;
-  const ticks = Array.from({ length: 6 }, (_, index) => priceMax - priceRange * index / 5);
-  const timeTicks = [0, Math.floor((points.length - 1) / 2), points.length - 1]
-    .filter((value, index, values) => value >= 0 && values.indexOf(value) === index);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const chart = createChart(container, {
+      autoSize: true,
+      layout: {
+        background: { type: ColorType.Solid, color: "#071522" },
+        textColor: "#71899f",
+        fontFamily: "Inter, ui-sans-serif, sans-serif",
+        attributionLogo: true,
+      },
+      grid: {
+        vertLines: { color: "#182c3e" },
+        horzLines: { color: "#182c3e" },
+      },
+      rightPriceScale: { borderColor: "#29455e", scaleMargins: { top: .08, bottom: .22 } },
+      timeScale: {
+        borderColor: "#29455e",
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 5,
+        barSpacing: 8,
+        minBarSpacing: 4,
+        fixLeftEdge: false,
+        lockVisibleTimeRangeOnResize: true,
+      },
+      localization: {
+        timeFormatter: (time: Time) => typeof time === "number"
+          ? formatKlineTime(new Date(time * 1000).toISOString())
+          : typeof time === "string"
+            ? time
+            : `${time.year}-${String(time.month).padStart(2, "0")}-${String(time.day).padStart(2, "0")}`,
+      },
+      handleScale: true,
+      handleScroll: true,
+    });
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: "#0ecb81",
+      downColor: "#f6465d",
+      wickUpColor: "#0ecb81",
+      wickDownColor: "#f6465d",
+      borderVisible: false,
+      priceFormat: { type: "price", precision: 2, minMove: .01 },
+    });
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceScaleId: "",
+      priceFormat: { type: "volume" },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: .84, bottom: 0 } });
+    chartRef.current = chart;
+    candleSeriesRef.current = candleSeries;
+    volumeSeriesRef.current = volumeSeries;
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      positionLinesRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candleSeries = candleSeriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+    if (!chart || !candleSeries || !volumeSeries) return;
+    candleSeries.setData(points.map((point) => ({
+      time: Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp,
+      open: point.open_price,
+      high: point.high_price,
+      low: point.low_price,
+      close: point.close_price,
+    })));
+    volumeSeries.setData(points.map((point) => ({
+      time: Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp,
+      value: point.quote_volume,
+      color: point.close_price >= point.open_price ? "rgba(14,203,129,.38)" : "rgba(246,70,93,.38)",
+    })));
+    chart.timeScale().setVisibleLogicalRange({
+      from: points.length - visibleCapacity,
+      to: points.length + 5,
+    });
+  }, [points, visibleCapacity]);
+
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series) return;
+    for (const line of positionLinesRef.current) series.removePriceLine(line);
+    positionLinesRef.current = [];
+    if (!position) return;
+    const definitions = [
+      { price: position.entry_price, color: "#58d6c2", title: "开仓", style: LineStyle.Dashed },
+      { price: position.liquidation_price, color: "#ff6477", title: "强平", style: LineStyle.Dashed },
+      ...(position.take_profit_price === null ? [] : [{ price: position.take_profit_price, color: "#0ecb81", title: "止盈", style: LineStyle.Dashed }]),
+      ...(position.stop_loss_price === null ? [] : [{ price: position.stop_loss_price, color: "#ffb347", title: "止损", style: LineStyle.Dashed }]),
+    ];
+    positionLinesRef.current = definitions.map((definition) => series.createPriceLine({
+      ...definition,
+      lineWidth: 1,
+      axisLabelVisible: true,
+    }));
+  }, [position?.entry_price, position?.liquidation_price, position?.take_profit_price, position?.stop_loss_price]);
+
   const current = points[points.length - 1];
   return <div className="paper-chart-wrap">
     <div className="chart-readout">
-      <span>{formatKlineTime(current.open_time)}</span>
+      {current ? <><span>{formatKlineTime(current.open_time)}</span>
       <span>开 <strong>{formatNumber(current.open_price, 2)}</strong></span>
       <span>高 <strong>{formatNumber(current.high_price, 2)}</strong></span>
       <span>低 <strong>{formatNumber(current.low_price, 2)}</strong></span>
-      <span>收 <strong className={current.close_price >= current.open_price ? "candle-change-up" : "candle-change-down"}>{formatNumber(current.close_price, 2)}</strong></span>
+      <span>收 <strong className={current.close_price >= current.open_price ? "candle-change-up" : "candle-change-down"}>{formatNumber(current.close_price, 2)}</strong></span></> : <span>载入行情后开始回放</span>}
       <span className="chart-drag-hint">显示最近 {points.length} 根 · 已揭示 {candles.length} 根</span>
     </div>
-    <svg className="paper-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="PaperTrader K线回放图">
-      <rect width={width} height={height} rx="10" className="chart-background" />
-      {ticks.map((price) => <g key={price}>
-        <line x1={left} x2={width - right} y1={yAt(price)} y2={yAt(price)} className="chart-grid-line" />
-        <text x={width - right + 10} y={yAt(price) + 4} className="chart-axis-label">{formatNumber(price, 2)}</text>
-      </g>)}
-      {points.map((point, index) => {
-        const x = xAt(index);
-        const openY = yAt(point.open_price);
-        const closeY = yAt(point.close_price);
-        const rising = point.close_price >= point.open_price;
-        const barHeight = point.quote_volume / maxVolume * (volumeBottom - volumeTop);
-        return <g key={point.open_time} className={`paper-candle-group ${rising ? "chart-up" : "chart-down"}`} transform={`translate(${x} 0)`}>
-          <line x1={0} x2={0} y1={yAt(point.high_price)} y2={yAt(point.low_price)} className="candle-wick" />
-          <rect x={-candleWidth / 2} y={Math.min(openY, closeY)} width={candleWidth} height={Math.max(1, Math.abs(closeY - openY))} className="candle-body" />
-          <rect x={-candleWidth / 2} y={volumeBottom - barHeight} width={candleWidth} height={barHeight} className="volume-bar" />
-        </g>;
-      })}
-      {position && <>
-        <line x1={left} x2={width - right} y1={yAt(position.entry_price)} y2={yAt(position.entry_price)} className="paper-entry-line" />
-        <text x={left + 8} y={yAt(position.entry_price) - 6} className="paper-entry-label">开仓 {formatNumber(position.entry_price, 2)}</text>
-        <line x1={left} x2={width - right} y1={yAt(position.liquidation_price)} y2={yAt(position.liquidation_price)} className="paper-liquidation-line" />
-        <text x={left + 8} y={yAt(position.liquidation_price) - 6} className="paper-liquidation-label">强平 {formatNumber(position.liquidation_price, 2)}</text>
-        {position.take_profit_price !== null && <><line x1={left} x2={width - right} y1={yAt(position.take_profit_price)} y2={yAt(position.take_profit_price)} className="paper-take-profit-line" /><text x={width - right - 8} y={yAt(position.take_profit_price) - 6} textAnchor="end" className="paper-take-profit-label">止盈 {formatNumber(position.take_profit_price, 2)}</text></>}
-        {position.stop_loss_price !== null && <><line x1={left} x2={width - right} y1={yAt(position.stop_loss_price)} y2={yAt(position.stop_loss_price)} className="paper-stop-loss-line" /><text x={width - right - 8} y={yAt(position.stop_loss_price) - 6} textAnchor="end" className="paper-stop-loss-label">止损 {formatNumber(position.stop_loss_price, 2)}</text></>}
-      </>}
-      {timeTicks.map((index) => <text key={index} x={xAt(index)} y={height - 13} textAnchor="middle" className="chart-axis-label">{formatKlineTime(points[index].open_time, true)}</text>)}
-    </svg>
+    <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
   </div>;
 }
 
