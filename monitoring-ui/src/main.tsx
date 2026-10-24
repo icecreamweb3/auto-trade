@@ -2847,6 +2847,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tradingFullscreen, setTradingFullscreen] = useState(false);
+  const tradingFullscreenRef = useRef<HTMLDivElement>(null);
   const advancingRef = useRef(false);
   const startingSessionRef = useRef(false);
   const restoredSessionRef = useRef(false);
@@ -2891,6 +2893,14 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setTradingFullscreen(document.fullscreenElement === tradingFullscreenRef.current);
+    };
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreenState);
   }, []);
 
   useEffect(() => {
@@ -3628,6 +3638,26 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     ? projectedCloseGrossPnl - estimatedCloseFee - allocatedEntryFee
     : null;
   const invalidCloseOrder = !snapshot?.position || numericCloseQuantity === null || !Number.isFinite(numericCloseQuantity) || numericCloseQuantity <= 0 || numericCloseQuantity > snapshot.position.quantity + 1e-12 || closeTargetPrice === null || !Number.isFinite(closeTargetPrice) || closeTargetPrice <= 0;
+
+  async function enterTradingFullscreen() {
+    const target = tradingFullscreenRef.current;
+    if (!target || document.fullscreenElement === target) return;
+    try {
+      await target.requestFullscreen();
+    } catch (reason) {
+      setError(reason instanceof Error ? `无法进入全屏：${reason.message}` : "无法进入全屏");
+    }
+  }
+
+  async function exitTradingFullscreen() {
+    if (document.fullscreenElement !== tradingFullscreenRef.current) return;
+    try {
+      await document.exitFullscreen();
+    } catch (reason) {
+      setError(reason instanceof Error ? `无法退出全屏：${reason.message}` : "无法退出全屏");
+    }
+  }
+
   return <main className="paper-page">
     <header className="topbar">
       <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">使用自定义配置或随机交易时段生成历史行情，逐根回放 K 线，在个人模拟账户中练习仓位与杠杆。</p></div>
@@ -3658,7 +3688,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     </section>}
     {error && <div className="alert alert-critical">{error}</div>}
     {snapshot?.message?.startsWith("价格触及止损价") && snapshot.trades[snapshot.trades.length - 1]?.exit_reason === "STOP_LOSS" && <div className="alert paper-stop-loss-notice">{snapshot.message}</div>}
-    {!snapshot ? <section className="panel paper-empty"><strong>{restoringSession ? "正在恢复本轮交易…" : "准备开始"}</strong><p>{restoringSession ? "正在加载已回放 K 线、持仓、委托与历史订单。" : "载入后只会显示第一根 K 线，后续行情不会提前暴露。"}</p></section> : <>
+    {!snapshot ? <section className="panel paper-empty"><strong>{restoringSession ? "正在恢复本轮交易…" : "准备开始"}</strong><p>{restoringSession ? "正在加载已回放 K 线、持仓、委托与历史订单。" : "载入后只会显示第一根 K 线，后续行情不会提前暴露。"}</p></section> : <div ref={tradingFullscreenRef} className="paper-trading-shell">
+      <div className="paper-fullscreen-toolbar"><button type="button" onClick={() => void exitTradingFullscreen()}>退出全屏</button></div>
       <section className="paper-workspace">
         <div className="paper-main-column">
           <div className="panel paper-chart-panel">
@@ -3670,7 +3701,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                   <label className="paper-range-toggle"><input type="checkbox" checked={showUpperOpeningRange} onChange={(event) => setShowUpperOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>上方 TR</strong></label>
                   <label className="paper-range-toggle"><input type="checkbox" checked={showLowerOpeningRange} onChange={(event) => setShowLowerOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>下方 TR</strong></label>
                 </div>
-                <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
+                <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button>{!tradingFullscreen && <button type="button" onClick={() => void enterTradingFullscreen()}>全屏交易</button>}</div>
             </div>
             <div className="paper-chart-stage">
               <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} warmupSeconds={snapshot.warmup_seconds} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={(action, price) => void submitQuickOrder(action, price)} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
@@ -3788,7 +3819,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           <footer><button type="button" onClick={() => void saveRiskOrders()} disabled={positionAction}>{positionAction ? "保存中…" : "确认"}</button></footer>
         </section>
       </div>}
-    </>}
+    </div>}
   </main>;
 }
 
