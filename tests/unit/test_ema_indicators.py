@@ -37,12 +37,20 @@ async def test_new_realtime_checkpoint_uses_bounded_bootstrap_window() -> None:
     lock_result = MagicMock()
     checkpoint_result = MagicMock()
     checkpoint_result.mappings.return_value.one_or_none.return_value = None
+    marker_result = MagicMock()
+    marker_result.mappings.return_value.one_or_none.return_value = None
     dirty_result = MagicMock()
     dirty_result.scalar_one.return_value = None
     save_result = MagicMock()
     connection = MagicMock()
     connection.execute = AsyncMock(
-        side_effect=(lock_result, checkpoint_result, dirty_result, save_result)
+        side_effect=(
+            lock_result,
+            checkpoint_result,
+            marker_result,
+            dirty_result,
+            save_result,
+        )
     )
     checked_until = datetime(2026, 10, 24, tzinfo=UTC)
 
@@ -56,11 +64,89 @@ async def test_new_realtime_checkpoint_uses_bounded_bootstrap_window() -> None:
         chunk_days=7,
     )
 
-    dirty_statement, dirty_parameters = connection.execute.await_args_list[2].args
+    dirty_statement, dirty_parameters = connection.execute.await_args_list[3].args
     assert updated == 0
     assert "ORDER BY k.open_time DESC" in str(dirty_statement)
     assert "LIMIT :bootstrap_bars" in str(dirty_statement)
     assert dirty_parameters["bootstrap_bars"] == 2880
+
+
+async def test_existing_realtime_checkpoint_without_marker_skips_source_scan() -> None:
+    lock_result = MagicMock()
+    checkpoint_at = datetime(2026, 10, 24, tzinfo=UTC)
+    checkpoint_result = MagicMock()
+    checkpoint_result.mappings.return_value.one_or_none.return_value = {
+        "source_checked_at": checkpoint_at,
+        "calculation_version": "ema-close-v3-1h",
+    }
+    marker_result = MagicMock()
+    marker_result.mappings.return_value.one_or_none.return_value = None
+    save_result = MagicMock()
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(lock_result, checkpoint_result, marker_result, save_result)
+    )
+
+    updated = await _recompute_interval(
+        connection,
+        instrument_id=6,
+        interval_seconds=300,
+        checked_until=checkpoint_at + timedelta(minutes=5),
+        batch_size=1000,
+        bootstrap_bars=2880,
+        chunk_days=7,
+    )
+
+    statements = [str(call.args[0]) for call in connection.execute.await_args_list]
+    assert updated == 0
+    assert len(statements) == 4
+    assert any("FROM market.kline_ema_dirty_ranges" in sql for sql in statements)
+    assert all("FROM market.klines k" not in sql for sql in statements)
+
+
+async def test_existing_realtime_checkpoint_consumes_dirty_marker() -> None:
+    lock_result = MagicMock()
+    checked_until = datetime(2026, 10, 24, tzinfo=UTC)
+    checkpoint_result = MagicMock()
+    checkpoint_result.mappings.return_value.one_or_none.return_value = {
+        "source_checked_at": checked_until - timedelta(minutes=5),
+        "calculation_version": "ema-close-v3-1h",
+    }
+    marker_result = MagicMock()
+    marker_result.mappings.return_value.one_or_none.return_value = {
+        "dirty_start": checked_until,
+        "changed_at": checked_until,
+    }
+    seed_result = MagicMock()
+    seed_result.mappings.return_value.one_or_none.return_value = None
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(
+            lock_result,
+            checkpoint_result,
+            marker_result,
+            seed_result,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        )
+    )
+
+    updated = await _recompute_interval(
+        connection,
+        instrument_id=6,
+        interval_seconds=300,
+        checked_until=checked_until,
+        batch_size=1000,
+        bootstrap_bars=2880,
+        chunk_days=7,
+    )
+
+    statements = [str(call.args[0]) for call in connection.execute.await_args_list]
+    assert updated == 0
+    assert len(statements) == 7
+    assert all("effective_at >" not in sql for sql in statements)
+    assert "DELETE FROM market.kline_ema_dirty_ranges" in statements[-1]
 
 
 def test_indicator_lock_key_separates_instrument_and_interval() -> None:

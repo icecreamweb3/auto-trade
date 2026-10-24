@@ -12,6 +12,11 @@ EMA20、EMA240 分为两个用途不同的服务，避免 BTCUSDT、ETHUSDT 的�
 K 线进行预热，默认 2880 根。数据库暂时不可用时，当前轮次会立即停止，等待正常扫描
 间隔后再重试，不会继续为数百个交易对反复创建失败连接。
 
+增量变更由数据库触发器汇总到每个交易对、每个周期一行的 dirty range。实时服务通过
+主键读取最早受影响时间，再按 `open_time` 分片重算；不会按 `effective_at` 扫描已经转为
+TimescaleDB Columnstore 的历史 K 线。迁移首次部署时会为现有 checkpoint 播种最多最近
+10 天的追赶区间。
+
 ## BTC/ETH 历史回补服务
 
 `ema-indicators-history` 是 `tools` profile 下的一次性服务，只在人工执行时启动，完成后退出。

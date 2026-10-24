@@ -30,14 +30,23 @@ async def test_explicit_symbols_resolve_without_scanning_kline_chunks() -> None:
 
 
 async def test_new_15m_checkpoint_uses_bounded_bootstrap_window() -> None:
+    plan_result = MagicMock()
     checkpoint_result = MagicMock()
     checkpoint_result.mappings.return_value.one_or_none.return_value = None
+    marker_result = MagicMock()
+    marker_result.mappings.return_value.one_or_none.return_value = None
     dirty_result = MagicMock()
     dirty_result.scalar_one.return_value = None
     save_result = MagicMock()
     connection = MagicMock()
     connection.execute = AsyncMock(
-        side_effect=(checkpoint_result, dirty_result, save_result)
+        side_effect=(
+            plan_result,
+            checkpoint_result,
+            marker_result,
+            dirty_result,
+            save_result,
+        )
     )
     checked_until = datetime(2026, 10, 24, tzinfo=UTC)
 
@@ -50,11 +59,93 @@ async def test_new_15m_checkpoint_uses_bounded_bootstrap_window() -> None:
         chunk_days=7,
     )
 
-    dirty_statement, dirty_parameters = connection.execute.await_args_list[1].args
+    plan_statement = connection.execute.await_args_list[0].args[0]
+    dirty_statement, dirty_parameters = connection.execute.await_args_list[3].args
     assert updated == 0
+    assert "set_config('plan_cache_mode', 'force_custom_plan', true)" in str(
+        plan_statement
+    )
     assert "ORDER BY k.open_time DESC" in str(dirty_statement)
     assert "LIMIT :bootstrap_bars" in str(dirty_statement)
     assert dirty_parameters["bootstrap_bars"] == 2880
+
+
+async def test_existing_15m_checkpoint_without_dirty_marker_skips_source_scan() -> None:
+    plan_result = MagicMock()
+    checkpoint_at = datetime(2026, 10, 22, 10, 16, tzinfo=UTC)
+    checkpoint_result = MagicMock()
+    checkpoint_result.mappings.return_value.one_or_none.return_value = {
+        "kline_checked_at": checkpoint_at,
+        "oi_checked_at": checkpoint_at,
+        "derivation_version": "trade-5m-aggregate-v1",
+    }
+    marker_result = MagicMock()
+    marker_result.mappings.return_value.one_or_none.return_value = None
+    save_result = MagicMock()
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(plan_result, checkpoint_result, marker_result, save_result)
+    )
+    checked_until = datetime(2026, 10, 24, tzinfo=UTC)
+
+    updated = await _recompute_instrument(
+        connection,
+        instrument_id=6,
+        checked_until=checked_until,
+        batch_size=1000,
+        bootstrap_bars=2880,
+        chunk_days=7,
+    )
+
+    assert updated == 0
+    statements = [str(call.args[0]) for call in connection.execute.await_args_list]
+    assert len(statements) == 4
+    assert any("FROM market.kline_15m_dirty_ranges" in sql for sql in statements)
+    assert all("FROM market.klines k" not in sql for sql in statements)
+    assert all("FROM market.open_interest_observations" not in sql for sql in statements)
+
+
+async def test_existing_15m_checkpoint_consumes_dirty_marker_without_change_scan() -> None:
+    plan_result = MagicMock()
+    checked_until = datetime(2026, 10, 24, tzinfo=UTC)
+    checkpoint_result = MagicMock()
+    checkpoint_result.mappings.return_value.one_or_none.return_value = {
+        "kline_checked_at": checked_until - timedelta(minutes=5),
+        "oi_checked_at": checked_until - timedelta(minutes=5),
+        "derivation_version": "trade-5m-aggregate-v1",
+    }
+    marker_result = MagicMock()
+    marker_result.mappings.return_value.one_or_none.return_value = {
+        "dirty_start": checked_until,
+        "changed_at": checked_until,
+    }
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(
+            plan_result,
+            checkpoint_result,
+            marker_result,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        )
+    )
+
+    updated = await _recompute_instrument(
+        connection,
+        instrument_id=6,
+        checked_until=checked_until,
+        batch_size=1000,
+        bootstrap_bars=2880,
+        chunk_days=7,
+    )
+
+    statements = [str(call.args[0]) for call in connection.execute.await_args_list]
+    assert updated == 0
+    assert len(statements) == 6
+    assert all("effective_at >" not in sql for sql in statements)
+    assert all("collected_at >" not in sql for sql in statements)
+    assert "DELETE FROM market.kline_15m_dirty_ranges" in statements[-1]
 
 
 def _source_row(start: datetime, offset_minutes: int, price: int) -> dict[str, object]:

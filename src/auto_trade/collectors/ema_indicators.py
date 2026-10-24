@@ -225,6 +225,22 @@ async def _recompute_interval(
         {"instrument_id": instrument_id, "interval_seconds": interval_seconds},
     )
     checkpoint = checkpoint_result.mappings().one_or_none()
+    dirty_marker_result = await connection.execute(
+        text(
+            """
+                SELECT dirty_start, changed_at
+                FROM market.kline_ema_dirty_ranges
+                WHERE instrument_id = :instrument_id
+                  AND interval_seconds = :interval_seconds
+                FOR UPDATE
+            """
+        ),
+        {"instrument_id": instrument_id, "interval_seconds": interval_seconds},
+    )
+    dirty_marker = cast(
+        Mapping[str, object] | None,
+        dirty_marker_result.mappings().one_or_none(),
+    )
 
     previous_checked_at = (
         cast(datetime, checkpoint["source_checked_at"])
@@ -255,31 +271,17 @@ async def _recompute_interval(
             "checked_until": checked_until,
             "bootstrap_bars": bootstrap_bars,
         }
+    elif dirty_marker is not None:
+        dirty_start = cast(datetime, dirty_marker["dirty_start"])
     else:
-        dirty_statement = text(
-            """
-                SELECT min(k.open_time)
-                FROM market.klines k
-                WHERE k.instrument_id = :instrument_id
-                  AND k.price_type = 'TRADE'
-                  AND k.interval_seconds = 300
-                  AND k.is_current
-                  AND k.is_closed
-                  AND k.quality_status = 'VALID'
-                  AND k.effective_at > CAST(:previous_checked_at AS timestamptz)
-                  AND k.effective_at <= CAST(:checked_until AS timestamptz)
-            """
+        dirty_start = None
+
+    if previous_checked_at is None:
+        dirty_result = await connection.execute(
+            dirty_statement,
+            dirty_parameters,
         )
-        dirty_parameters = {
-            "instrument_id": instrument_id,
-            "previous_checked_at": previous_checked_at,
-            "checked_until": checked_until,
-        }
-    dirty_result = await connection.execute(
-        dirty_statement,
-        dirty_parameters,
-    )
-    dirty_start = cast(datetime | None, dirty_result.scalar_one())
+        dirty_start = cast(datetime | None, dirty_result.scalar_one())
 
     if dirty_start is None:
         await _save_checkpoint(
@@ -289,6 +291,13 @@ async def _recompute_interval(
             checked_until=checked_until,
             last_open_time=None,
             preserve_last_open_time=True,
+        )
+        await _clear_consumed_dirty_marker(
+            connection,
+            instrument_id=instrument_id,
+            interval_seconds=interval_seconds,
+            dirty_marker=dirty_marker,
+            checked_until=checked_until,
         )
         return 0
 
@@ -419,6 +428,13 @@ async def _recompute_interval(
         last_open_time=last_open_time,
         preserve_last_open_time=last_open_time is None,
     )
+    await _clear_consumed_dirty_marker(
+        connection,
+        instrument_id=instrument_id,
+        interval_seconds=interval_seconds,
+        dirty_marker=dirty_marker,
+        checked_until=checked_until,
+    )
     return updated
 
 
@@ -460,6 +476,31 @@ async def _save_checkpoint(
             "calculation_version": CALCULATION_VERSION,
             "preserve_last_open_time": preserve_last_open_time,
         },
+    )
+
+
+async def _clear_consumed_dirty_marker(
+    connection: AsyncConnection,
+    *,
+    instrument_id: int,
+    interval_seconds: int,
+    dirty_marker: Mapping[str, object] | None,
+    checked_until: datetime,
+) -> None:
+    if (
+        dirty_marker is None
+        or cast(datetime, dirty_marker["changed_at"]) > checked_until
+    ):
+        return
+    await connection.execute(
+        text(
+            """
+            DELETE FROM market.kline_ema_dirty_ranges
+            WHERE instrument_id = :instrument_id
+              AND interval_seconds = :interval_seconds
+            """
+        ),
+        {"instrument_id": instrument_id, "interval_seconds": interval_seconds},
     )
 
 

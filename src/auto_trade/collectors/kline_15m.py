@@ -224,6 +224,32 @@ async def _save_checkpoint(
     )
 
 
+async def _clear_consumed_dirty_marker(
+    connection: AsyncConnection,
+    *,
+    instrument_id: int,
+    dirty_marker: Mapping[str, object] | None,
+    checked_until: datetime,
+) -> None:
+    # Do not issue an unconditional DELETE after observing no marker: a writer
+    # can insert one concurrently after our SELECT, and that new work must remain
+    # queued for the next cycle.
+    if (
+        dirty_marker is None
+        or cast(datetime, dirty_marker["changed_at"]) > checked_until
+    ):
+        return
+    await connection.execute(
+        text(
+            """
+            DELETE FROM market.kline_15m_dirty_ranges
+            WHERE instrument_id = :instrument_id
+            """
+        ),
+        {"instrument_id": instrument_id},
+    )
+
+
 async def _recompute_instrument(
     connection: AsyncConnection,
     *,
@@ -233,6 +259,12 @@ async def _recompute_instrument(
     bootstrap_bars: int,
     chunk_days: int,
 ) -> int:
+    # This transaction is executed once per instrument with the same prepared
+    # statements. Keep custom plans so bounded source windows can prune TimescaleDB
+    # chunks using their actual timestamp parameters.
+    await connection.execute(
+        text("SELECT set_config('plan_cache_mode', 'force_custom_plan', true)")
+    )
     checkpoint_result = await connection.execute(
         text(
             """
@@ -245,6 +277,21 @@ async def _recompute_instrument(
         {"instrument_id": instrument_id},
     )
     checkpoint = checkpoint_result.mappings().one_or_none()
+    dirty_marker_result = await connection.execute(
+        text(
+            """
+            SELECT dirty_start, changed_at
+            FROM market.kline_15m_dirty_ranges
+            WHERE instrument_id = :instrument_id
+            FOR UPDATE
+            """
+        ),
+        {"instrument_id": instrument_id},
+    )
+    dirty_marker = cast(
+        Mapping[str, object] | None,
+        dirty_marker_result.mappings().one_or_none(),
+    )
     if checkpoint is not None and checkpoint["derivation_version"] == DERIVATION_VERSION:
         kline_checked_at = cast(datetime, checkpoint["kline_checked_at"])
         oi_checked_at = cast(datetime, checkpoint["oi_checked_at"])
@@ -276,47 +323,16 @@ async def _recompute_instrument(
             "checked_until": checked_until,
             "bootstrap_bars": bootstrap_bars,
         }
+    elif dirty_marker is not None:
+        assert kline_checked_at is not None
+        assert oi_checked_at is not None
+        dirty_start = cast(datetime, dirty_marker["dirty_start"])
     else:
-        dirty_statement = text(
-            """
-            SELECT min(dirty_time)
-            FROM (
-                SELECT min(k.open_time) AS dirty_time
-                FROM market.klines k
-                WHERE k.instrument_id = :instrument_id
-                  AND k.price_type = 'TRADE'
-                  AND k.interval_seconds = 300
-                  AND k.is_current
-                  AND k.is_closed
-                  AND k.quality_status = 'VALID'
-                  AND (
-                      CAST(:kline_checked_at AS timestamptz) IS NULL
-                      OR k.effective_at > CAST(:kline_checked_at AS timestamptz)
-                  )
-                  AND k.effective_at <= CAST(:checked_until AS timestamptz)
-                UNION ALL
-                SELECT min(date_bin(
-                    '15 minutes', o.observed_at, TIMESTAMPTZ '1970-01-01'
-                )) AS dirty_time
-                FROM market.open_interest_observations o
-                WHERE o.instrument_id = :instrument_id
-                  AND o.quality_status IN ('VALID', 'PARTIAL')
-                  AND (
-                      CAST(:oi_checked_at AS timestamptz) IS NULL
-                      OR o.collected_at > CAST(:oi_checked_at AS timestamptz)
-                  )
-                  AND o.collected_at <= CAST(:checked_until AS timestamptz)
-            ) changes
-            """
-        )
-        dirty_parameters = {
-            "instrument_id": instrument_id,
-            "kline_checked_at": kline_checked_at,
-            "oi_checked_at": oi_checked_at,
-            "checked_until": checked_until,
-        }
-    dirty_result = await connection.execute(dirty_statement, dirty_parameters)
-    dirty_start = cast(datetime | None, dirty_result.scalar_one())
+        dirty_start = None
+
+    if kline_checked_at is None and oi_checked_at is None:
+        dirty_result = await connection.execute(dirty_statement, dirty_parameters)
+        dirty_start = cast(datetime | None, dirty_result.scalar_one())
     if dirty_start is None:
         await _save_checkpoint(
             connection,
@@ -324,6 +340,12 @@ async def _recompute_instrument(
             checked_until=checked_until,
             last_open_time=None,
             preserve_last_open_time=True,
+        )
+        await _clear_consumed_dirty_marker(
+            connection,
+            instrument_id=instrument_id,
+            dirty_marker=dirty_marker,
+            checked_until=checked_until,
         )
         return 0
 
@@ -464,6 +486,12 @@ async def _recompute_instrument(
         checked_until=checked_until,
         last_open_time=last_open_time,
         preserve_last_open_time=last_open_time is None,
+    )
+    await _clear_consumed_dirty_marker(
+        connection,
+        instrument_id=instrument_id,
+        dirty_marker=dirty_marker,
+        checked_until=checked_until,
     )
     return updated
 
