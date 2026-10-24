@@ -457,6 +457,24 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-position-table .paper-cancel-order:hover { background: #493715; }
 .paper-position-empty { display: grid; min-height: 128px; flex: 1; place-items: center; color: #667f95; background: transparent; font-size: 12px; }
 .paper-history-table { min-width: 900px; }
+.paper-quick-order-backdrop { position: fixed; z-index: 130; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(2, 8, 15, .46); }
+.paper-quick-order-dialog { width: min(470px, 100%); overflow: hidden; border: 1px solid #344a5d; border-radius: 10px; color: #dce7f1; background: #171e27; box-shadow: 0 22px 70px rgba(0, 0, 0, .62); }
+.paper-quick-order-dialog > header { display: flex; min-height: 66px; align-items: center; justify-content: space-between; gap: 15px; padding: 0 18px; border-bottom: 1px solid #303b47; }
+.paper-quick-order-dialog > header > div { display: flex; align-items: center; gap: 11px; }
+.paper-quick-order-dialog > header > div > span { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid #168f72; border-radius: 7px; color: #34d5aa; background: #0b392f; font-size: 11px; font-weight: 900; }
+.paper-quick-order-dialog h2 { margin: 0 0 3px; font-size: 15px; }
+.paper-quick-order-dialog header small { display: block; color: #8e9aa7; font-size: 10px; }
+.paper-quick-order-dialog > header > button { border: 0; padding: 5px 8px; color: #8e9aa7; background: transparent; font-size: 21px; }
+.paper-quick-order-dialog > dl { display: grid; grid-template-columns: 1fr 1fr; margin: 16px 18px 12px; overflow: hidden; border: 1px solid #34414d; border-radius: 8px; }
+.paper-quick-order-dialog > dl > div { min-height: 72px; padding: 12px; border-bottom: 1px solid #34414d; }
+.paper-quick-order-dialog > dl > div:nth-child(odd) { border-right: 1px solid #34414d; }
+.paper-quick-order-dialog > dl > div:nth-last-child(-n+2) { border-bottom: 0; }
+.paper-quick-order-dialog dt, .paper-quick-order-dialog dd { margin: 0; font-variant-numeric: tabular-nums; }
+.paper-quick-order-dialog dt { margin-bottom: 8px; color: #8797a7; font-size: 10px; }
+.paper-quick-order-dialog dd { color: #edf5fc; font-size: 12px; font-weight: 800; }
+.paper-quick-order-dialog > p { margin: 0 18px 16px; border: 1px solid #394550; border-radius: 7px; padding: 11px 12px; color: #9ba8b5; background: #202832; font-size: 10px; line-height: 1.55; }
+.paper-quick-order-dialog > footer { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px 18px 18px; border-top: 1px solid #303b47; }
+.paper-quick-order-dialog > footer button { min-height: 40px; }
 .paper-risk-backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 18px; pointer-events: none; }
 .paper-risk-dialog { width: min(520px, 100%); max-height: calc(100vh - 16px); overflow: auto; border: 1px solid #3b4148; border-radius: 7px; color: #dce2e8; background: #23272d; box-shadow: 0 18px 60px rgba(0, 0, 0, .55); pointer-events: auto; will-change: transform; }
 .paper-risk-dialog > header { display: flex; align-items: center; justify-content: space-between; min-height: 54px; padding: 0 18px; border-bottom: 1px solid #373c43; cursor: grab; touch-action: none; user-select: none; }

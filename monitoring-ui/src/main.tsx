@@ -333,6 +333,14 @@ interface PaperChartContextMenu {
   price: number;
 }
 
+interface PaperQuickOrderConfirmation {
+  action: "BUY_TAKE_PROFIT_LIMIT" | "SELL_TAKE_PROFIT_LIMIT";
+  price: number;
+  quantity: number;
+  notional: number;
+  notionalUnit: PaperNotionalUnit;
+}
+
 interface PaperOpeningRange {
   high: number;
   low: number;
@@ -2836,6 +2844,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [riskDialogError, setRiskDialogError] = useState<string | null>(null);
   const [riskDialogOffset, setRiskDialogOffset] = useState({ x: 0, y: 0 });
+  const [quickOrderConfirmation, setQuickOrderConfirmation] = useState<PaperQuickOrderConfirmation | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [replayPresets, setReplayPresets] = useState<PaperReplayPreset[]>([]);
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
@@ -3045,7 +3054,10 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }, [snapshot?.position?.quantity, snapshot?.position?.take_profit_price, snapshot?.position?.take_profit_quantity]);
 
   useEffect(() => {
-    if (snapshot && !snapshot.position) setOrderTab("open");
+    if (snapshot && !snapshot.position) {
+      setOrderTab("open");
+      setQuickOrderConfirmation(null);
+    }
   }, [snapshot?.position]);
 
   function applySnapshot(next: PaperSessionSnapshot, reset = false) {
@@ -3274,7 +3286,13 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     }
   }
 
-  async function submitQuickOrder(action: PaperQuickOrderAction, price: number) {
+  function quickOrderQuantity(price: number): number | null {
+    if (!snapshot || notional === "" || !Number.isFinite(notional) || notional <= 0 || price <= 0) return null;
+    const requestedQuantity = notionalUnit === "USDT" ? notional / price : notional;
+    return floorBaseQuantity(requestedQuantity, snapshot.symbol);
+  }
+
+  function requestQuickOrder(action: PaperQuickOrderAction, price: number) {
     if (!snapshot || positionAction) return;
     const isTakeProfit = action === "BUY_TAKE_PROFIT_LIMIT" || action === "SELL_TAKE_PROFIT_LIMIT";
     if (isTakeProfit) {
@@ -3288,9 +3306,49 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         setError("止盈方向与当前持仓不匹配");
         return;
       }
+      const quantity = quickOrderQuantity(price);
+      if (quantity === null || quantity <= 0) {
+        setError("请先在下单面板设置有效的名义下单价值");
+        return;
+      }
+      if (quantity > position.quantity + 1e-12) {
+        setError("下单面板名义价值换算的数量超过当前可平仓数量");
+        return;
+      }
+      setError(null);
+      setQuickOrderConfirmation({
+        action,
+        price,
+        quantity,
+        notional: Number(notional),
+        notionalUnit,
+      });
+      return;
+    }
+    void submitQuickOrder(action, price);
+  }
+
+  async function submitQuickOrder(action: PaperQuickOrderAction, price: number, confirmedQuantity?: number): Promise<boolean> {
+    if (!snapshot || positionAction) return false;
+    const isTakeProfit = action === "BUY_TAKE_PROFIT_LIMIT" || action === "SELL_TAKE_PROFIT_LIMIT";
+    if (isTakeProfit) {
+      const position = snapshot.position;
+      if (!position) {
+        setError("当前没有可设置止盈的持仓");
+        return false;
+      }
+      const expectedAction = position.side === "LONG" ? "SELL_TAKE_PROFIT_LIMIT" : "BUY_TAKE_PROFIT_LIMIT";
+      if (action !== expectedAction) {
+        setError("止盈方向与当前持仓不匹配");
+        return false;
+      }
+      if (confirmedQuantity === undefined || confirmedQuantity <= 0 || confirmedQuantity > position.quantity + 1e-12) {
+        setError("止盈限价单数量无效，请重新下单");
+        return false;
+      }
     } else if (notional === "" || leverage === "") {
       setError("请先在下单面板设置名义下单价值和杠杆倍数");
-      return;
+      return false;
     }
     setPositionAction(true);
     setError(null);
@@ -3300,7 +3358,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              quantity: snapshot.position!.quantity,
+              quantity: confirmedQuantity,
               order_type: "LIMIT",
               price,
             }),
@@ -3319,8 +3377,10 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           });
       applySnapshot(next);
       setPositionTab("orders");
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "快捷下单失败");
+      return false;
     } finally {
       setPositionAction(false);
     }
@@ -3704,7 +3764,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button>{!tradingFullscreen && <button type="button" onClick={() => void enterTradingFullscreen()}>全屏交易</button>}</div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} warmupSeconds={snapshot.warmup_seconds} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={(action, price) => void submitQuickOrder(action, price)} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
+              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} warmupSeconds={snapshot.warmup_seconds} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={requestQuickOrder} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>
@@ -3795,6 +3855,21 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             </dl></div>
         </aside>
       </section>
+      {quickOrderConfirmation && snapshot.position && <div className="paper-quick-order-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !positionAction) setQuickOrderConfirmation(null); }}>
+        <section className="paper-quick-order-dialog" role="dialog" aria-modal="true" aria-labelledby="paper-quick-order-title">
+          <header><div><span>TP</span><div><h2 id="paper-quick-order-title">确认 {quickOrderConfirmation.action === "SELL_TAKE_PROFIT_LIMIT" ? "Sell" : "Buy"} Take Profit Limit</h2><small>平仓 · 限价单</small></div></div><button type="button" onClick={() => setQuickOrderConfirmation(null)} disabled={positionAction} aria-label="关闭止盈限价确认框">×</button></header>
+          <dl>
+            <div><dt>交易对</dt><dd>{snapshot.symbol}</dd></div>
+            <div><dt>方向</dt><dd className={quickOrderConfirmation.action === "SELL_TAKE_PROFIT_LIMIT" ? "paper-short-price" : "paper-long-price"}>{quickOrderConfirmation.action === "SELL_TAKE_PROFIT_LIMIT" ? "Sell Take Profit Limit" : "Buy Take Profit Limit"}</dd></div>
+            <div><dt>委托价格</dt><dd>{formatNumber(quickOrderConfirmation.price, 2)} USDT</dd></div>
+            <div><dt>下单数量</dt><dd>{formatBaseQuantity(quickOrderConfirmation.quantity, snapshot.symbol)} {baseAsset}</dd></div>
+            <div><dt>面板名义价值</dt><dd>{formatNumber(quickOrderConfirmation.notional, baseQuantityPrecision(snapshot.symbol))} {quickOrderConfirmation.notionalUnit === "USDT" ? "USDT" : baseAsset}</dd></div>
+            <div><dt>预计委托价值</dt><dd>{formatNumber(quickOrderConfirmation.quantity * quickOrderConfirmation.price, 2)} USDT</dd></div>
+          </dl>
+          <p>下单数量由右侧下单面板的名义价值按当前委托价格换算；确认后将创建限价止盈委托。</p>
+          <footer><button type="button" onClick={() => setQuickOrderConfirmation(null)} disabled={positionAction}>取消</button><button type="button" className="primary-button" disabled={positionAction} onClick={() => { const order = quickOrderConfirmation; void submitQuickOrder(order.action, order.price, order.quantity).then((submitted) => { if (submitted) setQuickOrderConfirmation(null); }); }}>{positionAction ? "提交中…" : "确认下单"}</button></footer>
+        </section>
+      </div>}
       {riskDialogOpen && snapshot.position && <div className="paper-risk-backdrop" role="presentation">
         <section className="paper-risk-dialog" role="dialog" aria-labelledby="paper-risk-title" style={{ transform: `translate3d(${riskDialogOffset.x}px, ${riskDialogOffset.y}px, 0)` }}>
           <header onPointerDown={startRiskDialogDrag} onPointerMove={moveRiskDialog} onPointerUp={stopRiskDialogDrag} onPointerCancel={stopRiskDialogDrag}><h2 id="paper-risk-title">整仓止盈/止损</h2><button type="button" onClick={() => setRiskDialogOpen(false)} aria-label="关闭止盈止损设置">×</button></header>
