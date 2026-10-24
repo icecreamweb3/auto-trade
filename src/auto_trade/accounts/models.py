@@ -101,6 +101,10 @@ class AccountTrade(BaseModel):
     quantity: float
     entry_price: float
     exit_price: float
+    gross_pnl: float
+    entry_fee: float
+    exit_fee: float
+    fee: float
     realized_pnl: float
     balance_before: float
     balance_after: float

@@ -56,15 +56,20 @@ def test_long_position_updates_unrealized_and_manual_close() -> None:
     advanced = game.advance()
     closed = game.close_position()
 
-    assert opened.available_balance == 900
+    assert opened.available_balance == pytest.approx(899.6)
     assert opened.position is not None
     assert opened.position.entry_price == 100
     assert opened.position.quantity == 10
     assert advanced.position is not None
     assert advanced.position.unrealized_pnl == pytest.approx(100)
-    assert advanced.equity == pytest.approx(1100)
+    assert advanced.equity == pytest.approx(1099.6)
     assert closed.position is None
-    assert closed.balance == pytest.approx(1100)
+    assert closed.balance == pytest.approx(1099.16)
+    assert closed.total_fees == pytest.approx(0.84)
+    assert closed.trades[0].entry_fee == pytest.approx(0.4)
+    assert closed.trades[0].exit_fee == pytest.approx(0.44)
+    assert closed.trades[0].gross_pnl == pytest.approx(100)
+    assert closed.trades[0].realized_pnl == pytest.approx(99.16)
     assert closed.trades[0].exit_reason == "MANUAL"
 
 
@@ -74,18 +79,18 @@ def test_long_liquidation_uses_intrabar_low_and_ends_game() -> None:
         PositionSide.LONG,
         entry_price=100,
         quantity=100,
-        account_balance=1000,
+        account_balance=996,
     )
-    assert expected_price == pytest.approx(90.4522613)
+    assert expected_price == pytest.approx(90.4924623)
 
     game.open_position(PositionSide.LONG, notional=10000, leverage=10)
     result = game.advance()
 
     assert result.status is GameStatus.LIQUIDATED
     assert result.position is None
-    assert result.balance == pytest.approx(45.2261307)
+    assert result.balance == pytest.approx(41.6265327)
     assert result.trades[0].exit_price == pytest.approx(expected_price)
-    assert result.trades[0].realized_pnl == pytest.approx(-954.7738693)
+    assert result.trades[0].realized_pnl == pytest.approx(-958.3734673)
 
 
 def test_short_liquidation_uses_intrabar_high() -> None:
@@ -95,7 +100,7 @@ def test_short_liquidation_uses_intrabar_high() -> None:
     result = game.advance()
 
     assert result.status is GameStatus.LIQUIDATED
-    assert result.balance == pytest.approx(54.7263682)
+    assert result.balance == pytest.approx(50.3299502)
 
 
 def test_cross_margin_uses_full_account_balance_as_position_buffer() -> None:
@@ -106,8 +111,8 @@ def test_cross_margin_uses_full_account_balance_as_position_buffer() -> None:
 
     assert opened.position is not None
     assert opened.position.margin == pytest.approx(10)
-    assert opened.position.liquidation_price == 0
-    assert opened.available_balance == pytest.approx(990)
+    assert opened.position.liquidation_price == pytest.approx(0.040201005)
+    assert opened.available_balance == pytest.approx(989.6)
     assert advanced.status is GameStatus.RUNNING
     assert advanced.position is not None
 
@@ -120,7 +125,7 @@ def test_range_end_closes_open_position() -> None:
 
     assert result.status is GameStatus.COMPLETED
     assert result.position is None
-    assert result.balance == pytest.approx(1010)
+    assert result.balance == pytest.approx(1009.836)
     assert result.trades[0].exit_reason == "RANGE_END"
 
 
@@ -138,7 +143,7 @@ def test_range_end_settles_untriggered_risk_orders_at_last_close() -> None:
     assert result.status is GameStatus.COMPLETED
     assert result.position is None
     assert result.pending_orders == ()
-    assert result.balance == pytest.approx(1050)
+    assert result.balance == pytest.approx(1049.18)
     assert result.trades[0].exit_price == 105
     assert result.trades[0].exit_reason == "RANGE_END"
     assert result.message == "已回放到所选行情末尾, 剩余头寸已按最后一根 K 线收盘价结算"
@@ -168,7 +173,7 @@ def test_base_asset_notional_uses_close_price_and_requested_quantity() -> None:
     assert opened.position.entry_price == 125
     assert opened.position.quantity == 2
     assert opened.position.margin == pytest.approx(2.5)
-    assert opened.available_balance == pytest.approx(997.5)
+    assert opened.available_balance == pytest.approx(997.4)
 
 
 def test_limit_open_order_is_listed_reserves_margin_and_fills_when_touched() -> None:
@@ -195,6 +200,8 @@ def test_limit_open_order_is_listed_reserves_margin_and_fills_when_touched() -> 
     assert filled.position is not None
     assert filled.position.entry_price == 95
     assert filled.position.quantity == pytest.approx(10.526)
+    assert filled.position.entry_fee == 0
+    assert filled.total_fees == 0
 
 
 def test_btc_open_quantity_uses_point_zero_zero_one_step() -> None:
@@ -262,6 +269,8 @@ def test_buy_stop_order_waits_for_high_then_opens_long() -> None:
     assert filled.position is not None
     assert filled.position.side is PositionSide.LONG
     assert filled.position.entry_price == 105
+    assert filled.position.entry_fee == pytest.approx(0.399966)
+    assert filled.total_fees == pytest.approx(0.399966)
 
 
 def test_sell_stop_order_waits_for_low_then_opens_short() -> None:
@@ -353,10 +362,10 @@ def test_session_uses_persisted_account_balance_without_resetting_it() -> None:
     opened = game.open_position(PositionSide.LONG, notional=1000, leverage=10)
     closed = game.advance()
 
-    assert opened.balance == 1250
-    assert opened.available_balance == 1150
-    assert closed.balance == pytest.approx(1350)
-    assert closed.realized_pnl == pytest.approx(350)
+    assert opened.balance == pytest.approx(1249.6)
+    assert opened.available_balance == pytest.approx(1149.6)
+    assert closed.balance == pytest.approx(1349.16)
+    assert closed.realized_pnl == pytest.approx(349.16)
 
 
 def test_snapshot_calculates_change_from_utc8_0800_open_price() -> None:
@@ -444,7 +453,12 @@ def test_take_profit_closes_position_at_trigger_price() -> None:
         "STOP_MARKET",
     ]
     assert result.position is None
-    assert result.balance == pytest.approx(1100)
+    assert result.balance == pytest.approx(1099.6)
+    assert result.trades[0].gross_pnl == pytest.approx(100)
+    assert result.trades[0].entry_fee == pytest.approx(0.4)
+    assert result.trades[0].exit_fee == 0
+    assert result.trades[0].fee == pytest.approx(0.4)
+    assert result.trades[0].realized_pnl == pytest.approx(99.6)
     assert result.trades[0].exit_price == 110
     assert result.trades[0].exit_reason == "TAKE_PROFIT"
 
@@ -486,7 +500,7 @@ def test_replacing_take_profit_cancels_old_order_and_uses_latest_order() -> None
     assert result.position is not None
     assert result.position.quantity == pytest.approx(4)
     assert result.position.take_profit_price is None
-    assert result.balance == pytest.approx(1060)
+    assert result.balance == pytest.approx(1059.6)
     assert result.trades[0].quantity == pytest.approx(6)
     assert result.trades[0].exit_price == 110
 
@@ -501,7 +515,7 @@ def test_partial_market_close_keeps_remaining_position_open() -> None:
     assert result.position is not None
     assert result.position.quantity == pytest.approx(7.5)
     assert result.position.margin == pytest.approx(75)
-    assert result.balance == pytest.approx(1025)
+    assert result.balance == pytest.approx(1024.49)
     assert result.trades[0].quantity == pytest.approx(2.5)
     assert result.trades[0].exit_reason == "MANUAL"
 
@@ -515,7 +529,7 @@ def test_marketable_long_limit_close_fills_at_current_close() -> None:
 
     assert result.position is None
     assert result.pending_orders == ()
-    assert result.balance == pytest.approx(1050)
+    assert result.balance == pytest.approx(1049.18)
     assert result.trades[0].exit_price == 105
     assert result.trades[0].exit_reason == "TAKE_PROFIT"
     assert result.message == "平仓限价已按当前收盘价成交"
@@ -530,7 +544,7 @@ def test_marketable_short_limit_close_fills_at_current_close() -> None:
 
     assert result.position is None
     assert result.pending_orders == ()
-    assert result.balance == pytest.approx(1050)
+    assert result.balance == pytest.approx(1049.22)
     assert result.trades[0].exit_price == 95
     assert result.trades[0].exit_reason == "TAKE_PROFIT"
 
@@ -565,7 +579,7 @@ def test_stop_loss_has_conservative_priority_when_both_triggers_touch() -> None:
     result = game.advance()
 
     assert result.position is None
-    assert result.balance == pytest.approx(990)
+    assert result.balance == pytest.approx(989.844)
     assert result.trades[0].exit_price == 95
     assert result.trades[0].exit_reason == "STOP_LOSS"
 
@@ -584,7 +598,7 @@ def test_stop_loss_prevents_liquidation_and_session_can_continue() -> None:
 
     assert stopped.status is GameStatus.RUNNING
     assert stopped.position is None
-    assert stopped.balance == pytest.approx(500)
+    assert stopped.balance == pytest.approx(492.2)
     assert stopped.trades[0].exit_reason == "STOP_LOSS"
     assert stopped.message == "价格触及止损价, 持仓已平仓, 可继续交易"
 

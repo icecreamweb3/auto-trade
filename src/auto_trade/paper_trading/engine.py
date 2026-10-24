@@ -23,6 +23,8 @@ from auto_trade.paper_trading.models import (
 
 STARTING_BALANCE = 1000.0
 MAINTENANCE_MARGIN_RATE = 0.005
+MAKER_FEE_RATE = 0.0
+TAKER_FEE_RATE = 0.0004
 UTC8 = timezone(timedelta(hours=8))
 BTC_QUANTITY_STEP = 0.001
 
@@ -44,6 +46,7 @@ class OpenPosition:
     entry_price: float
     liquidation_price: float
     opened_at: datetime
+    entry_fee_remaining: float = 0.0
     take_profit_price: float | None = None
     take_profit_quantity: float | None = None
     take_profit_order_id: str | None = None
@@ -63,6 +66,7 @@ class PendingOpenOrder:
     price: float
     order_type: PaperOrderType
     created_at: datetime
+    entry_fee: float = 0.0
     take_profit_price: float | None = None
     stop_loss_price: float | None = None
 
@@ -110,6 +114,7 @@ class PaperSession:
             leverage,
             notional_unit,
             entry_price,
+            taker=True,
         )
 
     def place_limit_open_order(
@@ -196,6 +201,11 @@ class PaperSession:
         )
         quantity = normalize_order_quantity(self.symbol, requested_quantity)
         margin = quantity * price / leverage
+        entry_fee = (
+            quantity * price * TAKER_FEE_RATE
+            if order_type is PaperOrderType.STOP_MARKET
+            else 0.0
+        )
         if margin > self.balance:
             raise ValueError("名义下单价值所需保证金不能超过可用余额")
         self.pending_open_order = PendingOpenOrder(
@@ -207,6 +217,7 @@ class PaperSession:
             price=price,
             order_type=order_type,
             created_at=self.current_candle.close_time,
+            entry_fee=entry_fee,
             take_profit_price=take_profit_price,
             stop_loss_price=stop_loss_price,
         )
@@ -222,6 +233,8 @@ class PaperSession:
         leverage: int,
         notional_unit: NotionalUnit,
         entry_price: float,
+        *,
+        taker: bool,
     ) -> PaperSessionSnapshot:
         requested_quantity = (
             notional / entry_price
@@ -231,6 +244,7 @@ class PaperSession:
         quantity = normalize_order_quantity(self.symbol, requested_quantity)
         notional_usdt = quantity * entry_price
         margin = notional_usdt / leverage
+        entry_fee = notional_usdt * TAKER_FEE_RATE if taker else MAKER_FEE_RATE
         if margin > self.balance:
             raise ValueError("名义下单价值所需保证金不能超过可用余额")
         self.position = OpenPosition(
@@ -243,9 +257,10 @@ class PaperSession:
                 side,
                 entry_price,
                 quantity,
-                self.balance,
+                self.balance - entry_fee,
             ),
             opened_at=self.current_candle.close_time,
+            entry_fee_remaining=entry_fee,
         )
         self.status = GameStatus.RUNNING
         self.message = (
@@ -288,6 +303,7 @@ class PaperSession:
             self.current_candle.close_price,
             reason,
             close_quantity,
+            taker=True,
         )
         self.message = "持仓已平仓" if fully_closed else "部分持仓已按市价平仓"
         return self.snapshot()
@@ -313,6 +329,7 @@ class PaperSession:
                 mark_price,
                 "TAKE_PROFIT",
                 close_quantity,
+                taker=True,
             )
             self.message = (
                 "平仓限价已按当前收盘价成交"
@@ -406,6 +423,8 @@ class PaperSession:
                     pending_open_order.leverage,
                     NotionalUnit.BASE,
                     pending_open_order.price,
+                    taker=pending_open_order.order_type
+                    is PaperOrderType.STOP_MARKET,
                 )
                 position = self.position
                 if position is not None:
@@ -457,7 +476,7 @@ class PaperSession:
                 )
             )
             if stop_touched and stop_price is not None:
-                self._settle_position(stop_price, "STOP_LOSS")
+                self._settle_position(stop_price, "STOP_LOSS", taker=True)
                 self.message = "价格触及止损价, 持仓已平仓, 可继续交易"
                 return self.snapshot()
             touched = (
@@ -467,7 +486,11 @@ class PaperSession:
                 else candle.high_price >= position.liquidation_price
             )
             if touched:
-                self._settle_position(position.liquidation_price, "LIQUIDATION")
+                self._settle_position(
+                    position.liquidation_price,
+                    "LIQUIDATION",
+                    taker=True,
+                )
                 self.status = GameStatus.LIQUIDATED
                 self.message = "价格触及强平价, 本轮游戏结束"
                 return self.snapshot()
@@ -486,6 +509,7 @@ class PaperSession:
                     take_profit_price,
                     "TAKE_PROFIT",
                     take_profit_quantity,
+                    taker=False,
                 )
                 self.message = (
                     "价格触及止盈价, 持仓已平仓"
@@ -524,15 +548,20 @@ class PaperSession:
                 entry_price=self.position.entry_price,
                 mark_price=mark_price,
                 liquidation_price=self.position.liquidation_price,
+                entry_fee=self.position.entry_fee_remaining,
                 take_profit_price=self.position.take_profit_price,
                 take_profit_quantity=self.position.take_profit_quantity,
                 stop_loss_price=self.position.stop_loss_price,
                 unrealized_pnl=unrealized_pnl,
                 return_on_margin_percent=unrealized_pnl / self.position.margin * 100,
             )
+        entry_fee_remaining = (
+            self.position.entry_fee_remaining if self.position is not None else 0.0
+        )
+        display_balance = max(0.0, self.balance - entry_fee_remaining)
         locked_margin = self.position.margin if self.position is not None else 0.0
         reserved_margin = (
-            self.pending_open_order.margin
+            self.pending_open_order.margin + self.pending_open_order.entry_fee
             if self.pending_open_order is not None
             else 0.0
         )
@@ -586,10 +615,13 @@ class PaperSession:
             range_end=self.range_end,
             status=self.status,
             starting_balance=STARTING_BALANCE,
-            balance=self.balance,
-            available_balance=max(0.0, self.balance - locked_margin - reserved_margin),
-            equity=max(0.0, self.balance + unrealized_pnl),
-            realized_pnl=self.balance - STARTING_BALANCE,
+            balance=display_balance,
+            available_balance=max(
+                0.0, display_balance - locked_margin - reserved_margin
+            ),
+            equity=max(0.0, display_balance + unrealized_pnl),
+            realized_pnl=display_balance - STARTING_BALANCE,
+            total_fees=sum(trade.fee for trade in self.trades) + entry_fee_remaining,
             revealed_count=self.index + 1,
             total_candles=len(self.candles),
             current_candle=self.current_candle,
@@ -655,7 +687,11 @@ class PaperSession:
         self.pending_open_order = None
         had_open_position = self.position is not None
         if had_open_position:
-            self._settle_position(self.current_candle.close_price, "RANGE_END")
+            self._settle_position(
+                self.current_candle.close_price,
+                "RANGE_END",
+                taker=True,
+            )
         self.status = GameStatus.COMPLETED
         self.message = (
             "已回放到所选行情末尾, 剩余头寸已按最后一根 K 线收盘价结算"
@@ -685,6 +721,8 @@ class PaperSession:
         exit_price: float,
         reason: str,
         quantity: float | None = None,
+        *,
+        taker: bool,
     ) -> bool:
         position = self.position
         if position is None:
@@ -693,7 +731,15 @@ class PaperSession:
         original_quantity = position.quantity
         closed_margin = position.margin * close_quantity / original_quantity
         direction = 1.0 if position.side is PositionSide.LONG else -1.0
-        pnl = direction * close_quantity * (exit_price - position.entry_price)
+        gross_pnl = direction * close_quantity * (exit_price - position.entry_price)
+        entry_fee = position.entry_fee_remaining * close_quantity / original_quantity
+        exit_fee = (
+            close_quantity * exit_price * TAKER_FEE_RATE
+            if taker
+            else MAKER_FEE_RATE
+        )
+        fee = entry_fee + exit_fee
+        pnl = gross_pnl - fee
         self.balance = max(0.0, self.balance + pnl)
         self.trades.append(
             PaperTrade(
@@ -703,6 +749,10 @@ class PaperSession:
                 quantity=close_quantity,
                 entry_price=position.entry_price,
                 exit_price=exit_price,
+                gross_pnl=gross_pnl,
+                entry_fee=entry_fee,
+                exit_fee=exit_fee,
+                fee=fee,
                 realized_pnl=pnl,
                 opened_at=position.opened_at,
                 closed_at=self.current_candle.close_time,
@@ -714,6 +764,9 @@ class PaperSession:
             return True
         position.quantity = original_quantity - close_quantity
         position.margin -= closed_margin
+        position.entry_fee_remaining = max(
+            0.0, position.entry_fee_remaining - entry_fee
+        )
         position.take_profit_price = None
         position.take_profit_quantity = None
         position.take_profit_order_id = None
@@ -722,7 +775,7 @@ class PaperSession:
             position.side,
             position.entry_price,
             position.quantity,
-            self.balance,
+            self.balance - position.entry_fee_remaining,
         )
         return False
 

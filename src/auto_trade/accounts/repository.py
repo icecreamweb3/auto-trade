@@ -211,7 +211,8 @@ class AccountRepository:
                         """
                         SELECT trade_id, session_id, symbol, interval_seconds,
                                side, leverage, margin, quantity, entry_price,
-                               exit_price, realized_pnl, balance_before,
+                               exit_price, gross_pnl, entry_fee, exit_fee, fee,
+                               realized_pnl, balance_before,
                                balance_after, opened_at, closed_at, exit_reason
                         FROM trade.paper_trades
                         WHERE user_id = :user_id
@@ -390,12 +391,14 @@ class AccountRepository:
                     INSERT INTO trade.paper_trades (
                         user_id, session_id, symbol, interval_seconds, side,
                         leverage, margin, quantity, entry_price, exit_price,
-                        realized_pnl, balance_before, balance_after, opened_at,
+                        gross_pnl, entry_fee, exit_fee, fee, realized_pnl,
+                        balance_before, balance_after, opened_at,
                         closed_at, exit_reason
                     ) VALUES (
                         :user_id, :session_id, :symbol, :interval_seconds, :side,
                         :leverage, :margin, :quantity, :entry_price, :exit_price,
-                        :realized_pnl, :balance_before, :balance_after, :opened_at,
+                        :gross_pnl, :entry_fee, :exit_fee, :fee, :realized_pnl,
+                        :balance_before, :balance_after, :opened_at,
                         :closed_at, :exit_reason
                     )
                     """
@@ -411,6 +414,10 @@ class AccountRepository:
                     "quantity": trade.quantity,
                     "entry_price": trade.entry_price,
                     "exit_price": trade.exit_price,
+                    "gross_pnl": trade.gross_pnl,
+                    "entry_fee": trade.entry_fee,
+                    "exit_fee": trade.exit_fee,
+                    "fee": trade.fee,
                     "realized_pnl": trade.realized_pnl,
                     "balance_before": balance_before,
                     "balance_after": balance_after,

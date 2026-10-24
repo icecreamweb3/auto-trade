@@ -19,7 +19,9 @@ from auto_trade.accounts.router import AuthenticatedUser
 from auto_trade.monitoring.repository import MonitoringRepository
 from auto_trade.paper_trading.engine import (
     MAINTENANCE_MARGIN_RATE,
+    MAKER_FEE_RATE,
     STARTING_BALANCE,
+    TAKER_FEE_RATE,
     PaperSession,
     utc8_price_anchor,
 )
@@ -118,6 +120,8 @@ async def metadata(
         starting_balance=STARTING_BALANCE,
         maximum_leverage=100,
         maintenance_margin_rate=MAINTENANCE_MARGIN_RATE,
+        maker_fee_rate=MAKER_FEE_RATE,
+        taker_fee_rate=TAKER_FEE_RATE,
         ranges=tuple(PaperMarketRange.model_validate(item) for item in ranges),
     )
 

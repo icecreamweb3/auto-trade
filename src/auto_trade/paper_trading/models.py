@@ -88,6 +88,7 @@ class PaperPosition(BaseModel):
     entry_price: float
     mark_price: float
     liquidation_price: float
+    entry_fee: float
     take_profit_price: float | None = None
     take_profit_quantity: float | None = None
     stop_loss_price: float | None = None
@@ -104,6 +105,10 @@ class PaperTrade(BaseModel):
     quantity: float
     entry_price: float
     exit_price: float
+    gross_pnl: float
+    entry_fee: float
+    exit_fee: float
+    fee: float
     realized_pnl: float
     opened_at: datetime
     closed_at: datetime
@@ -188,6 +193,7 @@ class PaperSessionSnapshot(BaseModel):
     available_balance: float
     equity: float
     realized_pnl: float
+    total_fees: float
     revealed_count: int
     total_candles: int
     current_candle: PaperCandle
@@ -225,4 +231,6 @@ class PaperMetadata(BaseModel):
     starting_balance: float = 1000
     maximum_leverage: int = 100
     maintenance_margin_rate: float = 0.005
+    maker_fee_rate: float = 0
+    taker_fee_rate: float = 0.0004
     ranges: tuple[PaperMarketRange, ...] = ()
