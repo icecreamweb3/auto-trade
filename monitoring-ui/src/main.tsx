@@ -2576,6 +2576,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [positionAction, setPositionAction] = useState(false);
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [riskDialogError, setRiskDialogError] = useState<string | null>(null);
+  const [riskDialogOffset, setRiskDialogOffset] = useState({ x: 0, y: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [replayPresets, setReplayPresets] = useState<PaperReplayPreset[]>([]);
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
@@ -2587,6 +2588,13 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [error, setError] = useState<string | null>(null);
   const advancingRef = useRef(false);
   const startingSessionRef = useRef(false);
+  const riskDialogDragRef = useRef<{
+    pointerId: number;
+    offsetX: number;
+    offsetY: number;
+    width: number;
+    height: number;
+  } | null>(null);
 
   useEffect(() => {
     void fetchPaperGet<PaperMetadata>("/api/paper-trader/metadata", "模拟器行情范围加载失败")
@@ -2970,7 +2978,45 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     const savedStopLoss = snapshot.position.stop_loss_price ?? "";
     setStopLoss(savedStopLoss);
     setTakeProfit(snapshot.position.take_profit_price ?? calculateTwoRTakeProfit(savedStopLoss));
+    setRiskDialogOffset({ x: 0, y: 0 });
     setRiskDialogOpen(true);
+  }
+
+  function startRiskDialogDrag(event: React.PointerEvent<HTMLElement>) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    const dialog = event.currentTarget.closest<HTMLElement>(".paper-risk-dialog");
+    if (!dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    riskDialogDragRef.current = {
+      pointerId: event.pointerId,
+      offsetX: event.clientX - bounds.left,
+      offsetY: event.clientY - bounds.top,
+      width: bounds.width,
+      height: bounds.height
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveRiskDialog(event: React.PointerEvent<HTMLElement>) {
+    const drag = riskDialogDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - drag.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - drag.height - margin);
+    const left = Math.min(maxLeft, Math.max(margin, event.clientX - drag.offsetX));
+    const top = Math.min(maxTop, Math.max(margin, event.clientY - drag.offsetY));
+    const centeredLeft = (window.innerWidth - drag.width) / 2;
+    const centeredTop = (window.innerHeight - drag.height) / 2;
+    setRiskDialogOffset({ x: left - centeredLeft, y: top - centeredTop });
+  }
+
+  function stopRiskDialogDrag(event: React.PointerEvent<HTMLElement>) {
+    const drag = riskDialogDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    riskDialogDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   function calculateTwoRTakeProfit(stopLossPrice: NumericInput): NumericInput {
@@ -3249,9 +3295,9 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             </dl></div>
         </aside>
       </section>
-      {riskDialogOpen && snapshot.position && <div className="paper-risk-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRiskDialogOpen(false); }}>
-        <section className="paper-risk-dialog" role="dialog" aria-modal="true" aria-labelledby="paper-risk-title">
-          <header><h2 id="paper-risk-title">整仓止盈/止损</h2><button type="button" onClick={() => setRiskDialogOpen(false)} aria-label="关闭止盈止损设置">×</button></header>
+      {riskDialogOpen && snapshot.position && <div className="paper-risk-backdrop" role="presentation">
+        <section className="paper-risk-dialog" role="dialog" aria-labelledby="paper-risk-title" style={{ transform: `translate3d(${riskDialogOffset.x}px, ${riskDialogOffset.y}px, 0)` }}>
+          <header onPointerDown={startRiskDialogDrag} onPointerMove={moveRiskDialog} onPointerUp={stopRiskDialogDrag} onPointerCancel={stopRiskDialogDrag}><h2 id="paper-risk-title">整仓止盈/止损</h2><button type="button" onClick={() => setRiskDialogOpen(false)} aria-label="关闭止盈止损设置">×</button></header>
           <div className="paper-risk-notice">ⓘ 在剧烈波动行情中，如果止损触发价过于接近强平价，订单可能无法成功执行。</div>
           <dl className="paper-risk-position-summary">
             <div><dt>合约</dt><dd className={snapshot.position.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{snapshot.symbol} 永续 / {snapshot.position.side === "LONG" ? "多" : "空"} {snapshot.position.leverage}x</dd></div>

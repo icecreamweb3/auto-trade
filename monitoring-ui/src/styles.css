@@ -418,9 +418,10 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-position-table .paper-cancel-order:hover { background: #493715; }
 .paper-position-empty { display: grid; min-height: 105px; place-items: center; color: #667f95; background: transparent; font-size: 12px; }
 .paper-history-table { min-width: 900px; }
-.paper-risk-backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(2, 6, 11, .8); backdrop-filter: blur(7px); }
-.paper-risk-dialog { width: min(520px, 100%); overflow: hidden; border: 1px solid #3b4148; border-radius: 7px; color: #dce2e8; background: #23272d; box-shadow: 0 24px 80px rgba(0, 0, 0, .65); }
-.paper-risk-dialog > header { display: flex; align-items: center; justify-content: space-between; min-height: 54px; padding: 0 18px; border-bottom: 1px solid #373c43; }
+.paper-risk-backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 18px; pointer-events: none; }
+.paper-risk-dialog { width: min(520px, 100%); max-height: calc(100vh - 16px); overflow: auto; border: 1px solid #3b4148; border-radius: 7px; color: #dce2e8; background: #23272d; box-shadow: 0 18px 60px rgba(0, 0, 0, .55); pointer-events: auto; will-change: transform; }
+.paper-risk-dialog > header { display: flex; align-items: center; justify-content: space-between; min-height: 54px; padding: 0 18px; border-bottom: 1px solid #373c43; cursor: grab; touch-action: none; user-select: none; }
+.paper-risk-dialog > header:active { cursor: grabbing; }
 .paper-risk-dialog > header h2 { margin: 0; font-size: 16px; }
 .paper-risk-dialog > header button { border: 0; padding: 5px 8px; color: #9099a3; background: transparent; font-size: 21px; }
 .paper-risk-notice { margin: 16px 18px 12px; border: 1px solid #363c43; border-radius: 4px; padding: 10px 12px; color: #929ca6; background: #292e34; font-size: 11px; line-height: 1.5; }
