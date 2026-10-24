@@ -2537,6 +2537,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [showLowerOpeningRange, setShowLowerOpeningRange] = useState(false);
   const [positionAction, setPositionAction] = useState(false);
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
+  const [riskDialogError, setRiskDialogError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [replayPresets, setReplayPresets] = useState<PaperReplayPreset[]>([]);
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
@@ -2914,6 +2915,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     if (!snapshot?.position) return;
     setPositionAction(true);
     setError(null);
+    setRiskDialogError(null);
     try {
       applySnapshot(await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/risk`, {
         method: "PUT",
@@ -2927,7 +2929,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       setPositionTab("orders");
       setRiskDialogOpen(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "止盈止损设置失败");
+      setRiskDialogError(reason instanceof Error ? reason.message : "止盈止损设置失败");
     } finally {
       setPositionAction(false);
     }
@@ -2936,6 +2938,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   function openRiskDialog() {
     if (!snapshot?.position) return;
     setPlaying(false);
+    setRiskDialogError(null);
     const savedStopLoss = snapshot.position.stop_loss_price ?? "";
     setStopLoss(savedStopLoss);
     setTakeProfit(snapshot.position.take_profit_price ?? calculateTwoRTakeProfit(savedStopLoss));
@@ -2956,6 +2959,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }
 
   function updateStopLoss(value: string) {
+    setRiskDialogError(null);
     const nextStopLoss: NumericInput = value === "" ? "" : Number(value);
     setStopLoss(nextStopLoss);
     if (autoTwoRTakeProfit) setTakeProfit(calculateTwoRTakeProfit(nextStopLoss));
@@ -3228,8 +3232,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           </dl>
           <div className="paper-risk-field">
             <div className="paper-risk-field-heading"><span>触发价格 (USDT)</span><span>预计盈亏 (USDT)</span></div>
-            <div className="paper-risk-field-title"><strong>止盈价格</strong><button type="button" onClick={() => { setAutoTwoRTakeProfit(false); setTakeProfit(""); }}>取消</button></div>
-            <div className="paper-risk-input-row"><input aria-label="止盈价格" type="number" min="0" step="0.01" value={takeProfit} onChange={(event) => { setAutoTwoRTakeProfit(false); setTakeProfit(event.target.value === "" ? "" : Number(event.target.value)); }} placeholder="--" /><output className={projectedTakeProfit === null ? "" : projectedTakeProfit >= 0 ? "paper-long-price" : "paper-short-price"}>{projectedTakeProfit === null ? "--" : `${projectedTakeProfit >= 0 ? "+" : ""}${formatNumber(projectedTakeProfit, 2)}`}</output></div>
+            <div className="paper-risk-field-title"><strong>止盈价格</strong><button type="button" onClick={() => { setRiskDialogError(null); setAutoTwoRTakeProfit(false); setTakeProfit(""); }}>取消</button></div>
+            <div className="paper-risk-input-row"><input aria-label="止盈价格" type="number" min="0" step="0.01" value={takeProfit} onChange={(event) => { setRiskDialogError(null); setAutoTwoRTakeProfit(false); setTakeProfit(event.target.value === "" ? "" : Number(event.target.value)); }} placeholder="--" /><output className={projectedTakeProfit === null ? "" : projectedTakeProfit >= 0 ? "paper-long-price" : "paper-short-price"}>{projectedTakeProfit === null ? "--" : `${projectedTakeProfit >= 0 ? "+" : ""}${formatNumber(projectedTakeProfit, 2)}`}</output></div>
             <p>当最新价达到设定价格时，将按当前 K 线收盘价平仓。</p>
           </div>
           <div className="paper-risk-field">
@@ -3237,6 +3241,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             <div className="paper-risk-input-row"><input aria-label="止损价格" type="number" min="0" step="0.01" value={stopLoss} onChange={(event) => updateStopLoss(event.target.value)} placeholder="--" /><output className={projectedStopLoss === null ? "" : projectedStopLoss >= 0 ? "paper-long-price" : "paper-short-price"}>{projectedStopLoss === null ? "--" : `${projectedStopLoss >= 0 ? "+" : ""}${formatNumber(projectedStopLoss, 2)}`}</output></div>
             <p>当最新价达到设定价格时，将按当前 K 线收盘价平仓。</p>
           </div>
+          {riskDialogError && <div className="paper-risk-error" role="alert">{riskDialogError}</div>}
           <footer><button type="button" onClick={() => void saveRiskOrders()} disabled={positionAction}>{positionAction ? "保存中…" : "确认"}</button></footer>
         </section>
       </div>}

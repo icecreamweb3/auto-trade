@@ -439,6 +439,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-risk-input-row input, .paper-risk-input-row output { height: 39px; border: 1px solid #454c55; border-radius: 4px; padding: 10px 12px; background: #2d3239; font-size: 11px; font-variant-numeric: tabular-nums; }
 .paper-risk-input-row output { color: #cbd2d9; }
 .paper-risk-field p { margin: 7px 0 0; color: #818b95; font-size: 10px; }
+.paper-risk-error { margin: 0 18px 14px; border: 1px solid #7a3540; border-radius: 4px; padding: 10px 12px; color: #ffb0b9; background: #351920; font-size: 11px; line-height: 1.5; }
 .paper-risk-dialog > footer { padding: 14px 18px 18px; border-top: 1px solid #373c43; }
 .paper-risk-dialog > footer button { width: 100%; border-color: #ffc20a; color: #191400; background: #ffc20a; font-weight: 900; }
 .paper-risk-dialog > footer button:hover { background: #ffd044; }
