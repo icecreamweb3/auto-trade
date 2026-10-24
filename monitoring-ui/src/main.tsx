@@ -2137,7 +2137,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles;
   const initialLatestPosition = .8;
-  const initialCandleHeightRatio = .1;
+  const initialCandleHeightRatio = .2;
   chartPointsRef.current = candles;
   pendingOrdersRef.current = pendingOrders;
   onViewChangeRef.current = onViewChange;
