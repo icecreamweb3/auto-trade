@@ -344,7 +344,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-or-lower text { fill: #64b9f5; }
 .paper-time-axis { position: absolute; right: 0; bottom: 1px; left: 0; z-index: 2; height: 24px; pointer-events: none; overflow: hidden; border-top: 1px solid #29455e; background: #071522; }
 .paper-time-axis span { position: absolute; bottom: 5px; transform: translateX(-50%); color: #71899f; font-size: 10px; line-height: 1; white-space: nowrap; }
-.paper-chart-stage { position: relative; min-width: 0; min-height: 0; flex: 1; }
+.paper-chart-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
 .paper-lightweight-chart { width: 100%; min-width: 760px; min-height: 650px; flex: 1; overflow: hidden; border: 1px solid #173047; border-radius: 11px; background: #071522; }
 .paper-order-panel { position: sticky; top: 74px; align-self: stretch; padding-top: 28px; padding-bottom: 32px; }
 .paper-order-tabs { display: grid; grid-template-columns: 1fr 1fr; margin: -7px -4px 17px; border-bottom: 1px solid #29455e; }
