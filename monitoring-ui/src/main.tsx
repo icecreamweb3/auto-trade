@@ -295,6 +295,14 @@ interface PaperTimeAxisLabel {
   text: string;
 }
 
+interface PaperOrderControl {
+  orderId: string;
+  top: number;
+  right: number;
+  label: string;
+  kind: "take-profit" | "stop-loss";
+}
+
 interface PaperOpeningRange {
   high: number;
   low: number;
@@ -2078,7 +2086,7 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange }: {
+function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onCancelPendingOrder, cancellingOrder }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   pendingOrders: PaperPendingOrder[];
@@ -2087,6 +2095,8 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   showOpeningRange: boolean;
   showUpperOpeningRange: boolean;
   showLowerOpeningRange: boolean;
+  onCancelPendingOrder: (orderId: string) => void;
+  cancellingOrder: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -2095,8 +2105,10 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   const ema20SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const ema240SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const chartPointsRef = useRef<PaperChartPoint[]>(candles);
+  const pendingOrdersRef = useRef<PaperPendingOrder[]>(pendingOrders);
   const refreshTimeAxisRef = useRef<() => void>(() => undefined);
   const refreshOpeningRangeOverlayRef = useRef<() => void>(() => undefined);
+  const refreshOrderControlsRef = useRef<() => void>(() => undefined);
   const positionLinesRef = useRef<IPriceLine[]>([]);
   const visiblePendingOrderIdsRef = useRef<string[]>([]);
   const loadedSessionRef = useRef<string | null>(null);
@@ -2105,11 +2117,13 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   const [hoveredCandle, setHoveredCandle] = useState<PaperCandleReadout | null>(null);
   const [timeAxisLabels, setTimeAxisLabels] = useState<PaperTimeAxisLabel[]>([]);
   const [openingRangeOverlay, setOpeningRangeOverlay] = useState<PaperOpeningRangeOverlay | null>(null);
+  const [orderControls, setOrderControls] = useState<PaperOrderControl[]>([]);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles;
   const initialLatestPosition = .8;
   const initialCandleHeightRatio = .1;
   chartPointsRef.current = candles;
+  pendingOrdersRef.current = pendingOrders;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -2199,7 +2213,10 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
         from: anchor - (anchor - range.from) * factor,
         to: anchor + (range.to - anchor) * factor,
       });
-      window.requestAnimationFrame(() => refreshOpeningRangeOverlayRef.current());
+      window.requestAnimationFrame(() => {
+        refreshOpeningRangeOverlayRef.current();
+        refreshOrderControlsRef.current();
+      });
     };
     const handleCrosshairMove = (param: MouseEventParams<Time>) => {
       const candle = param.seriesData.get(candleSeries);
@@ -2224,6 +2241,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       followingLatestRef.current = range.to >= loadedCountRef.current - 1;
       refreshTimeAxisRef.current();
       refreshOpeningRangeOverlayRef.current();
+      refreshOrderControlsRef.current();
     };
     const refreshTimeAxis = () => {
       const plotWidth = container.clientWidth - chart.priceScale("right").width();
@@ -2236,14 +2254,38 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       }));
     };
     refreshTimeAxisRef.current = refreshTimeAxis;
+    const refreshOrderControls = () => {
+      const priceScaleWidth = chart.priceScale("right").width();
+      setOrderControls(pendingOrdersRef.current.flatMap((order) => {
+        if (order.order_kind !== "CLOSE") return [];
+        const coordinate = candleSeries.priceToCoordinate(order.price);
+        if (coordinate === null || coordinate < 12 || coordinate > container.clientHeight - 26) return [];
+        const isStopLoss = order.order_type === "STOP_MARKET";
+        return [{
+          orderId: order.order_id,
+          top: coordinate,
+          right: priceScaleWidth + 5,
+          label: isStopLoss ? "取消止损委托" : "取消止盈委托",
+          kind: isStopLoss ? "stop-loss" as const : "take-profit" as const,
+        }];
+      }));
+    };
+    refreshOrderControlsRef.current = refreshOrderControls;
     const resizeObserver = new ResizeObserver(() => {
       refreshTimeAxis();
       refreshOpeningRangeOverlayRef.current();
+      refreshOrderControls();
     });
     const handlePointerMove = (event: PointerEvent) => {
-      if (event.buttons !== 0) window.requestAnimationFrame(() => refreshOpeningRangeOverlayRef.current());
+      if (event.buttons !== 0) window.requestAnimationFrame(() => {
+        refreshOpeningRangeOverlayRef.current();
+        refreshOrderControlsRef.current();
+      });
     };
-    const handlePointerEnd = () => window.requestAnimationFrame(() => refreshOpeningRangeOverlayRef.current());
+    const handlePointerEnd = () => window.requestAnimationFrame(() => {
+      refreshOpeningRangeOverlayRef.current();
+      refreshOrderControlsRef.current();
+    });
     resizeObserver.observe(container);
     container.addEventListener("wheel", handlePriceScaleWheel, { passive: false, capture: true });
     container.addEventListener("pointermove", handlePointerMove);
@@ -2266,6 +2308,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       resizeObserver.disconnect();
       refreshTimeAxisRef.current = () => undefined;
       refreshOpeningRangeOverlayRef.current = () => undefined;
+      refreshOrderControlsRef.current = () => undefined;
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
@@ -2274,6 +2317,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       ema240SeriesRef.current = null;
       setTimeAxisLabels([]);
       setOpeningRangeOverlay(null);
+      setOrderControls([]);
       positionLinesRef.current = [];
       visiblePendingOrderIdsRef.current = [];
       loadedSessionRef.current = null;
@@ -2333,7 +2377,10 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
         from: logicalRangeFrom,
         to: logicalRangeFrom + visibleCapacity,
       });
-      window.requestAnimationFrame(() => refreshTimeAxisRef.current());
+      window.requestAnimationFrame(() => {
+        refreshTimeAxisRef.current();
+        refreshOrderControlsRef.current();
+      });
       return;
     }
     if (points.length === loadedCountRef.current) return;
@@ -2363,7 +2410,10 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       priceScale.setAutoScale(false);
       priceScale.setVisibleRange(priceRange);
     }
-    window.requestAnimationFrame(() => refreshTimeAxisRef.current());
+    window.requestAnimationFrame(() => {
+      refreshTimeAxisRef.current();
+      refreshOrderControlsRef.current();
+    });
   }, [points, sessionId, visibleCapacity]);
 
   useEffect(() => {
@@ -2404,10 +2454,14 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
             from: Math.min(visibleRange.from, lowestOrderPrice - padding),
             to: Math.max(visibleRange.to, highestOrderPrice + padding),
           });
-          window.requestAnimationFrame(() => refreshOpeningRangeOverlayRef.current());
+          window.requestAnimationFrame(() => {
+            refreshOpeningRangeOverlayRef.current();
+            refreshOrderControlsRef.current();
+          });
         }
       }
     }
+    window.requestAnimationFrame(() => refreshOrderControlsRef.current());
   }, [position?.entry_price, position?.liquidation_price, pendingOrders]);
 
   useEffect(() => {
@@ -2489,6 +2543,19 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
     </div>
     <div className="paper-chart-canvas">
       <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
+      <div className="paper-order-line-controls">
+        {orderControls.map((control) => <button
+          key={control.orderId}
+          type="button"
+          className={control.kind}
+          style={{ top: control.top, right: control.right }}
+          title={control.label}
+          aria-label={control.label}
+          disabled={cancellingOrder}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onCancelPendingOrder(control.orderId)}
+        >×</button>)}
+      </div>
       {openingRangeOverlay && <svg className="paper-opening-range-overlay" viewBox={`0 0 ${openingRangeOverlay.width} ${openingRangeOverlay.height}`} aria-hidden="true">
         {showOpeningRange && <g className="paper-or-range"><rect className="paper-or-box" x={openingRangeOverlay.rangeLeft} y={openingRangeOverlay.highY} width={Math.max(0, openingRangeOverlay.rangeRight - openingRangeOverlay.rangeLeft)} height={Math.max(0, openingRangeOverlay.lowY - openingRangeOverlay.highY)} /><line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.highY} y2={openingRangeOverlay.highY} /><line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.lowY} y2={openingRangeOverlay.lowY} /><text className="paper-or-label" x={(openingRangeOverlay.rangeLeft + openingRangeOverlay.rangeRight) / 2} y={openingRangeOverlay.highY + 15}>区间振幅 {formatNumber(openingRangeOverlay.trueRange, 2)}</text><text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.highY - 5}>{formatNumber(openingRangeOverlay.high, 2)}</text><text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.lowY - 5}>{formatNumber(openingRangeOverlay.low, 2)}</text></g>}
         {openingRangeOverlay.completed && showUpperOpeningRange && openingRangeOverlay.trueRange > 0 && <g className="paper-or-upper">
@@ -3222,7 +3289,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} />
+              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>
