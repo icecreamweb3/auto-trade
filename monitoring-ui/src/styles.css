@@ -103,6 +103,9 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .ranking-summary-grid .summary-card { min-height: 118px; }
 .change-positive { color: #ff7d8c !important; font-variant-numeric: tabular-nums; }
 .change-negative { color: #54d8b6 !important; font-variant-numeric: tabular-nums; }
+.profit-positive { color: #0ecb81 !important; font-variant-numeric: tabular-nums; }
+.profit-negative { color: #f6465d !important; font-variant-numeric: tabular-nums; }
+.profit-neutral { color: #c8d7e6 !important; font-variant-numeric: tabular-nums; }
 .ranking-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
 .ranking-table-panel { min-width: 0; padding-bottom: 12px; }
 .ranking-table-heading { margin-bottom: 12px; }
