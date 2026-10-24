@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from math import isfinite
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -135,6 +136,7 @@ class PaperSessionCreate(BaseModel):
     interval_seconds: int
     range_start: datetime
     range_end: datetime
+    warmup_seconds: Literal[0, 86400] = 0
 
 
 class PaperOrderCreate(BaseModel):
@@ -187,6 +189,7 @@ class PaperSessionSnapshot(BaseModel):
     interval_seconds: int
     range_start: datetime
     range_end: datetime
+    warmup_seconds: int
     status: GameStatus
     starting_balance: float
     balance: float

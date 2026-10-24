@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
@@ -205,13 +206,15 @@ async def _create_session(
 ) -> PaperSessionSnapshot:
 
     repository = MonitoringRepository(request.app.state.database_engine)
+    warmup_start = range_start - timedelta(seconds=payload.warmup_seconds)
+    warmup_limit = ceil(payload.warmup_seconds / payload.interval_seconds)
     try:
         rows = await repository.paper_trader_klines(
             symbol=symbol,
-            range_start=range_start,
+            range_start=warmup_start,
             range_end=range_end,
             interval_seconds=payload.interval_seconds,
-            limit=MAX_CANDLES + 1,
+            limit=MAX_CANDLES + warmup_limit + 1,
         )
     except Exception as error:
         logger.exception(
@@ -222,7 +225,16 @@ async def _create_session(
             range_end,
         )
         raise HTTPException(status_code=503, detail="paper trading data unavailable") from error
+    warmup_rows = tuple(row for row in rows if row.open_time < range_start)
     visible_rows = tuple(row for row in rows if row.open_time >= range_start)
+    warmup_candles = tuple(PaperCandle.model_validate(row) for row in warmup_rows)
+    warmup_ema_values = tuple(
+        (
+            row.ema20 if row.ema20 > 0 else None,
+            row.ema240 if row.ema240 > 0 else None,
+        )
+        for row in warmup_rows
+    )
     candles = tuple(PaperCandle.model_validate(row) for row in visible_rows)
     ema_values = tuple(
         (
@@ -236,11 +248,13 @@ async def _create_session(
     if len(candles) > MAX_CANDLES:
         raise HTTPException(status_code=422, detail=f"所选范围不能超过 {MAX_CANDLES} 根 K 线")
 
-    lookback_candles: tuple[PaperCandle, ...] = ()
+    lookback_candles: tuple[PaperCandle, ...] = warmup_candles
     anchor_time = utc8_price_anchor(range_start)
     reference_start = anchor_time - timedelta(seconds=payload.interval_seconds)
     reference_end = anchor_time + timedelta(seconds=payload.interval_seconds)
-    if anchor_time < range_start:
+    if anchor_time < range_start and not any(
+        candle.open_time == anchor_time for candle in lookback_candles
+    ):
         try:
             reference_rows = await repository.paper_trader_klines(
                 symbol=symbol,
@@ -249,7 +263,7 @@ async def _create_session(
                 interval_seconds=payload.interval_seconds,
                 limit=2,
             )
-            lookback_candles = tuple(
+            lookback_candles += tuple(
                 PaperCandle.model_validate(row) for row in reference_rows
             )
         except Exception:
@@ -272,6 +286,9 @@ async def _create_session(
         candles=candles,
         range_start=range_start,
         range_end=range_end,
+        warmup_seconds=payload.warmup_seconds,
+        warmup_candles=warmup_candles,
+        warmup_ema_values=warmup_ema_values,
         lookback_candles=lookback_candles,
         ema_values=ema_values,
         balance=account.balance,

@@ -649,3 +649,19 @@ def test_state_restores_revealed_chart_and_trading_state() -> None:
     assert state.candles[-1].ema20 == 101
     assert state.candles[-1].ema240 == 99
     assert state.chart_view == game.chart_view
+
+
+def test_state_includes_warmup_candles_without_advancing_replay_progress() -> None:
+    game = session(candle(0, close=100), candle(1, close=102))
+    game.warmup_seconds = 86400
+    game.warmup_candles = (candle(-2, close=96), candle(-1, close=98))
+    game.warmup_ema_values = ((95.0, 90.0), (96.0, 91.0))
+
+    state = game.state()
+
+    assert state.snapshot.warmup_seconds == 86400
+    assert state.snapshot.revealed_count == 1
+    assert state.snapshot.total_candles == 2
+    assert [item.close_price for item in state.candles] == [96, 98, 100]
+    assert state.candles[0].ema20 == 95
+    assert state.candles[1].ema240 == 91

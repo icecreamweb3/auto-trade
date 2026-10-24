@@ -272,6 +272,7 @@ interface PaperSessionSnapshot {
   interval_seconds: number;
   range_start: string;
   range_end: string;
+  warmup_seconds: number;
   status: PaperGameStatus;
   starting_balance: number;
   balance: number;
@@ -805,6 +806,7 @@ function randomTradingSession(
   startMinute: number,
   durationHours: number,
   weekdaysOnly: boolean,
+  warmupHours = 0,
   randomValue = Math.random()
 ): { rangeStart: string; rangeEnd: string } | null {
   const availableFromMs = new Date(availableFrom).getTime();
@@ -830,7 +832,7 @@ function randomTradingSession(
     const sessionEndMs = sessionStartMs + durationHours * 60 * 60 * 1000;
     if (
       (!weekdaysOnly || (weekday >= 1 && weekday <= 5)) &&
-      sessionStartMs >= availableFromMs &&
+      sessionStartMs - warmupHours * 60 * 60 * 1000 >= availableFromMs &&
       sessionEndMs <= availableToMs
     ) {
       candidates.push(sessionStartMs);
@@ -2135,12 +2137,13 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, initialView, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onViewChange, onQuickOrder, onCancelPendingOrder, cancellingOrder }: {
+function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, warmupSeconds, initialView, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onViewChange, onQuickOrder, onCancelPendingOrder, cancellingOrder }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   pendingOrders: PaperPendingOrder[];
   intervalSeconds: number;
   sessionId: string;
+  warmupSeconds: number;
   initialView: PaperChartView | null;
   showOpeningRange: boolean;
   showUpperOpeningRange: boolean;
@@ -2203,7 +2206,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
         tickMarkFormatter: () => "",
         rightOffset: 5,
         barSpacing: 8,
-        minBarSpacing: 4,
+        minBarSpacing: 2,
         fixLeftEdge: false,
         lockVisibleTimeRangeOnResize: true,
       },
@@ -2488,11 +2491,18 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
           to: priceCenter + visiblePriceSpan / 2,
         });
         const latestIndex = points.length - 1;
-        const logicalRangeFrom = latestIndex - visibleCapacity * initialLatestPosition;
-        chart.timeScale().setVisibleLogicalRange({
-          from: logicalRangeFrom,
-          to: logicalRangeFrom + visibleCapacity,
-        });
+        if (warmupSeconds > 0) {
+          chart.timeScale().setVisibleLogicalRange({
+            from: -1,
+            to: Math.max(latestIndex + 1, (latestIndex + 1) / initialLatestPosition),
+          });
+        } else {
+          const logicalRangeFrom = latestIndex - visibleCapacity * initialLatestPosition;
+          chart.timeScale().setVisibleLogicalRange({
+            from: logicalRangeFrom,
+            to: logicalRangeFrom + visibleCapacity,
+          });
+        }
       }
       window.requestAnimationFrame(() => {
         refreshTimeAxisRef.current();
@@ -2531,7 +2541,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       refreshTimeAxisRef.current();
       refreshOrderControlsRef.current();
     });
-  }, [points, sessionId, visibleCapacity]);
+  }, [points, sessionId, visibleCapacity, warmupSeconds]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -2845,6 +2855,10 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         setOpenPrice(next.current_candle.close_price);
         setPositionTab(next.position ? "position" : next.pending_orders.length > 0 ? "orders" : next.trades.length > 0 ? "history" : "position");
         setOrderTab(next.position ? "close" : "open");
+        if (next.warmup_seconds > 0) {
+          const localStart = toUtc8Input(next.range_start).slice(11, 16);
+          setReplaySource(localStart === "21:30" ? "US" : "ASIA");
+        }
         setPlaying(false);
         onBalanceChange(next.balance);
       })
@@ -3040,9 +3054,17 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       const next = await requestSnapshot("/api/paper-trader/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol: selectedSymbol, interval_seconds: selectedInterval, range_start: utc8InputToIso(selectedStart), range_end: utc8InputToIso(selectedEnd) })
+        body: JSON.stringify({ symbol: selectedSymbol, interval_seconds: selectedInterval, range_start: utc8InputToIso(selectedStart), range_end: utc8InputToIso(selectedEnd), warmup_seconds: selectedSource === "CUSTOM" ? 0 : 86400 })
       });
-      applySnapshot(next, true);
+      if (selectedSource === "CUSTOM") {
+        applySnapshot(next, true);
+      } else {
+        const state = await fetchPaperGet<PaperSessionState | null>("/api/paper-trader/sessions/active", "预热行情加载失败");
+        if (state === null || state.snapshot.session_id !== next.session_id) throw new Error("预热行情加载失败");
+        setSnapshot(state.snapshot);
+        setCandles(state.candles);
+        onBalanceChange(state.snapshot.balance);
+      }
       setChartView(null);
       setOrderTab("open");
       setOpenPrice(next.current_candle.close_price);
@@ -3065,8 +3087,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       return;
     }
     const selected = kind === "US"
-      ? randomTradingSession(coverage.available_from, coverage.available_to, 21, 30, 7, true)
-      : randomTradingSession(coverage.available_from, coverage.available_to, 8, 0, 10, false);
+      ? randomTradingSession(coverage.available_from, coverage.available_to, 21, 30, 7, true, 24)
+      : randomTradingSession(coverage.available_from, coverage.available_to, 8, 0, 10, false, 24);
     if (!selected) {
       setError(kind === "US"
         ? "本地行情范围内没有完整的工作日美盘早盘（UTC+8 21:30—次日 04:30）"
@@ -3612,7 +3634,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           <button className="primary-button" type="button" onClick={() => void startGame()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "生成行情"}</button>
         </div>
       </div>
-      <p className="paper-random-hint">随机美盘仅抽取周一至周五；随机亚洲时段可从本地完整历史日期中抽取。</p>
+      <p className="paper-random-hint">随机行情会先显示正式交易时段前 24 小时的 K 线作为预热；美盘仅抽取周一至周五。</p>
     </section>}
     {error && <div className="alert alert-critical">{error}</div>}
     {snapshot?.message?.startsWith("价格触及止损价") && snapshot.trades[snapshot.trades.length - 1]?.exit_reason === "STOP_LOSS" && <div className="alert paper-stop-loss-notice">{snapshot.message}</div>}
@@ -3631,7 +3653,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={(action, price) => void submitQuickOrder(action, price)} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
+              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} warmupSeconds={snapshot.warmup_seconds} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={(action, price) => void submitQuickOrder(action, price)} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>

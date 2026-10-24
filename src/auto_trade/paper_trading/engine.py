@@ -78,6 +78,9 @@ class PaperSession:
     candles: tuple[PaperCandle, ...]
     range_start: datetime
     range_end: datetime
+    warmup_seconds: int = 0
+    warmup_candles: tuple[PaperCandle, ...] = ()
+    warmup_ema_values: tuple[tuple[float | None, float | None], ...] = ()
     lookback_candles: tuple[PaperCandle, ...] = ()
     ema_values: tuple[tuple[float | None, float | None], ...] = ()
     session_id: str = field(default_factory=lambda: str(uuid4()))
@@ -613,6 +616,7 @@ class PaperSession:
             interval_seconds=self.interval_seconds,
             range_start=self.range_start,
             range_end=self.range_end,
+            warmup_seconds=self.warmup_seconds,
             status=self.status,
             starting_balance=STARTING_BALANCE,
             balance=display_balance,
@@ -636,7 +640,18 @@ class PaperSession:
         )
 
     def state(self) -> PaperSessionState:
-        revealed_candles = []
+        revealed_candles = [
+            PaperChartCandle(
+                **candle.model_dump(),
+                ema20=self.warmup_ema_values[index][0]
+                if index < len(self.warmup_ema_values)
+                else None,
+                ema240=self.warmup_ema_values[index][1]
+                if index < len(self.warmup_ema_values)
+                else None,
+            )
+            for index, candle in enumerate(self.warmup_candles)
+        ]
         for index, candle in enumerate(self.candles[: self.index + 1]):
             ema20, ema240 = (
                 self.ema_values[index]
