@@ -1,11 +1,31 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 
 from auto_trade.collectors.kline_15m import (
     OpenInterestPoint,
+    _instrument_ids,
     aggregate_15m_bars,
     attach_open_interest,
 )
+
+
+async def test_explicit_symbols_resolve_without_scanning_kline_chunks() -> None:
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [1, 2]
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    instrument_ids = await _instrument_ids(engine, (" btcusdt ", "ETHUSDT"))
+
+    statement, parameters = connection.execute.await_args.args
+    assert instrument_ids == (1, 2)
+    assert "FROM market.klines" not in str(statement)
+    assert "upper(i.symbol) = ANY" in str(statement)
+    assert parameters == {"symbols": ["BTCUSDT", "ETHUSDT"]}
 
 
 def _source_row(start: datetime, offset_minutes: int, price: int) -> dict[str, object]:

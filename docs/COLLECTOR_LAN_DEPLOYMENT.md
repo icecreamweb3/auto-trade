@@ -204,6 +204,7 @@ SHARD_ID=0
 
 POSTGRES_PASSWORD=<独立随机强密码>
 POSTGRES_BIND_IP=127.0.0.1
+POSTGRES_MAX_LOCKS_PER_TRANSACTION=4096
 
 HTTP_PROXY=
 HTTPS_PROXY=
@@ -215,6 +216,7 @@ NO_PROXY=127.0.0.1,localhost
 - 测试机能够直接访问 Binance 时，代理保持为空。
 - `NODE_ID` 必须能唯一标识这台机器。
 - 推荐保持 `POSTGRES_BIND_IP=127.0.0.1`，从开发机通过SSH隧道访问。
+- 保持 `POSTGRES_MAX_LOCKS_PER_TRANSACTION=4096`，使全历史 EMA 计算能够读取按日切分的 K 线分区。
 - 不要把 `.env` 提交到Git或发送到聊天记录。
 - 不要复用开发机现有数据库密码。
 
@@ -222,6 +224,15 @@ NO_PROXY=127.0.0.1,localhost
 
 ```bash
 docker compose config --quiet
+```
+
+现有环境首次增加或修改 `POSTGRES_MAX_LOCKS_PER_TRANSACTION` 时，需要重建数据库容器使参数生效；命名数据卷不会被删除：
+
+```bash
+make runtime-down
+docker compose up -d --force-recreate database
+docker compose exec -T database sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SHOW max_locks_per_transaction;"'
+make runtime-up
 ```
 
 命令无输出且返回码为0表示配置语法有效。

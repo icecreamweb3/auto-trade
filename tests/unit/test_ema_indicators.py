@@ -1,12 +1,32 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 
 from auto_trade.collectors.ema_indicators import (
     SourceBar,
+    _instrument_ids,
     aggregate_source_bars,
     align_time,
     calculate_indicators,
 )
+
+
+async def test_explicit_symbols_resolve_without_scanning_kline_chunks() -> None:
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [1, 2]
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    instrument_ids = await _instrument_ids(engine, (" btcusdt ", "ETHUSDT"))
+
+    statement, parameters = connection.execute.await_args.args
+    assert instrument_ids == (1, 2)
+    assert "FROM market.klines" not in str(statement)
+    assert "upper(i.symbol) = ANY" in str(statement)
+    assert parameters == {"symbols": ["BTCUSDT", "ETHUSDT"]}
 
 
 def test_align_time_uses_utc_interval_boundary() -> None:

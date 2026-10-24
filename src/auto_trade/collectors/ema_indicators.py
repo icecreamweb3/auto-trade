@@ -146,33 +146,37 @@ async def _instrument_ids(
     normalized_symbols = tuple(
         symbol.strip().upper() for symbol in symbols or () if symbol.strip()
     )
-    symbol_filter = (
-        "AND upper(i.symbol) = ANY(CAST(:symbols AS text[]))"
-        if normalized_symbols
-        else ""
-    )
-    async with engine.connect() as connection:
-        result = await connection.execute(
-            text(
-                f"""
-                SELECT i.instrument_id
-                FROM core.instruments i
-                WHERE EXISTS (
-                    SELECT 1
-                    FROM market.klines k
-                    WHERE k.instrument_id = i.instrument_id
-                      AND k.price_type = 'TRADE'
-                      AND k.interval_seconds = 300
-                      AND k.is_current
-                      AND k.is_closed
-                      AND k.quality_status = 'VALID'
-                )
-                {symbol_filter}
-                ORDER BY i.instrument_id
-                """
-            ),
-            {"symbols": list(normalized_symbols)} if normalized_symbols else {},
+    if normalized_symbols:
+        statement = text(
+            """
+            SELECT i.instrument_id
+            FROM core.instruments i
+            WHERE upper(i.symbol) = ANY(CAST(:symbols AS text[]))
+            ORDER BY i.instrument_id
+            """
         )
+        parameters: dict[str, object] = {"symbols": list(normalized_symbols)}
+    else:
+        statement = text(
+            """
+            SELECT i.instrument_id
+            FROM core.instruments i
+            WHERE EXISTS (
+                SELECT 1
+                FROM market.klines k
+                WHERE k.instrument_id = i.instrument_id
+                  AND k.price_type = 'TRADE'
+                  AND k.interval_seconds = 300
+                  AND k.is_current
+                  AND k.is_closed
+                  AND k.quality_status = 'VALID'
+            )
+            ORDER BY i.instrument_id
+            """
+        )
+        parameters = {}
+    async with engine.connect() as connection:
+        result = await connection.execute(statement, parameters)
         return tuple(cast(Sequence[int], result.scalars().all()))
 
 

@@ -12,6 +12,10 @@ services:
     container_name: auto-trade-db
     restart: unless-stopped
     stop_grace_period: 60s
+    command:
+      - postgres
+      - -c
+      - max_locks_per_transaction=${POSTGRES_MAX_LOCKS_PER_TRANSACTION:-4096}
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
