@@ -338,6 +338,30 @@ interface PaperReplayPreset {
   rangeEnd: string;
 }
 
+interface PaperTraderPreferences {
+  symbol: string;
+  interval_seconds: number;
+  range_start: string | null;
+  range_end: string | null;
+  speed_seconds: number;
+  notional: number;
+  notional_unit: PaperNotionalUnit;
+  leverage: number;
+  open_order_type: "LIMIT" | "MARKET";
+  close_order_type: "LIMIT" | "MARKET";
+  auto_two_r_take_profit: boolean;
+  show_opening_range: boolean;
+  show_upper_opening_range: boolean;
+  show_lower_opening_range: boolean;
+  replay_presets: Array<{
+    id: string;
+    symbol: string;
+    interval_seconds: number;
+    range_start: string;
+    range_end: string;
+  }>;
+}
+
 interface AccountSummary {
   starting_balance: number;
   balance: number;
@@ -782,24 +806,6 @@ function randomTradingSession(
     rangeStart: toUtc8Input(new Date(sessionStartMs).toISOString()),
     rangeEnd: toUtc8Input(new Date(sessionStartMs + durationHours * 60 * 60 * 1000).toISOString())
   };
-}
-
-const PAPER_REPLAY_PRESETS_KEY = "auto-trade:paper-replay-presets";
-
-function loadPaperReplayPresets(): PaperReplayPreset[] {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(PAPER_REPLAY_PRESETS_KEY) ?? "[]") as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is PaperReplayPreset => {
-      if (typeof item !== "object" || item === null) return false;
-      const value = item as Record<string, unknown>;
-      return typeof value.id === "string" && typeof value.symbol === "string" &&
-        typeof value.intervalSeconds === "number" && typeof value.rangeStart === "string" &&
-        typeof value.rangeEnd === "string";
-    });
-  } catch {
-    return [];
-  }
 }
 
 function paperReplayPresetLabel(preset: PaperReplayPreset): string {
@@ -2066,12 +2072,13 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, showUpperOpeningRange, showLowerOpeningRange }: {
+function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   pendingOrders: PaperPendingOrder[];
   intervalSeconds: number;
   sessionId: string;
+  showOpeningRange: boolean;
   showUpperOpeningRange: boolean;
   showLowerOpeningRange: boolean;
 }) {
@@ -2453,7 +2460,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
         refreshOpeningRangeOverlayRef.current = () => undefined;
       }
     };
-  }, [points, sessionId, showUpperOpeningRange, showLowerOpeningRange]);
+  }, [points, sessionId, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange]);
 
   const current = hoveredCandle ?? points[points.length - 1];
   const candleChange = current ? current.close_price - current.open_price : null;
@@ -2477,12 +2484,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
     <div className="paper-chart-canvas">
       <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
       {openingRangeOverlay && <svg className="paper-opening-range-overlay" viewBox={`0 0 ${openingRangeOverlay.width} ${openingRangeOverlay.height}`} aria-hidden="true">
-        <rect className="paper-or-box" x={openingRangeOverlay.rangeLeft} y={openingRangeOverlay.highY} width={Math.max(0, openingRangeOverlay.rangeRight - openingRangeOverlay.rangeLeft)} height={Math.max(0, openingRangeOverlay.lowY - openingRangeOverlay.highY)} />
-        <line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.highY} y2={openingRangeOverlay.highY} />
-        <line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.lowY} y2={openingRangeOverlay.lowY} />
-        <text className="paper-or-label" x={(openingRangeOverlay.rangeLeft + openingRangeOverlay.rangeRight) / 2} y={openingRangeOverlay.highY + 15}>区间振幅 {formatNumber(openingRangeOverlay.trueRange, 2)}</text>
-        <text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.highY - 5}>{formatNumber(openingRangeOverlay.high, 2)}</text>
-        <text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.lowY - 5}>{formatNumber(openingRangeOverlay.low, 2)}</text>
+        {showOpeningRange && <g className="paper-or-range"><rect className="paper-or-box" x={openingRangeOverlay.rangeLeft} y={openingRangeOverlay.highY} width={Math.max(0, openingRangeOverlay.rangeRight - openingRangeOverlay.rangeLeft)} height={Math.max(0, openingRangeOverlay.lowY - openingRangeOverlay.highY)} /><line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.highY} y2={openingRangeOverlay.highY} /><line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.lowY} y2={openingRangeOverlay.lowY} /><text className="paper-or-label" x={(openingRangeOverlay.rangeLeft + openingRangeOverlay.rangeRight) / 2} y={openingRangeOverlay.highY + 15}>区间振幅 {formatNumber(openingRangeOverlay.trueRange, 2)}</text><text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.highY - 5}>{formatNumber(openingRangeOverlay.high, 2)}</text><text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.lowY - 5}>{formatNumber(openingRangeOverlay.low, 2)}</text></g>}
         {openingRangeOverlay.completed && showUpperOpeningRange && openingRangeOverlay.trueRange > 0 && <g className="paper-or-upper">
           <rect x={openingRangeOverlay.rangeRight} y={openingRangeOverlay.upperTwoY} width={Math.max(0, openingRangeOverlay.projectionRight - openingRangeOverlay.rangeRight)} height={Math.max(0, openingRangeOverlay.highY - openingRangeOverlay.upperTwoY)} />
           <line x1={openingRangeOverlay.rangeRight} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.upperOneY} y2={openingRangeOverlay.upperOneY} />
@@ -2530,12 +2532,14 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [closePrice, setClosePrice] = useState<NumericInput>("");
   const [closeQuantity, setCloseQuantity] = useState<NumericInput>("");
   const [autoTwoRTakeProfit, setAutoTwoRTakeProfit] = useState(true);
+  const [showOpeningRange, setShowOpeningRange] = useState(true);
   const [showUpperOpeningRange, setShowUpperOpeningRange] = useState(false);
   const [showLowerOpeningRange, setShowLowerOpeningRange] = useState(false);
   const [positionAction, setPositionAction] = useState(false);
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [replayPresets, setReplayPresets] = useState<PaperReplayPreset[]>(loadPaperReplayPresets);
+  const [replayPresets, setReplayPresets] = useState<PaperReplayPreset[]>([]);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [replaySource, setReplaySource] = useState<PaperReplaySource>("CUSTOM");
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperChartPoint[]>([]);
@@ -2557,11 +2561,43 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           const end = new Date(coverage.available_to);
           const earliest = coverage.available_from ? new Date(coverage.available_from).getTime() : 0;
           const start = new Date(Math.max(earliest, end.getTime() - 24 * 60 * 60 * 1000));
-          setRangeStart(toUtc8Input(start.toISOString()));
-          setRangeEnd(toUtc8Input(end.toISOString()));
+          setRangeStart((current) => current || toUtc8Input(start.toISOString()));
+          setRangeEnd((current) => current || toUtc8Input(end.toISOString()));
         }
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "模拟器行情范围加载失败"));
+  }, []);
+
+  useEffect(() => {
+    void fetch("/api/account/preferences/paper-trader", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as PaperTraderPreferences | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "交易偏好读取失败"));
+        const preferences = body as PaperTraderPreferences;
+        setSymbol(preferences.symbol);
+        setIntervalSeconds(preferences.interval_seconds);
+        if (preferences.range_start) setRangeStart(toUtc8Input(preferences.range_start));
+        if (preferences.range_end) setRangeEnd(toUtc8Input(preferences.range_end));
+        setSpeedSeconds(preferences.speed_seconds);
+        setNotional(preferences.notional);
+        setNotionalUnit(preferences.notional_unit);
+        setLeverage(preferences.leverage);
+        setOpenOrderType(preferences.open_order_type);
+        setCloseOrderType(preferences.close_order_type);
+        setAutoTwoRTakeProfit(preferences.auto_two_r_take_profit);
+        setShowOpeningRange(preferences.show_opening_range);
+        setShowUpperOpeningRange(preferences.show_upper_opening_range);
+        setShowLowerOpeningRange(preferences.show_lower_opening_range);
+        setReplayPresets(preferences.replay_presets.map((preset) => ({
+          id: preset.id,
+          symbol: preset.symbol,
+          intervalSeconds: preset.interval_seconds,
+          rangeStart: toUtc8Input(preset.range_start),
+          rangeEnd: toUtc8Input(preset.range_end)
+        })));
+        setPreferencesLoaded(true);
+      })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "交易偏好读取失败"));
   }, []);
 
   useEffect(() => {
@@ -2575,12 +2611,52 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }, [snapshot?.status]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(PAPER_REPLAY_PRESETS_KEY, JSON.stringify(replayPresets));
-    } catch {
-      setError("浏览器无法保存自定义行情快捷配置");
-    }
-  }, [replayPresets]);
+    if (!preferencesLoaded || notional === "" || leverage === "") return;
+    if ((rangeStart === "") !== (rangeEnd === "")) return;
+    if (rangeStart && rangeEnd && new Date(utc8InputToIso(rangeStart)) >= new Date(utc8InputToIso(rangeEnd))) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetch("/api/account/preferences/paper-trader", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          symbol,
+          interval_seconds: intervalSeconds,
+          range_start: rangeStart ? utc8InputToIso(rangeStart) : null,
+          range_end: rangeEnd ? utc8InputToIso(rangeEnd) : null,
+          speed_seconds: speedSeconds,
+          notional,
+          notional_unit: notionalUnit,
+          leverage,
+          open_order_type: openOrderType,
+          close_order_type: closeOrderType,
+          auto_two_r_take_profit: autoTwoRTakeProfit,
+          show_opening_range: showOpeningRange,
+          show_upper_opening_range: showUpperOpeningRange,
+          show_lower_opening_range: showLowerOpeningRange,
+          replay_presets: replayPresets.map((preset) => ({
+            id: preset.id,
+            symbol: preset.symbol,
+            interval_seconds: preset.intervalSeconds,
+            range_start: utc8InputToIso(preset.rangeStart),
+            range_end: utc8InputToIso(preset.rangeEnd)
+          }))
+        })
+      }).then(async (response) => {
+        if (response.ok) return;
+        const body = await response.json() as { detail?: string };
+        throw new Error(paperErrorMessage(body, "交易偏好保存失败"));
+      }).catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "交易偏好保存失败");
+      });
+    }, 500);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [preferencesLoaded, symbol, intervalSeconds, rangeStart, rangeEnd, speedSeconds, notional, notionalUnit, leverage, openOrderType, closeOrderType, autoTwoRTakeProfit, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, replayPresets]);
 
   useEffect(() => {
     setTakeProfit(snapshot?.position?.take_profit_price ?? "");
@@ -2644,9 +2720,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       });
       applySnapshot(next, true);
       setOrderTab("open");
-      setOpenOrderType("MARKET");
       setOpenPrice(next.current_candle.close_price);
-      setAutoTwoRTakeProfit(true);
       setRiskDialogOpen(false);
       setSettingsOpen(false);
       setReplaySource(selectedSource);
@@ -3056,14 +3130,15 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             <div className="paper-playback-bar">
               <div><strong>{snapshot.symbol} · {snapshot.interval_seconds / 60}{snapshot.interval_seconds < 3600 ? "min" : "h"}</strong><span>{snapshot.revealed_count} / {snapshot.total_candles} 根</span><span className="paper-playback-change" title="以当前 UTC+8 交易日 08:00 K 线开盘价为基准"><em>Chg</em>{snapshot.anchored_price_change === null || snapshot.anchored_price_change_percent === null ? <strong>--</strong> : <><strong className={anchoredChangeClass}>{snapshot.anchored_price_change_percent >= 0 ? "+" : ""}{snapshot.anchored_price_change_percent.toFixed(2)}%</strong><strong className={anchoredChangeClass}>{snapshot.anchored_price_change >= 0 ? "+" : ""}{formatNumber(snapshot.anchored_price_change, 2)}</strong></>}</span></div>
               <div className="paper-playback-actions">
-                <div className="paper-opening-range-toggles" aria-label="美股早盘 TR 显示设置" title="UTC+8 21:30–23:00 开盘区间">
+                <div className="paper-opening-range-toggles" aria-label="美股早盘区间显示设置" title="UTC+8 21:30–23:00 开盘区间">
+                  <label className="paper-range-toggle"><input type="checkbox" checked={showOpeningRange} onChange={(event) => setShowOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>区间框</strong></label>
                   <label className="paper-range-toggle"><input type="checkbox" checked={showUpperOpeningRange} onChange={(event) => setShowUpperOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>上方 TR</strong></label>
                   <label className="paper-range-toggle"><input type="checkbox" checked={showLowerOpeningRange} onChange={(event) => setShowLowerOpeningRange(event.target.checked)} /><span aria-hidden="true" /><strong>下方 TR</strong></label>
                 </div>
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} />
+              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>

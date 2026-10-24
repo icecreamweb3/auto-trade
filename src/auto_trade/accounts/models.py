@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def normalize_email(value: str) -> str:
@@ -113,3 +114,63 @@ class AccountTradeHistory(BaseModel):
 
     account: AccountSummary
     trades: tuple[AccountTrade, ...]
+
+
+class PaperReplayPresetPreference(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str = Field(min_length=1, max_length=80)
+    symbol: str = Field(min_length=1, max_length=32)
+    interval_seconds: Literal[300, 900, 3600]
+    range_start: datetime
+    range_end: datetime
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @model_validator(mode="after")
+    def validate_range(self) -> PaperReplayPresetPreference:
+        if self.range_start >= self.range_end:
+            raise ValueError("快捷行情开始时间必须早于结束时间")
+        return self
+
+
+class PaperTraderPreferences(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(default="BTCUSDT", min_length=1, max_length=32)
+    interval_seconds: Literal[300, 900, 3600] = 300
+    range_start: datetime | None = None
+    range_end: datetime | None = None
+    speed_seconds: Literal[1, 3, 5, 10, 15, 30] = 5
+    notional: float = Field(default=100, gt=0)
+    notional_unit: Literal["USDT", "BASE"] = "USDT"
+    leverage: Literal[1, 2, 3, 5, 10, 20, 25, 50, 75, 100] = 100
+    open_order_type: Literal["LIMIT", "MARKET"] = "MARKET"
+    close_order_type: Literal["LIMIT", "MARKET"] = "LIMIT"
+    auto_two_r_take_profit: bool = True
+    show_opening_range: bool = True
+    show_upper_opening_range: bool = False
+    show_lower_opening_range: bool = False
+    replay_presets: tuple[PaperReplayPresetPreference, ...] = Field(
+        default=(), max_length=30
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @model_validator(mode="after")
+    def validate_range(self) -> PaperTraderPreferences:
+        if (self.range_start is None) != (self.range_end is None):
+            raise ValueError("行情开始和结束时间必须同时设置")
+        if (
+            self.range_start is not None
+            and self.range_end is not None
+            and self.range_start >= self.range_end
+        ):
+            raise ValueError("行情开始时间必须早于结束时间")
+        return self

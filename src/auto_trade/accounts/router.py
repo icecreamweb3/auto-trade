@@ -13,6 +13,7 @@ from auto_trade.accounts.models import (
     Credentials,
     CurrentUser,
     LoginCredentials,
+    PaperTraderPreferences,
     UserRole,
     UserRoleUpdate,
 )
@@ -144,6 +145,30 @@ async def trade_history(
     return AccountTradeHistory(
         account=await repository.account_summary(user.user_id),
         trades=await repository.trades(user.user_id, limit),
+    )
+
+
+@router.get(
+    "/api/account/preferences/paper-trader",
+    response_model=PaperTraderPreferences,
+)
+async def paper_trader_preferences(
+    request: Request, user: AuthenticatedUser
+) -> PaperTraderPreferences:
+    return await _repository(request).paper_trader_preferences(user.user_id)
+
+
+@router.put(
+    "/api/account/preferences/paper-trader",
+    response_model=PaperTraderPreferences,
+)
+async def save_paper_trader_preferences(
+    payload: PaperTraderPreferences,
+    request: Request,
+    user: AuthenticatedUser,
+) -> PaperTraderPreferences:
+    return await _repository(request).save_paper_trader_preferences(
+        user.user_id, payload
     )
 
 

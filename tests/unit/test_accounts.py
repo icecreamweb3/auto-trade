@@ -1,4 +1,6 @@
+import json
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -11,9 +13,11 @@ from auto_trade.accounts.models import (
     Credentials,
     CurrentUser,
     LoginCredentials,
+    PaperTraderPreferences,
     UserRole,
     normalize_email,
 )
+from auto_trade.accounts.repository import AccountRepository
 from auto_trade.accounts.router import require_admin
 from auto_trade.accounts.security import (
     hash_password,
@@ -63,6 +67,64 @@ def test_login_accepts_admin_username_as_identifier() -> None:
     assert credentials.identifier == "Admin"
 
 
+def test_paper_trader_preferences_have_per_user_display_defaults() -> None:
+    preferences = PaperTraderPreferences()
+
+    assert preferences.show_opening_range is True
+    assert preferences.show_upper_opening_range is False
+    assert preferences.show_lower_opening_range is False
+    assert preferences.speed_seconds == 5
+    assert preferences.auto_two_r_take_profit is True
+
+
+def test_paper_trader_preferences_normalize_symbol_and_validate_range() -> None:
+    preferences = PaperTraderPreferences(symbol=" btcusdt ")
+
+    assert preferences.symbol == "BTCUSDT"
+    with pytest.raises(ValidationError, match="必须同时设置"):
+        PaperTraderPreferences(range_start=datetime.now(UTC))
+
+
+async def test_paper_trader_preferences_are_saved_for_the_current_user() -> None:
+    connection = MagicMock()
+    connection.execute = AsyncMock()
+    engine = MagicMock()
+    engine.begin.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.begin.return_value.__aexit__ = AsyncMock(return_value=None)
+    repository = AccountRepository(engine)
+    user_id = uuid4()
+    preferences = PaperTraderPreferences(
+        show_opening_range=False,
+        show_upper_opening_range=True,
+    )
+
+    saved = await repository.save_paper_trader_preferences(user_id, preferences)
+
+    assert saved == preferences
+    statement, parameters = connection.execute.await_args.args
+    assert "ON CONFLICT (user_id) DO UPDATE" in str(statement)
+    assert parameters["user_id"] == user_id
+    payload = json.loads(parameters["paper_trader"])
+    assert payload["show_opening_range"] is False
+    assert payload["show_upper_opening_range"] is True
+
+
+async def test_missing_paper_trader_preferences_return_defaults() -> None:
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    preferences = await AccountRepository(engine).paper_trader_preferences(uuid4())
+
+    assert preferences.show_opening_range is True
+    assert preferences.show_upper_opening_range is False
+    assert preferences.show_lower_opening_range is False
+
+
 def current_user(role: UserRole) -> CurrentUser:
     return CurrentUser(
         user_id=uuid4(),
@@ -93,6 +155,7 @@ async def test_only_admin_role_passes_admin_dependency() -> None:
     (
         (UserRole.NORMAL, "/api/paper-trader/metadata", True),
         (UserRole.NORMAL, "/api/account/trades", True),
+        (UserRole.NORMAL, "/api/account/preferences/paper-trader", True),
         (UserRole.NORMAL, "/api/rankings/daily", False),
         (UserRole.NORMAL, "/api/backtests/metadata", False),
         (UserRole.NORMAL, "/api/monitoring/overview", False),

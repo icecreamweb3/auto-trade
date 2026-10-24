@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -13,6 +14,7 @@ from auto_trade.accounts.models import (
     AccountTrade,
     AdminUser,
     CurrentUser,
+    PaperTraderPreferences,
     UserRole,
 )
 from auto_trade.paper_trading.models import PaperTrade
@@ -221,6 +223,47 @@ class AccountRepository:
                 )
             ).mappings().all()
         return tuple(AccountTrade.model_validate(row) for row in rows)
+
+    async def paper_trader_preferences(
+        self, user_id: UUID
+    ) -> PaperTraderPreferences:
+        async with self.engine.connect() as connection:
+            value = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT paper_trader
+                        FROM core.user_preferences
+                        WHERE user_id = :user_id
+                        """
+                    ),
+                    {"user_id": user_id},
+                )
+            ).scalar_one_or_none()
+        return PaperTraderPreferences.model_validate(value or {})
+
+    async def save_paper_trader_preferences(
+        self, user_id: UUID, preferences: PaperTraderPreferences
+    ) -> PaperTraderPreferences:
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO core.user_preferences (user_id, paper_trader)
+                    VALUES (:user_id, CAST(:paper_trader AS jsonb))
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        paper_trader = EXCLUDED.paper_trader,
+                        updated_at = clock_timestamp()
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "paper_trader": json.dumps(
+                        preferences.model_dump(mode="json"), separators=(",", ":")
+                    ),
+                },
+            )
+        return preferences
 
     async def ensure_default_admin(
         self, username: str, email: str, password_hash: str
