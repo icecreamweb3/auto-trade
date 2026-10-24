@@ -5,11 +5,12 @@ import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from auto_trade.collectors.kline_15m import update_15m_klines
@@ -21,6 +22,23 @@ logger = logging.getLogger(__name__)
 
 CALCULATION_VERSION = "ema-close-v3-1h"
 SUPPORTED_INTERVALS = (300, 900, 3600)
+
+
+def indicator_lock_key(instrument_id: int, interval_seconds: int) -> int:
+    return instrument_id * 10_000 + interval_seconds
+
+
+def iter_time_windows(
+    start: datetime, end: datetime, *, chunk_days: int
+) -> tuple[tuple[datetime, datetime], ...]:
+    windows: list[tuple[datetime, datetime]] = []
+    cursor = start
+    step = timedelta(days=chunk_days)
+    while cursor < end:
+        window_end = min(cursor + step, end)
+        windows.append((cursor, window_end))
+        cursor = window_end
+    return tuple(windows)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +205,13 @@ async def _recompute_interval(
     interval_seconds: int,
     checked_until: datetime,
     batch_size: int,
+    bootstrap_bars: int,
+    chunk_days: int,
 ) -> int:
+    await connection.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": indicator_lock_key(instrument_id, interval_seconds)},
+    )
     checkpoint_result = await connection.execute(
         text(
             """
@@ -210,20 +234,26 @@ async def _recompute_interval(
     if previous_checked_at is None:
         dirty_statement = text(
             """
-                SELECT min(k.open_time)
-                FROM market.klines k
-                WHERE k.instrument_id = :instrument_id
-                  AND k.price_type = 'TRADE'
-                  AND k.interval_seconds = 300
-                  AND k.is_current
-                  AND k.is_closed
-                  AND k.quality_status = 'VALID'
-                  AND k.effective_at <= CAST(:checked_until AS timestamptz)
+                SELECT min(recent.open_time)
+                FROM (
+                    SELECT k.open_time
+                    FROM market.klines k
+                    WHERE k.instrument_id = :instrument_id
+                      AND k.price_type = 'TRADE'
+                      AND k.interval_seconds = 300
+                      AND k.is_current
+                      AND k.is_closed
+                      AND k.quality_status = 'VALID'
+                      AND k.effective_at <= CAST(:checked_until AS timestamptz)
+                    ORDER BY k.open_time DESC
+                    LIMIT :bootstrap_bars
+                ) recent
             """
         )
         dirty_parameters = {
             "instrument_id": instrument_id,
             "checked_until": checked_until,
+            "bootstrap_bars": bootstrap_bars,
         }
     else:
         dirty_statement = text(
@@ -283,34 +313,6 @@ async def _recompute_interval(
         },
     )
     seed = seed_result.mappings().one_or_none()
-    source_result = await connection.execute(
-        text(
-            """
-                SELECT k.open_time, k.close_time, k.open_price, k.high_price,
-                       k.low_price, k.close_price
-                FROM market.klines k
-                WHERE k.instrument_id = :instrument_id
-                  AND k.price_type = 'TRADE'
-                  AND k.interval_seconds = 300
-                  AND k.open_time >= CAST(:recompute_start AS timestamptz)
-                  AND k.is_current
-                  AND k.is_closed
-                  AND k.quality_status = 'VALID'
-                ORDER BY k.open_time ASC
-            """
-        ),
-        {"instrument_id": instrument_id, "recompute_start": recompute_start},
-    )
-    source_rows = source_result.mappings().all()
-    bars = aggregate_source_bars(
-        [cast(Mapping[str, object], row) for row in source_rows], interval_seconds
-    )
-    indicators = calculate_indicators(
-        bars,
-        previous_ema20=(Decimal(str(seed["ema20"])) if seed is not None else None),
-        previous_ema240=(Decimal(str(seed["ema240"])) if seed is not None else None),
-    )
-
     await connection.execute(
         text(
             """
@@ -342,33 +344,82 @@ async def _recompute_interval(
         )
         """
     )
-    payload = [
-        {
-            "instrument_id": instrument_id,
-            "interval_seconds": interval_seconds,
-            "open_time": item.open_time,
-            "close_time": item.close_time,
-            "close_price": item.close_price,
-            "ema20": item.ema20,
-            "ema240": item.ema240,
-            "price_change_percent": item.price_change_percent,
-            "amplitude_percent": item.amplitude_percent,
-            "source_bar_count": item.source_bar_count,
-            "calculation_version": CALCULATION_VERSION,
-        }
-        for item in indicators
-    ]
-    for offset in range(0, len(payload), batch_size):
-        await connection.execute(insert_statement, payload[offset : offset + batch_size])
+    previous_ema20 = Decimal(str(seed["ema20"])) if seed is not None else None
+    previous_ema240 = Decimal(str(seed["ema240"])) if seed is not None else None
+    updated = 0
+    last_open_time: datetime | None = None
+    for window_start, window_end in iter_time_windows(
+        recompute_start, checked_until, chunk_days=chunk_days
+    ):
+        source_result = await connection.execute(
+            text(
+                """
+                    SELECT k.open_time, k.close_time, k.open_price, k.high_price,
+                           k.low_price, k.close_price
+                    FROM market.klines k
+                    WHERE k.instrument_id = :instrument_id
+                      AND k.price_type = 'TRADE'
+                      AND k.interval_seconds = 300
+                      AND k.open_time >= CAST(:window_start AS timestamptz)
+                      AND k.open_time < CAST(:window_end AS timestamptz)
+                      AND k.effective_at <= CAST(:checked_until AS timestamptz)
+                      AND k.is_current
+                      AND k.is_closed
+                      AND k.quality_status = 'VALID'
+                    ORDER BY k.open_time ASC
+                """
+            ),
+            {
+                "instrument_id": instrument_id,
+                "window_start": window_start,
+                "window_end": window_end,
+                "checked_until": checked_until,
+            },
+        )
+        source_rows = [
+            cast(Mapping[str, object], row) for row in source_result.mappings().all()
+        ]
+        bars = aggregate_source_bars(source_rows, interval_seconds)
+        indicators = calculate_indicators(
+            bars,
+            previous_ema20=previous_ema20,
+            previous_ema240=previous_ema240,
+        )
+        payload = [
+            {
+                "instrument_id": instrument_id,
+                "interval_seconds": interval_seconds,
+                "open_time": item.open_time,
+                "close_time": item.close_time,
+                "close_price": item.close_price,
+                "ema20": item.ema20,
+                "ema240": item.ema240,
+                "price_change_percent": item.price_change_percent,
+                "amplitude_percent": item.amplitude_percent,
+                "source_bar_count": item.source_bar_count,
+                "calculation_version": CALCULATION_VERSION,
+            }
+            for item in indicators
+        ]
+        for offset in range(0, len(payload), batch_size):
+            await connection.execute(
+                insert_statement, payload[offset : offset + batch_size]
+            )
+        if indicators:
+            previous_ema20 = indicators[-1].ema20
+            previous_ema240 = indicators[-1].ema240
+            last_open_time = indicators[-1].open_time
+            updated += len(indicators)
 
     await _save_checkpoint(
         connection,
         instrument_id=instrument_id,
         interval_seconds=interval_seconds,
         checked_until=checked_until,
-        last_open_time=indicators[-1].open_time if indicators else None,
+        last_open_time=last_open_time,
+        preserve_last_open_time=last_open_time is None,
     )
-    return len(indicators)
+    return updated
 
 
 async def _save_checkpoint(
@@ -429,6 +480,8 @@ async def update_ema_indicators(
                         interval_seconds=interval_seconds,
                         checked_until=checked_until,
                         batch_size=settings.ema_indicator_write_batch_size,
+                        bootstrap_bars=settings.ema_indicator_bootstrap_bars,
+                        chunk_days=settings.ema_history_chunk_days,
                     )
                 updated += count
                 if count:
@@ -438,6 +491,14 @@ async def update_ema_indicators(
                         interval_seconds,
                         count,
                     )
+            except SQLAlchemyError:
+                logger.exception(
+                    "EMA database update failed; aborting cycle "
+                    "instrument_id=%d interval=%ds",
+                    instrument_id,
+                    interval_seconds,
+                )
+                raise
             except Exception:
                 logger.exception(
                     "EMA indicator update failed instrument_id=%d interval=%ds",
@@ -451,18 +512,25 @@ async def run_forever(settings: Settings) -> None:
     engine = create_database_engine(settings)
     try:
         while True:
-            checked_until = datetime.now(UTC)
-            kline_rows = await update_15m_klines(
-                engine,
-                checked_until=checked_until,
-                batch_size=settings.ema_indicator_write_batch_size,
-            )
-            ema_rows = await update_ema_indicators(engine, settings)
-            logger.info(
-                "Indicator cycle completed kline_15m_rows=%d ema_rows=%d",
-                kline_rows,
-                ema_rows,
-            )
+            try:
+                checked_until = datetime.now(UTC)
+                kline_rows = await update_15m_klines(
+                    engine,
+                    checked_until=checked_until,
+                    batch_size=settings.ema_indicator_write_batch_size,
+                    bootstrap_bars=settings.ema_indicator_bootstrap_bars,
+                    chunk_days=settings.ema_history_chunk_days,
+                )
+                ema_rows = await update_ema_indicators(engine, settings)
+                logger.info(
+                    "Indicator cycle completed kline_15m_rows=%d ema_rows=%d",
+                    kline_rows,
+                    ema_rows,
+                )
+            except SQLAlchemyError:
+                logger.exception(
+                    "Indicator cycle stopped after a database error; retrying after interval"
+                )
             await asyncio.sleep(settings.ema_indicator_scan_interval_seconds)
     finally:
         await engine.dispose()
@@ -482,6 +550,8 @@ async def run_once(
                 engine,
                 checked_until=datetime.now(UTC),
                 batch_size=settings.ema_indicator_write_batch_size,
+                bootstrap_bars=settings.ema_indicator_bootstrap_bars,
+                chunk_days=settings.ema_history_chunk_days,
                 symbols=symbols,
             )
         ema_rows = await update_ema_indicators(engine, settings, symbols)

@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     daily_ranking_max_days_per_cycle: int = Field(default=7, ge=1, le=31)
     ema_indicator_scan_interval_seconds: int = Field(default=300, ge=30, le=3600)
     ema_indicator_write_batch_size: int = Field(default=1000, ge=100, le=10000)
+    ema_indicator_bootstrap_bars: int = Field(default=2880, ge=240, le=20000)
+    ema_history_chunk_days: int = Field(default=7, ge=1, le=31)
     gap_scan_lookback_hours: int = Field(default=2160, ge=1, le=2160)
     gap_scan_recent_lookback_hours: int = Field(default=24, ge=1, le=168)
     gap_scan_historical_window_hours: int = Field(default=24, ge=1, le=168)

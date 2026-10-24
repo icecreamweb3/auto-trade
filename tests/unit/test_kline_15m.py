@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 from auto_trade.collectors.kline_15m import (
     OpenInterestPoint,
     _instrument_ids,
+    _recompute_instrument,
     aggregate_15m_bars,
     attach_open_interest,
 )
@@ -26,6 +27,34 @@ async def test_explicit_symbols_resolve_without_scanning_kline_chunks() -> None:
     assert "FROM market.klines" not in str(statement)
     assert "upper(i.symbol) = ANY" in str(statement)
     assert parameters == {"symbols": ["BTCUSDT", "ETHUSDT"]}
+
+
+async def test_new_15m_checkpoint_uses_bounded_bootstrap_window() -> None:
+    checkpoint_result = MagicMock()
+    checkpoint_result.mappings.return_value.one_or_none.return_value = None
+    dirty_result = MagicMock()
+    dirty_result.scalar_one.return_value = None
+    save_result = MagicMock()
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(checkpoint_result, dirty_result, save_result)
+    )
+    checked_until = datetime(2026, 10, 24, tzinfo=UTC)
+
+    updated = await _recompute_instrument(
+        connection,
+        instrument_id=7,
+        checked_until=checked_until,
+        batch_size=1000,
+        bootstrap_bars=2880,
+        chunk_days=7,
+    )
+
+    dirty_statement, dirty_parameters = connection.execute.await_args_list[1].args
+    assert updated == 0
+    assert "ORDER BY k.open_time DESC" in str(dirty_statement)
+    assert "LIMIT :bootstrap_bars" in str(dirty_statement)
+    assert dirty_parameters["bootstrap_bars"] == 2880
 
 
 def _source_row(start: datetime, offset_minutes: int, price: int) -> dict[str, object]:

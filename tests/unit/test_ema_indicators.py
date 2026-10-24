@@ -2,12 +2,16 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
+from auto_trade.collectors.ema_history import parse_utc_start
 from auto_trade.collectors.ema_indicators import (
     SourceBar,
     _instrument_ids,
+    _recompute_interval,
     aggregate_source_bars,
     align_time,
     calculate_indicators,
+    indicator_lock_key,
+    iter_time_windows,
 )
 
 
@@ -27,6 +31,59 @@ async def test_explicit_symbols_resolve_without_scanning_kline_chunks() -> None:
     assert "FROM market.klines" not in str(statement)
     assert "upper(i.symbol) = ANY" in str(statement)
     assert parameters == {"symbols": ["BTCUSDT", "ETHUSDT"]}
+
+
+async def test_new_realtime_checkpoint_uses_bounded_bootstrap_window() -> None:
+    lock_result = MagicMock()
+    checkpoint_result = MagicMock()
+    checkpoint_result.mappings.return_value.one_or_none.return_value = None
+    dirty_result = MagicMock()
+    dirty_result.scalar_one.return_value = None
+    save_result = MagicMock()
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(lock_result, checkpoint_result, dirty_result, save_result)
+    )
+    checked_until = datetime(2026, 10, 24, tzinfo=UTC)
+
+    updated = await _recompute_interval(
+        connection,
+        instrument_id=7,
+        interval_seconds=300,
+        checked_until=checked_until,
+        batch_size=1000,
+        bootstrap_bars=2880,
+        chunk_days=7,
+    )
+
+    dirty_statement, dirty_parameters = connection.execute.await_args_list[2].args
+    assert updated == 0
+    assert "ORDER BY k.open_time DESC" in str(dirty_statement)
+    assert "LIMIT :bootstrap_bars" in str(dirty_statement)
+    assert dirty_parameters["bootstrap_bars"] == 2880
+
+
+def test_indicator_lock_key_separates_instrument_and_interval() -> None:
+    keys = {
+        indicator_lock_key(instrument_id, interval_seconds)
+        for instrument_id in (1, 2)
+        for interval_seconds in (300, 900, 3600)
+    }
+
+    assert len(keys) == 6
+
+
+def test_history_windows_are_bounded_and_cover_final_partial_chunk() -> None:
+    start = parse_utc_start("2020-04-01")
+    end = start + timedelta(days=15, hours=3)
+
+    windows = iter_time_windows(start, end, chunk_days=7)
+
+    assert windows == (
+        (start, start + timedelta(days=7)),
+        (start + timedelta(days=7), start + timedelta(days=14)),
+        (start + timedelta(days=14), end),
+    )
 
 
 def test_align_time_uses_utc_interval_boundary() -> None:

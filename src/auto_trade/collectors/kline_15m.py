@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,19 @@ def align_15m(value: datetime) -> datetime:
     value_utc = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     timestamp = int(value_utc.timestamp())
     return datetime.fromtimestamp(timestamp // FIFTEEN_MINUTES * FIFTEEN_MINUTES, tz=UTC)
+
+
+def _time_windows(
+    start: datetime, end: datetime, *, chunk_days: int
+) -> tuple[tuple[datetime, datetime], ...]:
+    windows: list[tuple[datetime, datetime]] = []
+    cursor = start
+    step = timedelta(days=chunk_days)
+    while cursor < end:
+        window_end = min(cursor + step, end)
+        windows.append((cursor, window_end))
+        cursor = window_end
+    return tuple(windows)
 
 
 def _optional_decimal_sum(rows: Sequence[Mapping[str, object]], key: str) -> Decimal | None:
@@ -216,6 +230,8 @@ async def _recompute_instrument(
     instrument_id: int,
     checked_until: datetime,
     batch_size: int,
+    bootstrap_bars: int,
+    chunk_days: int,
 ) -> int:
     checkpoint_result = await connection.execute(
         text(
@@ -236,8 +252,32 @@ async def _recompute_instrument(
         kline_checked_at = None
         oi_checked_at = None
 
-    dirty_result = await connection.execute(
-        text(
+    if kline_checked_at is None and oi_checked_at is None:
+        dirty_statement = text(
+            """
+            SELECT min(recent.open_time)
+            FROM (
+                SELECT k.open_time
+                FROM market.klines k
+                WHERE k.instrument_id = :instrument_id
+                  AND k.price_type = 'TRADE'
+                  AND k.interval_seconds = 300
+                  AND k.is_current
+                  AND k.is_closed
+                  AND k.quality_status = 'VALID'
+                  AND k.effective_at <= CAST(:checked_until AS timestamptz)
+                ORDER BY k.open_time DESC
+                LIMIT :bootstrap_bars
+            ) recent
+            """
+        )
+        dirty_parameters: dict[str, object] = {
+            "instrument_id": instrument_id,
+            "checked_until": checked_until,
+            "bootstrap_bars": bootstrap_bars,
+        }
+    else:
+        dirty_statement = text(
             """
             SELECT min(dirty_time)
             FROM (
@@ -268,14 +308,14 @@ async def _recompute_instrument(
                   AND o.collected_at <= CAST(:checked_until AS timestamptz)
             ) changes
             """
-        ),
-        {
+        )
+        dirty_parameters = {
             "instrument_id": instrument_id,
             "kline_checked_at": kline_checked_at,
             "oi_checked_at": oi_checked_at,
             "checked_until": checked_until,
-        },
-    )
+        }
+    dirty_result = await connection.execute(dirty_statement, dirty_parameters)
     dirty_start = cast(datetime | None, dirty_result.scalar_one())
     if dirty_start is None:
         await _save_checkpoint(
@@ -288,65 +328,6 @@ async def _recompute_instrument(
         return 0
 
     recompute_start = align_15m(dirty_start)
-    source_result = await connection.execute(
-        text(
-            """
-            SELECT k.open_time, k.close_time, k.open_price, k.high_price,
-                   k.low_price, k.close_price, k.base_volume, k.quote_volume,
-                   k.trade_count, k.taker_buy_base, k.taker_buy_quote
-            FROM market.klines k
-            WHERE k.instrument_id = :instrument_id
-              AND k.price_type = 'TRADE'
-              AND k.interval_seconds = 300
-              AND k.open_time >= CAST(:recompute_start AS timestamptz)
-              AND k.is_current
-              AND k.is_closed
-              AND k.quality_status = 'VALID'
-              AND k.effective_at <= CAST(:checked_until AS timestamptz)
-            ORDER BY k.open_time
-            """
-        ),
-        {
-            "instrument_id": instrument_id,
-            "recompute_start": recompute_start,
-            "checked_until": checked_until,
-        },
-    )
-    source_rows = [cast(Mapping[str, object], row) for row in source_result.mappings().all()]
-    oi_result = await connection.execute(
-        text(
-            """
-            SELECT o.observed_at, o.open_interest_qty,
-                   o.open_interest_value, o.quality_status
-            FROM market.open_interest_observations o
-            WHERE o.instrument_id = :instrument_id
-              AND o.observed_at >= CAST(:recompute_start AS timestamptz)
-              AND o.quality_status IN ('VALID', 'PARTIAL')
-              AND o.collected_at <= CAST(:checked_until AS timestamptz)
-            ORDER BY o.observed_at
-            """
-        ),
-        {
-            "instrument_id": instrument_id,
-            "recompute_start": recompute_start,
-            "checked_until": checked_until,
-        },
-    )
-    points = tuple(
-        OpenInterestPoint(
-            observed_at=cast(datetime, row["observed_at"]),
-            open_interest_qty=Decimal(str(row["open_interest_qty"])),
-            open_interest_value=(
-                Decimal(str(row["open_interest_value"]))
-                if row["open_interest_value"] is not None
-                else None
-            ),
-            quality_status=cast(str, row["quality_status"]),
-        )
-        for row in oi_result.mappings()
-    )
-    bars = attach_open_interest(aggregate_15m_bars(source_rows), points)
-
     await connection.execute(
         text(
             """
@@ -378,39 +359,113 @@ async def _recompute_instrument(
         )
         """
     )
-    payload = [
-        {
-            "instrument_id": instrument_id,
-            "open_time": bar.open_time,
-            "close_time": bar.close_time,
-            "open_price": bar.open_price,
-            "high_price": bar.high_price,
-            "low_price": bar.low_price,
-            "close_price": bar.close_price,
-            "base_volume": bar.base_volume,
-            "quote_volume": bar.quote_volume,
-            "trade_count": bar.trade_count,
-            "taker_buy_base": bar.taker_buy_base,
-            "taker_buy_quote": bar.taker_buy_quote,
-            "open_interest_qty": bar.open_interest_qty,
-            "open_interest_value": bar.open_interest_value,
-            "oi_observed_at": bar.oi_observed_at,
-            "oi_quality_status": bar.oi_quality_status,
-            "derivation_version": DERIVATION_VERSION,
-        }
-        for bar in bars
-    ]
-    for offset in range(0, len(payload), batch_size):
-        await connection.execute(insert_statement, payload[offset : offset + batch_size])
+    updated = 0
+    last_open_time: datetime | None = None
+    for window_start, window_end in _time_windows(
+        recompute_start, checked_until, chunk_days=chunk_days
+    ):
+        source_result = await connection.execute(
+            text(
+                """
+                SELECT k.open_time, k.close_time, k.open_price, k.high_price,
+                       k.low_price, k.close_price, k.base_volume, k.quote_volume,
+                       k.trade_count, k.taker_buy_base, k.taker_buy_quote
+                FROM market.klines k
+                WHERE k.instrument_id = :instrument_id
+                  AND k.price_type = 'TRADE'
+                  AND k.interval_seconds = 300
+                  AND k.open_time >= CAST(:window_start AS timestamptz)
+                  AND k.open_time < CAST(:window_end AS timestamptz)
+                  AND k.is_current
+                  AND k.is_closed
+                  AND k.quality_status = 'VALID'
+                  AND k.effective_at <= CAST(:checked_until AS timestamptz)
+                ORDER BY k.open_time
+                """
+            ),
+            {
+                "instrument_id": instrument_id,
+                "window_start": window_start,
+                "window_end": window_end,
+                "checked_until": checked_until,
+            },
+        )
+        source_rows = [
+            cast(Mapping[str, object], row) for row in source_result.mappings().all()
+        ]
+        oi_result = await connection.execute(
+            text(
+                """
+                SELECT o.observed_at, o.open_interest_qty,
+                       o.open_interest_value, o.quality_status
+                FROM market.open_interest_observations o
+                WHERE o.instrument_id = :instrument_id
+                  AND o.observed_at >= CAST(:window_start AS timestamptz)
+                  AND o.observed_at < CAST(:window_end AS timestamptz)
+                  AND o.quality_status IN ('VALID', 'PARTIAL')
+                  AND o.collected_at <= CAST(:checked_until AS timestamptz)
+                ORDER BY o.observed_at
+                """
+            ),
+            {
+                "instrument_id": instrument_id,
+                "window_start": window_start,
+                "window_end": window_end,
+                "checked_until": checked_until,
+            },
+        )
+        points = tuple(
+            OpenInterestPoint(
+                observed_at=cast(datetime, row["observed_at"]),
+                open_interest_qty=Decimal(str(row["open_interest_qty"])),
+                open_interest_value=(
+                    Decimal(str(row["open_interest_value"]))
+                    if row["open_interest_value"] is not None
+                    else None
+                ),
+                quality_status=cast(str, row["quality_status"]),
+            )
+            for row in oi_result.mappings()
+        )
+        bars = attach_open_interest(aggregate_15m_bars(source_rows), points)
+        payload = [
+            {
+                "instrument_id": instrument_id,
+                "open_time": bar.open_time,
+                "close_time": bar.close_time,
+                "open_price": bar.open_price,
+                "high_price": bar.high_price,
+                "low_price": bar.low_price,
+                "close_price": bar.close_price,
+                "base_volume": bar.base_volume,
+                "quote_volume": bar.quote_volume,
+                "trade_count": bar.trade_count,
+                "taker_buy_base": bar.taker_buy_base,
+                "taker_buy_quote": bar.taker_buy_quote,
+                "open_interest_qty": bar.open_interest_qty,
+                "open_interest_value": bar.open_interest_value,
+                "oi_observed_at": bar.oi_observed_at,
+                "oi_quality_status": bar.oi_quality_status,
+                "derivation_version": DERIVATION_VERSION,
+            }
+            for bar in bars
+        ]
+        for offset in range(0, len(payload), batch_size):
+            await connection.execute(
+                insert_statement, payload[offset : offset + batch_size]
+            )
+        if bars:
+            updated += len(bars)
+            last_open_time = bars[-1].open_time
 
     await _save_checkpoint(
         connection,
         instrument_id=instrument_id,
         checked_until=checked_until,
-        last_open_time=bars[-1].open_time if bars else None,
-        preserve_last_open_time=not bars,
+        last_open_time=last_open_time,
+        preserve_last_open_time=last_open_time is None,
     )
-    return len(bars)
+    return updated
 
 
 async def update_15m_klines(
@@ -418,6 +473,8 @@ async def update_15m_klines(
     *,
     checked_until: datetime,
     batch_size: int,
+    bootstrap_bars: int = 2880,
+    chunk_days: int = 7,
     symbols: Sequence[str] | None = None,
 ) -> int:
     updated = 0
@@ -429,6 +486,8 @@ async def update_15m_klines(
                     instrument_id=instrument_id,
                     checked_until=checked_until,
                     batch_size=batch_size,
+                    bootstrap_bars=bootstrap_bars,
+                    chunk_days=chunk_days,
                 )
             updated += count
             if count:
@@ -437,6 +496,12 @@ async def update_15m_klines(
                     instrument_id,
                     count,
                 )
+        except SQLAlchemyError:
+            logger.exception(
+                "15m K-line database update failed; aborting cycle instrument_id=%d",
+                instrument_id,
+            )
+            raise
         except Exception:
             logger.exception("15m K-line update failed instrument_id=%d", instrument_id)
     return updated

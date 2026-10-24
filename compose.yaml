@@ -128,6 +128,28 @@ services:
         condition: service_healthy
     network_mode: host
 
+  ema-indicators-history:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      <<: *file-logging-environment
+      SERVICE_NAME: ema-indicators-history
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
+    entrypoint: ["python", "-m", "auto_trade.collectors.ema_history"]
+    depends_on:
+      database:
+        condition: service_healthy
+    network_mode: host
+
   feature-scan:
     profiles: ["tools"]
     build:

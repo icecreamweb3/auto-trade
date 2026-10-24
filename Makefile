@@ -1,4 +1,4 @@
-.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs logs-export monitor-up monitor-logs repair-once history-rankings-3m history-rankings-status paper-history-backfill paper-history-status feature-scan-3m test lint typecheck \
+.PHONY: infra-up infra-down infra-status runtime-up runtime-down runtime-logs logs-export monitor-up monitor-logs repair-once history-rankings-3m history-rankings-status paper-history-backfill paper-history-status ema-history-backfill feature-scan-3m test lint typecheck \
 	db-up db-down db-status db-logs db-migrate db-shell db-verify db-storage-verify db-columnstore-poc db-poc db-poc-clean \
 	nats-up nats-logs nats-init nats-verify nats-smoke collector-smoke writer-drain
 
@@ -49,6 +49,10 @@ paper-history-backfill:
 
 paper-history-status:
 	docker compose --profile tools run --rm --build paper-history status
+
+ema-history-backfill:
+	docker compose --profile tools run --rm --build ema-indicators-history \
+		--symbols BTCUSDT ETHUSDT --start 2020-04-01
 
 feature-scan-3m:
 	docker compose --profile tools run --rm --build feature-scan --days 90
