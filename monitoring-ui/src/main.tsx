@@ -887,6 +887,24 @@ function formatNumber(value: number | null, maximumFractionDigits = 4): string {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits }).format(value);
 }
 
+function baseQuantityPrecision(symbol: string): number {
+  return symbol === "BTCUSDT" ? 3 : 6;
+}
+
+function baseQuantityStep(symbol: string): number {
+  return symbol === "BTCUSDT" ? .001 : .000001;
+}
+
+function formatBaseQuantity(value: number, symbol: string): string {
+  return formatNumber(value, baseQuantityPrecision(symbol));
+}
+
+function floorBaseQuantity(value: number, symbol: string): number {
+  const precision = baseQuantityPrecision(symbol);
+  const step = baseQuantityStep(symbol);
+  return Number((Math.floor((value + Number.EPSILON) / step) * step).toFixed(precision));
+}
+
 function formatCompact(value: number | null): string {
   if (value === null) return "—";
   return new Intl.NumberFormat("zh-CN", {
@@ -3356,8 +3374,11 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
 
   function applyNotionalPercentage(percentage: number) {
     if (maximumNotional === undefined || maximumNotional <= 0) return;
-    const precision = notionalUnit === "USDT" ? 2 : 6;
-    setNotional(Number((maximumNotional * percentage).toFixed(precision)));
+    if (notionalUnit === "USDT") {
+      setNotional(Number((maximumNotional * percentage).toFixed(2)));
+      return;
+    }
+    setNotional(floorBaseQuantity(maximumNotional * percentage, snapshot?.symbol ?? symbol));
   }
 
   function openCloseOrderTab() {
@@ -3371,7 +3392,13 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   function applyClosePercentage(percentage: number) {
     const quantity = snapshot?.position?.quantity;
     if (!quantity) return;
-    setCloseQuantity(Number((quantity * percentage).toFixed(8)));
+    if (percentage === 1) {
+      setCloseQuantity(quantity);
+      return;
+    }
+    const step = baseQuantityStep(snapshot.symbol);
+    const rounded = floorBaseQuantity(quantity * percentage, snapshot.symbol);
+    setCloseQuantity(rounded > 0 ? rounded : Math.min(step, quantity));
   }
 
   async function submitCloseOrder() {
@@ -3379,6 +3406,10 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     if (!snapshot || !position || closeQuantity === "") return;
     if (!Number.isFinite(closeQuantity) || closeQuantity <= 0 || closeQuantity > position.quantity + 1e-12) {
       setError("平仓数量必须大于 0，且不能超过当前持仓数量");
+      return;
+    }
+    if (snapshot.symbol === "BTCUSDT" && Math.abs(closeQuantity / .001 - Math.round(closeQuantity / .001)) > 1e-9 && Math.abs(closeQuantity - position.quantity) > 1e-12) {
+      setError("BTC 平仓数量必须按 0.001 BTC 递增");
       return;
     }
     if (closeOrderType === "MARKET") {
@@ -3422,6 +3453,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const anchoredChangeClass = snapshot?.anchored_price_change === null || (snapshot?.anchored_price_change ?? 0) >= 0 ? "candle-change-up" : "candle-change-down";
   const pnl = snapshot?.position?.unrealized_pnl ?? 0;
   const baseAsset = (snapshot?.symbol ?? symbol).replace("USDT", "");
+  const quantitySymbol = snapshot?.symbol ?? symbol;
+  const quantityStep = baseQuantityStep(quantitySymbol);
   const orderPrice = snapshot?.current_candle.close_price ?? 0;
   const entryTargetPrice = openOrderType === "LIMIT" && openPrice !== "" ? openPrice : orderPrice;
   const hasPendingOpenOrder = snapshot?.pending_orders.some((order) => order.order_kind === "OPEN") ?? false;
@@ -3538,7 +3571,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                   <td><strong>{snapshot.symbol}</strong></td>
                   <td className={snapshot.position.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{snapshot.position.side === "LONG" ? "多" : "空"}</td>
                   <td><span className="paper-position-status">开仓</span></td>
-                  <td>{formatNumber(snapshot.position.quantity, 6)}</td>
+                  <td>{formatBaseQuantity(snapshot.position.quantity, snapshot.symbol)}</td>
                   <td>{formatNumber(snapshot.position.entry_price, 2)}</td>
                   <td>全仓 · {snapshot.position.leverage}x</td>
                   <td className="paper-danger">{snapshot.position.liquidation_price <= 0 ? "--" : formatNumber(snapshot.position.liquidation_price, 2)}</td>
@@ -3548,7 +3581,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                   <td><button type="button" className="paper-market-close" onClick={() => void closePosition()} disabled={positionAction}>市价平仓</button></td>
                 </tr></tbody>
               </table>
-            </div> : <div className="paper-position-empty">当前没有持仓，可在右侧下单面板开多或开空。</div> : positionTab === "orders" ? snapshot.pending_orders.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-orders-table"><thead><tr><th>合约</th><th>委托方向</th><th>委托类型</th><th>价格</th><th>数量 ({baseAsset})</th><th>杠杆</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{snapshot.pending_orders.map((order) => <tr key={order.order_id}><td><strong>{snapshot.symbol}</strong></td><td className={order.position_side === "LONG" ? "paper-long-price" : "paper-short-price"}>{order.order_kind === "OPEN" ? "开" : "平"}{order.position_side === "LONG" ? "多" : "空"}</td><td>{order.order_type === "LIMIT" ? order.order_kind === "CLOSE" ? "限价止盈" : "限价" : order.order_kind === "OPEN" ? "Stop" : "止损"}</td><td>{formatNumber(order.price, 2)}</td><td>{formatNumber(order.quantity, 6)}</td><td>{order.leverage}x</td><td>{formatKlineTime(order.created_at)}</td><td><span className="paper-order-active">委托中</span></td><td><button type="button" className="paper-cancel-order" onClick={() => void cancelPendingOrder(order.order_id)} disabled={positionAction}>撤单</button></td></tr>)}</tbody></table></div> : <div className="paper-position-empty">当前没有未成交委托。</div> : snapshot.trades.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-history-table"><thead><tr><th>平仓时间</th><th>方向</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>杠杆</th><th>已实现盈亏</th><th>原因</th></tr></thead><tbody>{snapshot.trades.slice().reverse().map((trade) => <tr key={`${trade.opened_at}-${trade.closed_at}`}><td>{formatKlineTime(trade.closed_at)}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{formatNumber(trade.quantity, 6)} {baseAsset}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td>{trade.leverage}x</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="paper-position-empty">本轮暂无历史订单。</div>}
+            </div> : <div className="paper-position-empty">当前没有持仓，可在右侧下单面板开多或开空。</div> : positionTab === "orders" ? snapshot.pending_orders.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-orders-table"><thead><tr><th>合约</th><th>委托方向</th><th>委托类型</th><th>价格</th><th>数量 ({baseAsset})</th><th>杠杆</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{snapshot.pending_orders.map((order) => <tr key={order.order_id}><td><strong>{snapshot.symbol}</strong></td><td className={order.position_side === "LONG" ? "paper-long-price" : "paper-short-price"}>{order.order_kind === "OPEN" ? "开" : "平"}{order.position_side === "LONG" ? "多" : "空"}</td><td>{order.order_type === "LIMIT" ? order.order_kind === "CLOSE" ? "限价止盈" : "限价" : order.order_kind === "OPEN" ? "Stop" : "止损"}</td><td>{formatNumber(order.price, 2)}</td><td>{formatBaseQuantity(order.quantity, snapshot.symbol)}</td><td>{order.leverage}x</td><td>{formatKlineTime(order.created_at)}</td><td><span className="paper-order-active">委托中</span></td><td><button type="button" className="paper-cancel-order" onClick={() => void cancelPendingOrder(order.order_id)} disabled={positionAction}>撤单</button></td></tr>)}</tbody></table></div> : <div className="paper-position-empty">当前没有未成交委托。</div> : snapshot.trades.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-history-table"><thead><tr><th>平仓时间</th><th>方向</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>杠杆</th><th>已实现盈亏</th><th>原因</th></tr></thead><tbody>{snapshot.trades.slice().reverse().map((trade) => <tr key={`${trade.opened_at}-${trade.closed_at}`}><td>{formatKlineTime(trade.closed_at)}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{formatBaseQuantity(trade.quantity, snapshot.symbol)} {baseAsset}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td>{trade.leverage}x</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="paper-position-empty">本轮暂无历史订单。</div>}
           </section>
         </div>
         <aside className="panel paper-order-panel">
@@ -3559,7 +3592,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <button type="button" className={openOrderType === "MARKET" ? "active" : ""} onClick={() => setOpenOrderType("MARKET")}>市价</button>
               </div>
               {openOrderType === "MARKET" ? <div className="paper-market-price"><span>成交价格</span><strong>{formatNumber(orderPrice, 2)}</strong><em>USDT</em></div> : <label><span>价格</span><div className="paper-close-input"><input type="number" min="0" step="0.01" value={openPrice} onChange={(event) => setOpenPrice(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><em>USDT</em></div></label>}
-              <label><span>名义下单价值</span><div className="paper-notional-input"><input type="number" min={notionalUnit === "USDT" ? 1 : 0.000001} max={maximumNotional} step={notionalUnit === "USDT" ? 10 : 0.001} value={notional} onChange={(event) => setNotional(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><select value={notionalUnit} onChange={(event) => setNotionalUnit(event.target.value as PaperNotionalUnit)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder}><option value="USDT">USDT</option><option value="BASE">{baseAsset}</option></select></div></label>
+              <label><span>名义下单价值</span><div className="paper-notional-input"><input type="number" min={notionalUnit === "USDT" ? 1 : quantityStep} max={maximumNotional} step={notionalUnit === "USDT" ? 10 : quantityStep} value={notional} onChange={(event) => setNotional(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><select value={notionalUnit} onChange={(event) => setNotionalUnit(event.target.value as PaperNotionalUnit)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder}><option value="USDT">USDT</option><option value="BASE">{baseAsset}</option></select></div></label>
               <label className="paper-leverage-field"><span>杠杆</span><select value={leverage} onChange={(event) => setLeverage(Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} aria-label="杠杆倍数">{[1, 2, 3, 5, 10, 20, 25, 50, 75, 100].map((value) => <option key={value} value={value}>{value}x</option>)}</select></label>
               <div className="paper-order-percentages" aria-label="按可用余额选择名义价值">{[.25, .5, .75, 1].map((percentage) => <button key={percentage} type="button" onClick={() => applyNotionalPercentage(percentage)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || maximumNotional === undefined}>{percentage * 100}%</button>)}</div>
               <p className="paper-order-warning">名义价值按可用余额和杠杆估算，实际下单前仍会校验保证金。</p>
@@ -3568,7 +3601,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <div className="paper-liquidation-estimate"><span>预计全仓强平价</span><dl><div><dt>开多</dt><dd className="paper-long-price">{estimatedLongLiquidation === null || estimatedLongLiquidation <= 0 ? "—" : formatNumber(estimatedLongLiquidation, 2)}</dd></div><div><dt>开空</dt><dd className="paper-short-price">{estimatedShortLiquidation === null ? "—" : formatNumber(estimatedShortLiquidation, 2)}</dd></div></dl></div>
               </div>
               <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || invalidOrder || invalidLongLimit}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || invalidOrder || invalidShortLimit}>开空</button></div>
-              <div className="paper-order-capacity"><span>最大可开</span><strong>{maximumBaseQuantity === null ? "—" : `${formatNumber(maximumBaseQuantity, 6)} ${baseAsset}`}</strong></div>
+              <div className="paper-order-capacity"><span>最大可开</span><strong>{maximumBaseQuantity === null ? "—" : `${formatBaseQuantity(maximumBaseQuantity, quantitySymbol)} ${baseAsset}`}</strong></div>
               <small>{openOrderType === "MARKET" ? "按当前已揭示 K 线收盘价成交，不收手续费与资金费。" : "限价委托将在后续 K 线触及价格时成交；开多限价需低于当前价，开空限价需高于当前价。"}</small>
             </div> : <div className="paper-close-form">
               {snapshot.position ? <>
@@ -3578,16 +3611,16 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                   <button type="button" onClick={openRiskDialog}>条件</button>
                 </div>
                 <label><span>价格</span><div className="paper-close-input"><input type="number" min="0" step="0.01" value={closeOrderType === "MARKET" ? orderPrice : closePrice} onChange={(event) => setClosePrice(event.target.value === "" ? "" : Number(event.target.value))} disabled={closeOrderType === "MARKET" || positionAction} /><em>USDT</em></div></label>
-                <label><span>仓位大小</span><div className="paper-close-input"><input type="number" min="0" max={snapshot.position.quantity} step="0.000001" value={closeQuantity} onChange={(event) => setCloseQuantity(event.target.value === "" ? "" : Number(event.target.value))} disabled={positionAction} /><em>{baseAsset}</em></div></label>
+                <label><span>仓位大小</span><div className="paper-close-input"><input type="number" min={quantityStep} max={snapshot.position.quantity} step={quantityStep} value={closeQuantity} onChange={(event) => setCloseQuantity(event.target.value === "" ? "" : Number(event.target.value))} disabled={positionAction} /><em>{baseAsset}</em></div></label>
                 <div className="paper-order-percentages" aria-label="选择平仓比例">{[.25, .5, .75, 1].map((percentage) => <button key={percentage} type="button" onClick={() => applyClosePercentage(percentage)} disabled={positionAction}>{percentage * 100}%</button>)}</div>
                 {closeOrderType === "LIMIT" && <p className="paper-order-warning">提交新的止盈委托时，将先取消当前止盈委托，再以最新价格和数量重新创建。</p>}
                 <dl className="paper-close-summary">
-                  <div><dt>当前止盈委托</dt><dd>{snapshot.position.take_profit_price === null ? "--" : `${formatNumber(snapshot.position.take_profit_price, 2)} / ${formatNumber(snapshot.position.take_profit_quantity ?? snapshot.position.quantity, 6)} ${baseAsset}`}</dd></div>
+                  <div><dt>当前止盈委托</dt><dd>{snapshot.position.take_profit_price === null ? "--" : `${formatNumber(snapshot.position.take_profit_price, 2)} / ${formatBaseQuantity(snapshot.position.take_profit_quantity ?? snapshot.position.quantity, snapshot.symbol)} ${baseAsset}`}</dd></div>
                   <div><dt>预计平仓价格</dt><dd>{closeTargetPrice === null ? "--" : `${formatNumber(closeTargetPrice, 2)} USDT`}</dd></div>
                   <div><dt>预计已实现盈亏</dt><dd className={projectedClosePnl === null || projectedClosePnl >= 0 ? "paper-long-price" : "paper-short-price"}>{projectedClosePnl === null ? "--" : `${projectedClosePnl >= 0 ? "+" : ""}${formatNumber(projectedClosePnl, 2)} USDT`}</dd></div>
                 </dl>
                 <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void submitCloseOrder()} disabled={gameEnded || positionAction || invalidCloseOrder || snapshot.position.side !== "SHORT"}>{positionAction ? "提交中…" : "平空"}</button><button type="button" className="paper-short-button" onClick={() => void submitCloseOrder()} disabled={gameEnded || positionAction || invalidCloseOrder || snapshot.position.side !== "LONG"}>{positionAction ? "提交中…" : "平多"}</button></div>
-                <div className="paper-order-capacity"><span>可平</span><strong>{formatNumber(snapshot.position.quantity, 6)} {baseAsset}</strong></div>
+                <div className="paper-order-capacity"><span>可平</span><strong>{formatBaseQuantity(snapshot.position.quantity, snapshot.symbol)} {baseAsset}</strong></div>
                 <small>{closeOrderType === "MARKET" ? "按当前已揭示 K 线收盘价成交。" : "多仓限价低于或等于当前价、空仓限价高于或等于当前价时，按当前收盘价立即成交；否则作为止盈委托。"}</small>
               </> : <div className="paper-close-empty">当前没有可平仓的持仓</div>}
             </div>
@@ -3773,7 +3806,7 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
     </section>
     <section className="panel account-history-panel">
       <div className="panel-heading"><div><p className="eyebrow">TRADE HISTORY</p><h3>全部模拟交易记录</h3></div></div>
-      {loading ? <div className="loading">正在读取账户记录…</div> : error ? <div className="alert alert-critical">{error}</div> : history?.trades.length ? <div className="table-scroll account-history-scroll"><table className="storage-table account-history-table"><thead><tr><th>平仓时间 UTC+8</th><th>交易对</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>已实现盈亏</th><th>平仓后余额</th><th>原因</th></tr></thead><tbody>{history.trades.map((trade) => <tr key={trade.trade_id}><td>{new Date(trade.closed_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{trade.symbol}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{trade.leverage}x</td><td>{formatNumber(trade.quantity, 6)}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{formatNumber(trade.balance_after, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">暂无交易记录，前往交易模拟器开始第一笔练习。</div>}
+      {loading ? <div className="loading">正在读取账户记录…</div> : error ? <div className="alert alert-critical">{error}</div> : history?.trades.length ? <div className="table-scroll account-history-scroll"><table className="storage-table account-history-table"><thead><tr><th>平仓时间 UTC+8</th><th>交易对</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>已实现盈亏</th><th>平仓后余额</th><th>原因</th></tr></thead><tbody>{history.trades.map((trade) => <tr key={trade.trade_id}><td>{new Date(trade.closed_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{trade.symbol}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{trade.leverage}x</td><td>{formatBaseQuantity(trade.quantity, trade.symbol)}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{formatNumber(trade.balance_after, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">暂无交易记录，前往交易模拟器开始第一笔练习。</div>}
     </section>
   </main>;
 }

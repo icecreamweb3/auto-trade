@@ -186,14 +186,39 @@ def test_limit_open_order_is_listed_reserves_margin_and_fills_when_touched() -> 
     filled = game.advance()
 
     assert placed.position is None
-    assert placed.available_balance == pytest.approx(900)
+    assert placed.available_balance == pytest.approx(900.003)
     assert len(placed.pending_orders) == 1
     assert placed.pending_orders[0].order_kind.value == "OPEN"
     assert placed.pending_orders[0].price == 95
     assert filled.pending_orders == ()
     assert filled.position is not None
     assert filled.position.entry_price == 95
-    assert filled.position.quantity == pytest.approx(1000 / 95)
+    assert filled.position.quantity == pytest.approx(10.526)
+
+
+def test_btc_open_quantity_uses_point_zero_zero_one_step() -> None:
+    game = session(candle(0, close=46_755.48), candle(1, close=46_800))
+
+    opened = game.open_position(PositionSide.LONG, notional=100, leverage=100)
+
+    assert opened.position is not None
+    assert opened.position.quantity == pytest.approx(0.002)
+    assert opened.position.margin == pytest.approx(0.9351096)
+
+
+def test_btc_open_quantity_below_minimum_step_is_rejected() -> None:
+    game = session(candle(0, close=100_000), candle(1))
+
+    with pytest.raises(ValueError, match=r"0\.001 BTC"):
+        game.open_position(PositionSide.LONG, notional=50, leverage=100)
+
+
+def test_btc_partial_close_requires_point_zero_zero_one_step() -> None:
+    game = session(candle(0, close=100), candle(1))
+    game.open_position(PositionSide.LONG, notional=1, leverage=10)
+
+    with pytest.raises(ValueError, match=r"0\.001 BTC"):
+        game.close_position(quantity=0.0015)
 
 
 def test_limit_open_order_can_be_cancelled_before_fill() -> None:

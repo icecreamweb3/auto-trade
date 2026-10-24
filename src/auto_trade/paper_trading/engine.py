@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta, timezone
+from math import floor, isclose
 from uuid import uuid4
 
 from auto_trade.paper_trading.models import (
@@ -23,6 +24,7 @@ from auto_trade.paper_trading.models import (
 STARTING_BALANCE = 1000.0
 MAINTENANCE_MARGIN_RATE = 0.005
 UTC8 = timezone(timedelta(hours=8))
+BTC_QUANTITY_STEP = 0.001
 
 
 def utc8_price_anchor(value: datetime) -> datetime:
@@ -171,7 +173,10 @@ class PaperSession:
             raise ValueError("杠杆倍数必须在 1 到 100 之间")
         if notional <= 0:
             raise ValueError("名义下单价值必须大于 0")
-        quantity = notional / price if notional_unit is NotionalUnit.USDT else notional
+        requested_quantity = (
+            notional / price if notional_unit is NotionalUnit.USDT else notional
+        )
+        quantity = normalize_order_quantity(self.symbol, requested_quantity)
         margin = quantity * price / leverage
         if margin > self.balance:
             raise ValueError("名义下单价值所需保证金不能超过可用余额")
@@ -198,7 +203,12 @@ class PaperSession:
         notional_unit: NotionalUnit,
         entry_price: float,
     ) -> PaperSessionSnapshot:
-        quantity = notional / entry_price if notional_unit is NotionalUnit.USDT else notional
+        requested_quantity = (
+            notional / entry_price
+            if notional_unit is NotionalUnit.USDT
+            else notional
+        )
+        quantity = normalize_order_quantity(self.symbol, requested_quantity)
         notional_usdt = quantity * entry_price
         margin = notional_usdt / leverage
         if margin > self.balance:
@@ -610,6 +620,14 @@ class PaperSession:
             raise ValueError("平仓数量必须大于 0")
         if quantity > position.quantity + 1e-12:
             raise ValueError("平仓数量不能超过当前持仓数量")
+        if self.symbol == "BTCUSDT" and not isclose(
+            quantity,
+            position.quantity,
+            abs_tol=1e-12,
+        ):
+            step_units = quantity / BTC_QUANTITY_STEP
+            if not isclose(step_units, round(step_units), abs_tol=1e-9):
+                raise ValueError("BTC 平仓数量必须按 0.001 BTC 递增")
 
     def _settle_position(
         self,
@@ -661,6 +679,16 @@ class PaperSession:
 def position_pnl(position: OpenPosition, mark_price: float) -> float:
     direction = 1.0 if position.side is PositionSide.LONG else -1.0
     return direction * position.quantity * (mark_price - position.entry_price)
+
+
+def normalize_order_quantity(symbol: str, quantity: float) -> float:
+    if symbol != "BTCUSDT":
+        return quantity
+    normalized = floor((quantity + 1e-12) / BTC_QUANTITY_STEP) * BTC_QUANTITY_STEP
+    normalized = round(normalized, 3)
+    if normalized <= 0:
+        raise ValueError("BTC 下单数量不能低于 0.001 BTC")
+    return normalized
 
 
 def liquidation_price(
