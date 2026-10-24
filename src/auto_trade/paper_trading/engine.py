@@ -8,11 +8,13 @@ from auto_trade.paper_trading.models import (
     GameStatus,
     NotionalUnit,
     PaperCandle,
+    PaperChartCandle,
     PaperOrderKind,
     PaperOrderType,
     PaperPendingOrder,
     PaperPosition,
     PaperSessionSnapshot,
+    PaperSessionState,
     PaperTrade,
     PositionSide,
 )
@@ -479,6 +481,26 @@ class PaperSession:
             pending_orders=tuple(pending_orders),
             trades=tuple(self.trades),
             message=self.message,
+        )
+
+    def state(self) -> PaperSessionState:
+        revealed_candles = []
+        for index, candle in enumerate(self.candles[: self.index + 1]):
+            ema20, ema240 = (
+                self.ema_values[index]
+                if index < len(self.ema_values)
+                else (None, None)
+            )
+            revealed_candles.append(
+                PaperChartCandle(
+                    **candle.model_dump(),
+                    ema20=ema20,
+                    ema240=ema240,
+                )
+            )
+        return PaperSessionState(
+            snapshot=self.snapshot(),
+            candles=tuple(revealed_candles),
         )
 
     def _anchored_price_change(self) -> tuple[float | None, float | None]:

@@ -469,3 +469,27 @@ def test_rejects_risk_prices_on_wrong_side_of_current_market() -> None:
         game.set_risk_orders(take_profit_price=101, stop_loss_price=None)
     with pytest.raises(ValueError, match="空仓止损价"):
         game.set_risk_orders(take_profit_price=None, stop_loss_price=99)
+
+
+def test_state_restores_revealed_chart_and_trading_state() -> None:
+    game = session(
+        candle(0, close=100),
+        candle(1, close=102),
+        candle(2, close=104),
+        candle(3, close=106),
+    )
+    game.ema_values = ((99.0, 98.0), (100.0, 98.5), (101.0, 99.0), (102.0, 99.5))
+    game.open_position(PositionSide.LONG, notional=1000, leverage=10)
+    game.set_risk_orders(take_profit_price=110, stop_loss_price=90)
+    game.advance()
+    game.advance()
+
+    state = game.state()
+
+    assert state.snapshot.revealed_count == 3
+    assert state.snapshot.position is not None
+    assert len(state.snapshot.pending_orders) == 2
+    assert len(state.candles) == 3
+    assert [item.close_price for item in state.candles] == [100, 102, 104]
+    assert state.candles[-1].ema20 == 101
+    assert state.candles[-1].ema240 == 99

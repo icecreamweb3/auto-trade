@@ -24,6 +24,7 @@ from auto_trade.paper_trading.engine import (
     utc8_price_anchor,
 )
 from auto_trade.paper_trading.models import (
+    GameStatus,
     PaperCandle,
     PaperCloseOrderCreate,
     PaperMarketRange,
@@ -33,6 +34,7 @@ from auto_trade.paper_trading.models import (
     PaperRiskUpdate,
     PaperSessionCreate,
     PaperSessionSnapshot,
+    PaperSessionState,
 )
 
 router = APIRouter(prefix="/api/paper-trader", tags=["paper-trader"])
@@ -150,6 +152,26 @@ async def create_session(
         )
     finally:
         creations.discard(user.user_id)
+
+
+@router.get("/sessions/active", response_model=PaperSessionState | None)
+async def active_session(
+    request: Request,
+    user: AuthenticatedUser,
+) -> PaperSessionState | None:
+    managed = next(
+        (
+            session
+            for session in _sessions(request).values()
+            if session.user_id == user.user_id
+            and session.game.status in (GameStatus.READY, GameStatus.RUNNING)
+        ),
+        None,
+    )
+    if managed is None:
+        return None
+    async with managed.lock:
+        return managed.game.state()
 
 
 async def _create_session(

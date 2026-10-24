@@ -289,6 +289,11 @@ interface PaperChartPoint extends PaperCandle {
   ema240: number | null;
 }
 
+interface PaperSessionState {
+  snapshot: PaperSessionSnapshot;
+  candles: PaperChartPoint[];
+}
+
 interface PaperTimeAxisLabel {
   key: string;
   left: number;
@@ -2657,11 +2662,13 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [replaySource, setReplaySource] = useState<PaperReplaySource>("CUSTOM");
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperChartPoint[]>([]);
+  const [restoringSession, setRestoringSession] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const advancingRef = useRef(false);
   const startingSessionRef = useRef(false);
+  const restoredSessionRef = useRef(false);
   const riskDialogDragRef = useRef<{
     pointerId: number;
     offsetX: number;
@@ -2669,6 +2676,36 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     width: number;
     height: number;
   } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPaperGet<PaperSessionState | null>("/api/paper-trader/sessions/active", "进行中的模拟交易恢复失败")
+      .then((state) => {
+        if (cancelled || state === null) return;
+        restoredSessionRef.current = true;
+        const next = state.snapshot;
+        setSnapshot(next);
+        setCandles(state.candles);
+        setSymbol(next.symbol);
+        setIntervalSeconds(next.interval_seconds);
+        setRangeStart(toUtc8Input(next.range_start));
+        setRangeEnd(toUtc8Input(next.range_end));
+        setOpenPrice(next.current_candle.close_price);
+        setPositionTab(next.position ? "position" : next.pending_orders.length > 0 ? "orders" : next.trades.length > 0 ? "history" : "position");
+        setOrderTab(next.position ? "close" : "open");
+        setPlaying(false);
+        onBalanceChange(next.balance);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "进行中的模拟交易恢复失败");
+      })
+      .finally(() => {
+        if (!cancelled) setRestoringSession(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     void fetchPaperGet<PaperMetadata>("/api/paper-trader/metadata", "模拟器行情范围加载失败")
@@ -2689,10 +2726,12 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   useEffect(() => {
     void fetchPaperGet<PaperTraderPreferences>("/api/account/preferences/paper-trader", "交易偏好读取失败")
       .then((preferences) => {
-        setSymbol(preferences.symbol);
-        setIntervalSeconds(preferences.interval_seconds);
-        if (preferences.range_start) setRangeStart(toUtc8Input(preferences.range_start));
-        if (preferences.range_end) setRangeEnd(toUtc8Input(preferences.range_end));
+        if (!restoredSessionRef.current) {
+          setSymbol(preferences.symbol);
+          setIntervalSeconds(preferences.interval_seconds);
+          if (preferences.range_start) setRangeStart(toUtc8Input(preferences.range_start));
+          if (preferences.range_end) setRangeEnd(toUtc8Input(preferences.range_end));
+        }
         setSpeedSeconds(preferences.speed_seconds);
         setNotional(preferences.notional);
         setNotionalUnit(preferences.notional_unit);
@@ -2814,7 +2853,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     selectedInterval = intervalSeconds,
     selectedSource: PaperReplaySource = "CUSTOM"
   ) {
-    if (startingSessionRef.current) return;
+    if (startingSessionRef.current || restoringSession) return;
     if (!selectedStart || !selectedEnd) {
       setError("请选择完整的行情开始和结束时间");
       return;
@@ -2844,7 +2883,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }
 
   function startRandomSession(kind: "US" | "ASIA") {
-    if (startingSessionRef.current) return;
+    if (startingSessionRef.current || restoringSession) return;
     const coverage = metadata?.ranges.find((item) => item.symbol === symbol);
     if (!coverage?.available_from || !coverage.available_to) {
       setError(`${symbol} 暂无可用的本地历史行情`);
@@ -3255,9 +3294,9 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     </header>
     <section className="paper-session-shortcuts" aria-label="行情生成快捷入口">
       <span>行情生成</span>
-      <button className="paper-session-random" type="button" onClick={() => startRandomSession("US")} disabled={loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机美盘 · 21:30—04:30"}</button>
-      <button className="paper-session-random" type="button" onClick={() => startRandomSession("ASIA")} disabled={loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机亚洲 · 08:00—18:00"}</button>
-      {replayPresets.map((preset) => <div className="paper-saved-preset" key={preset.id}><button type="button" onClick={() => startReplayPreset(preset)} disabled={loading || !!snapshot?.position}>{paperReplayPresetLabel(preset)}</button><button type="button" onClick={() => removeReplayPreset(preset.id)} disabled={loading || !!snapshot?.position} aria-label={`删除 ${paperReplayPresetLabel(preset)}`}>×</button></div>)}
+      <button className="paper-session-random" type="button" onClick={() => startRandomSession("US")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机美盘 · 21:30—04:30"}</button>
+      <button className="paper-session-random" type="button" onClick={() => startRandomSession("ASIA")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机亚洲 · 08:00—18:00"}</button>
+      {replayPresets.map((preset) => <div className="paper-saved-preset" key={preset.id}><button type="button" onClick={() => startReplayPreset(preset)} disabled={restoringSession || loading || !!snapshot?.position}>{paperReplayPresetLabel(preset)}</button><button type="button" onClick={() => removeReplayPreset(preset.id)} disabled={restoringSession || loading || !!snapshot?.position} aria-label={`删除 ${paperReplayPresetLabel(preset)}`}>×</button></div>)}
     </section>
     {settingsOpen && <section className="panel paper-config">
       <div className="paper-config-heading"><strong>自定义行情</strong><span>设置交易对、K 线级别和时间范围，可直接开始或保存为快捷按钮。</span></div>
@@ -3267,15 +3306,15 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         <label><span>开始时间 UTC+8</span><input type="datetime-local" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} disabled={!!snapshot?.position} /></label>
         <label><span>结束时间 UTC+8</span><input type="datetime-local" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} disabled={!!snapshot?.position} /></label>
         <div className="paper-start-actions">
-          <button type="button" onClick={saveReplayPreset} disabled={loading || !metadata || !!snapshot?.position}>保存快捷配置</button>
-          <button className="primary-button" type="button" onClick={() => void startGame()} disabled={loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "生成行情"}</button>
+          <button type="button" onClick={saveReplayPreset} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>保存快捷配置</button>
+          <button className="primary-button" type="button" onClick={() => void startGame()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "生成行情"}</button>
         </div>
       </div>
       <p className="paper-random-hint">随机美盘仅抽取周一至周五；随机亚洲时段可从本地完整历史日期中抽取。</p>
     </section>}
     {error && <div className="alert alert-critical">{error}</div>}
     {snapshot?.message?.startsWith("价格触及止损价") && snapshot.trades[snapshot.trades.length - 1]?.exit_reason === "STOP_LOSS" && <div className="alert paper-stop-loss-notice">{snapshot.message}</div>}
-    {!snapshot ? <section className="panel paper-empty"><strong>准备开始</strong><p>载入后只会显示第一根 K 线，后续行情不会提前暴露。</p></section> : <>
+    {!snapshot ? <section className="panel paper-empty"><strong>{restoringSession ? "正在恢复本轮交易…" : "准备开始"}</strong><p>{restoringSession ? "正在加载已回放 K 线、持仓、委托与历史订单。" : "载入后只会显示第一根 K 线，后续行情不会提前暴露。"}</p></section> : <>
       <section className="paper-workspace">
         <div className="paper-main-column">
           <div className="panel paper-chart-panel">

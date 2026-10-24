@@ -47,6 +47,11 @@ class PaperCandle(BaseModel):
     quote_volume: float
 
 
+class PaperChartCandle(PaperCandle):
+    ema20: float | None = None
+    ema240: float | None = None
+
+
 class PaperPosition(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -161,6 +166,13 @@ class PaperSessionSnapshot(BaseModel):
     pending_orders: tuple[PaperPendingOrder, ...] = ()
     trades: tuple[PaperTrade, ...] = ()
     message: str | None = None
+
+
+class PaperSessionState(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    snapshot: PaperSessionSnapshot
+    candles: tuple[PaperChartCandle, ...]
 
 
 class PaperMarketRange(BaseModel):
