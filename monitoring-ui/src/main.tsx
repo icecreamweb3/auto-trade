@@ -743,6 +743,9 @@ function formatPaperAxisTime(value: string): string {
   return utc8Iso(value).slice(11, 16);
 }
 
+const PAPER_TIME_AXIS_EDGE_PADDING_PX = 24;
+const PAPER_TIME_AXIS_MIN_LABEL_GAP_PX = 72;
+
 function calculatePaperOpeningRange(candles: PaperChartPoint[]): PaperOpeningRange | null {
   const latest = candles[candles.length - 1];
   if (!latest) return null;
@@ -2319,13 +2322,30 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
     };
     const refreshTimeAxis = () => {
       const plotWidth = container.clientWidth - chart.priceScale("right").width();
-      setTimeAxisLabels(chartPointsRef.current.flatMap((point, index) => {
-        if (index % 3 !== 0) return [];
+      const visibleRange = chart.timeScale().getVisibleLogicalRange();
+      if (!visibleRange || plotWidth <= PAPER_TIME_AXIS_EDGE_PADDING_PX * 2) {
+        setTimeAxisLabels([]);
+        return;
+      }
+      const firstVisibleIndex = Math.max(0, Math.floor(visibleRange.from));
+      const lastVisibleIndex = Math.min(chartPointsRef.current.length - 1, Math.ceil(visibleRange.to));
+      const labels: PaperTimeAxisLabel[] = [];
+      let lastLabelLeft = Number.NEGATIVE_INFINITY;
+      for (let index = firstVisibleIndex; index <= lastVisibleIndex; index += 1) {
+        const point = chartPointsRef.current[index];
+        if (!point) continue;
         const time = Math.floor(new Date(point.open_time).getTime() / 1000) as UTCTimestamp;
         const left = chart.timeScale().timeToCoordinate(time);
-        if (left === null || left < 18 || left > plotWidth - 18) return [];
-        return [{ key: point.open_time, left, text: formatPaperAxisTime(point.open_time) }];
-      }));
+        if (
+          left === null
+          || left < PAPER_TIME_AXIS_EDGE_PADDING_PX
+          || left > plotWidth - PAPER_TIME_AXIS_EDGE_PADDING_PX
+          || left - lastLabelLeft < PAPER_TIME_AXIS_MIN_LABEL_GAP_PX
+        ) continue;
+        labels.push({ key: point.open_time, left, text: formatPaperAxisTime(point.open_time) });
+        lastLabelLeft = left;
+      }
+      setTimeAxisLabels(labels);
     };
     refreshTimeAxisRef.current = refreshTimeAxis;
     const refreshOrderControls = () => {
