@@ -18,13 +18,18 @@ from auto_trade.accounts.models import (
     normalize_email,
 )
 from auto_trade.accounts.repository import AccountRepository
-from auto_trade.accounts.router import require_admin
+from auto_trade.accounts.router import (
+    paper_trader_preferences,
+    require_admin,
+    save_paper_trader_preferences,
+)
 from auto_trade.accounts.security import (
     hash_password,
     new_session_token,
     session_token_hash,
     verify_password,
 )
+from auto_trade.monitoring.app import enforce_user_access
 
 
 def test_credentials_normalize_email_and_require_valid_address() -> None:
@@ -148,6 +153,53 @@ async def test_only_admin_role_passes_admin_dependency() -> None:
         await require_admin(current_user(UserRole.ADVANCED))
 
     assert error.value.status_code == 403
+
+
+async def test_paper_trader_preference_failures_return_json_http_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = current_user(UserRole.NORMAL)
+    request = MagicMock()
+    request.app.state.database_engine = MagicMock()
+    monkeypatch.setattr(
+        AccountRepository,
+        "paper_trader_preferences",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+    monkeypatch.setattr(
+        AccountRepository,
+        "save_paper_trader_preferences",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+
+    with pytest.raises(HTTPException, match="交易偏好暂时不可用") as lookup_error:
+        await paper_trader_preferences(request, user)
+    with pytest.raises(HTTPException, match="交易偏好暂时无法保存") as save_error:
+        await save_paper_trader_preferences(PaperTraderPreferences(), request, user)
+
+    assert lookup_error.value.status_code == 503
+    assert save_error.value.status_code == 503
+
+
+async def test_authentication_database_failure_returns_json_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = MagicMock()
+    request.url.path = "/api/paper-trader/metadata"
+    request.cookies = {"auto_trade_session": "session-token"}
+    request.app.state.database_engine = MagicMock()
+    monkeypatch.setattr(
+        AccountRepository,
+        "current_user",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+    call_next = AsyncMock()
+
+    response = await enforce_user_access(request, call_next)
+
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"detail": "服务暂时不可用。请稍后重试"}
+    call_next.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
@@ -31,6 +32,7 @@ from auto_trade.config import get_settings
 
 AUTH_COOKIE = "auto_trade_session"
 router = APIRouter(tags=["accounts"])
+logger = logging.getLogger(__name__)
 
 
 def _repository(request: Request) -> AccountRepository:
@@ -155,7 +157,11 @@ async def trade_history(
 async def paper_trader_preferences(
     request: Request, user: AuthenticatedUser
 ) -> PaperTraderPreferences:
-    return await _repository(request).paper_trader_preferences(user.user_id)
+    try:
+        return await _repository(request).paper_trader_preferences(user.user_id)
+    except Exception as error:
+        logger.exception("paper trader preferences lookup failed user_id=%s", user.user_id)
+        raise HTTPException(status_code=503, detail="交易偏好暂时不可用") from error
 
 
 @router.put(
@@ -167,9 +173,13 @@ async def save_paper_trader_preferences(
     request: Request,
     user: AuthenticatedUser,
 ) -> PaperTraderPreferences:
-    return await _repository(request).save_paper_trader_preferences(
-        user.user_id, payload
-    )
+    try:
+        return await _repository(request).save_paper_trader_preferences(
+            user.user_id, payload
+        )
+    except Exception as error:
+        logger.exception("paper trader preferences save failed user_id=%s", user.user_id)
+        raise HTTPException(status_code=503, detail="交易偏好暂时无法保存") from error
 
 
 @router.get("/api/admin/users", response_model=tuple[AdminUser, ...])

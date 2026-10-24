@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -32,6 +33,8 @@ from auto_trade.monitoring.nats_probe import NatsProbe
 from auto_trade.monitoring.repository import MonitoringRepository
 from auto_trade.monitoring.service import MonitoringService
 from auto_trade.paper_trading.router import router as paper_trader_router
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -85,9 +88,16 @@ async def enforce_user_access(request: Request, call_next):  # type: ignore[no-u
     token = request.cookies.get(AUTH_COOKIE)
     if not token:
         return JSONResponse(status_code=401, content={"detail": "请先登录"})
-    user = await AccountRepository(request.app.state.database_engine).current_user(
-        session_token_hash(token)
-    )
+    try:
+        user = await AccountRepository(request.app.state.database_engine).current_user(
+            session_token_hash(token)
+        )
+    except Exception:
+        logger.exception("authenticated user lookup failed path=%s", path)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "服务暂时不可用。请稍后重试"},
+        )
     if user is None:
         return JSONResponse(
             status_code=401, content={"detail": "登录已过期, 请重新登录"}

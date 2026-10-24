@@ -2512,6 +2512,44 @@ function paperErrorMessage(value: unknown, fallback: string): string {
   return fallback;
 }
 
+async function readPaperResponse<T>(response: Response, fallback: string): Promise<T> {
+  const rawBody = await response.text();
+  let body: unknown = null;
+  if (rawBody) {
+    try {
+      body = JSON.parse(rawBody) as unknown;
+    } catch {
+      body = null;
+    }
+  }
+  if (!response.ok) {
+    throw new Error(paperErrorMessage(body, `${fallback} (HTTP ${response.status})`));
+  }
+  if (body === null) throw new Error(`${fallback}：服务返回格式异常`);
+  return body as T;
+}
+
+async function fetchPaperGet<T>(path: string, fallback: string): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch(path, { cache: "no-store" });
+    } catch (reason) {
+      lastError = reason;
+      if (attempt >= 2) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 200 * (attempt + 1)));
+      continue;
+    }
+    if (response.status >= 500 && attempt < 2) {
+      await new Promise((resolve) => window.setTimeout(resolve, 200 * (attempt + 1)));
+      continue;
+    }
+    return readPaperResponse<T>(response, fallback);
+  }
+  throw lastError instanceof Error ? lastError : new Error(fallback);
+}
+
 function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: number) => void }) {
   const [metadata, setMetadata] = useState<PaperMetadata | null>(null);
   const [symbol, setSymbol] = useState("BTCUSDT");
@@ -2551,11 +2589,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const startingSessionRef = useRef(false);
 
   useEffect(() => {
-    void fetch("/api/paper-trader/metadata", { cache: "no-store" })
-      .then(async (response) => {
-        const body = await response.json() as PaperMetadata | { detail?: string };
-        if (!response.ok) throw new Error(paperErrorMessage(body, "模拟器行情范围加载失败"));
-        const value = body as PaperMetadata;
+    void fetchPaperGet<PaperMetadata>("/api/paper-trader/metadata", "模拟器行情范围加载失败")
+      .then((value) => {
         setMetadata(value);
         const coverage = value.ranges.find((item) => item.symbol === "BTCUSDT");
         if (coverage?.available_to) {
@@ -2570,11 +2605,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }, []);
 
   useEffect(() => {
-    void fetch("/api/account/preferences/paper-trader", { cache: "no-store" })
-      .then(async (response) => {
-        const body = await response.json() as PaperTraderPreferences | { detail?: string };
-        if (!response.ok) throw new Error(paperErrorMessage(body, "交易偏好读取失败"));
-        const preferences = body as PaperTraderPreferences;
+    void fetchPaperGet<PaperTraderPreferences>("/api/account/preferences/paper-trader", "交易偏好读取失败")
+      .then((preferences) => {
         setSymbol(preferences.symbol);
         setIntervalSeconds(preferences.interval_seconds);
         if (preferences.range_start) setRangeStart(toUtc8Input(preferences.range_start));
@@ -2645,9 +2677,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           }))
         })
       }).then(async (response) => {
-        if (response.ok) return;
-        const body = await response.json() as { detail?: string };
-        throw new Error(paperErrorMessage(body, "交易偏好保存失败"));
+        await readPaperResponse<PaperTraderPreferences>(response, "交易偏好保存失败");
       }).catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
         setError(reason instanceof Error ? reason.message : "交易偏好保存失败");
@@ -2692,9 +2722,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
 
   async function requestSnapshot(path: string, init?: RequestInit): Promise<PaperSessionSnapshot> {
     const response = await fetch(path, init);
-    const body = await response.json() as PaperSessionSnapshot | { detail?: string };
-    if (!response.ok) throw new Error(paperErrorMessage(body, `请求失败 (HTTP ${response.status})`));
-    return body as PaperSessionSnapshot;
+    return readPaperResponse<PaperSessionSnapshot>(response, "模拟交易请求失败");
   }
 
   async function startGame(
