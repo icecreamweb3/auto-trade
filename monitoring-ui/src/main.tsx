@@ -2256,6 +2256,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
     refreshTimeAxisRef.current = refreshTimeAxis;
     const refreshOrderControls = () => {
       const priceScaleWidth = chart.priceScale("right").width();
+      const plotWidth = Math.max(0, container.clientWidth - priceScaleWidth);
       setOrderControls(pendingOrdersRef.current.flatMap((order) => {
         if (order.order_kind !== "CLOSE") return [];
         const coordinate = candleSeries.priceToCoordinate(order.price);
@@ -2264,7 +2265,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
         return [{
           orderId: order.order_id,
           top: coordinate,
-          right: priceScaleWidth + 5,
+          right: priceScaleWidth + plotWidth * .05,
           label: isStopLoss ? "取消止损委托" : "取消止盈委托",
           kind: isStopLoss ? "stop-loss" as const : "take-profit" as const,
         }];
