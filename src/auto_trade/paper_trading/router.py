@@ -324,6 +324,8 @@ async def create_order(
                     payload.leverage,
                     payload.price,
                     payload.notional_unit,
+                    payload.take_profit_price,
+                    payload.stop_loss_price,
                 )
                 if payload.order_type is PaperOrderType.STOP_MARKET
                 and payload.price is not None

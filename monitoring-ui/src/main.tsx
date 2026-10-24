@@ -257,6 +257,8 @@ interface PaperPendingOrder {
   quantity: number;
   leverage: number;
   created_at: string;
+  take_profit_price: number | null;
+  stop_loss_price: number | null;
 }
 
 interface PaperSessionSnapshot {
@@ -376,7 +378,7 @@ interface PaperTraderPreferences {
   notional: number;
   notional_unit: PaperNotionalUnit;
   leverage: number;
-  open_order_type: "LIMIT" | "MARKET";
+  open_order_type: "LIMIT" | "MARKET" | "STOP_MARKET";
   close_order_type: "LIMIT" | "MARKET";
   auto_two_r_take_profit: boolean;
   show_opening_range: boolean;
@@ -2780,8 +2782,11 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [stopLoss, setStopLoss] = useState<NumericInput>("");
   const [positionTab, setPositionTab] = useState<"position" | "orders" | "history">("position");
   const [orderTab, setOrderTab] = useState<"open" | "close">("open");
-  const [openOrderType, setOpenOrderType] = useState<"LIMIT" | "MARKET">("MARKET");
+  const [openOrderType, setOpenOrderType] = useState<"LIMIT" | "MARKET" | "STOP_MARKET">("MARKET");
   const [openPrice, setOpenPrice] = useState<NumericInput>("");
+  const [conditionalRiskEnabled, setConditionalRiskEnabled] = useState(false);
+  const [conditionalTakeProfit, setConditionalTakeProfit] = useState<NumericInput>("");
+  const [conditionalStopLoss, setConditionalStopLoss] = useState<NumericInput>("");
   const [closeOrderType, setCloseOrderType] = useState<"LIMIT" | "MARKET">("LIMIT");
   const [closePrice, setClosePrice] = useState<NumericInput>("");
   const [closeQuantity, setCloseQuantity] = useState<NumericInput>("");
@@ -3158,9 +3163,33 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       setError("请填写名义下单价值和杠杆倍数");
       return;
     }
-    if (openOrderType === "LIMIT" && (openPrice === "" || !Number.isFinite(openPrice) || openPrice <= 0)) {
-      setError("请填写有效的开仓限价");
+    if (openOrderType !== "MARKET" && (openPrice === "" || !Number.isFinite(openPrice) || openPrice <= 0)) {
+      setError(openOrderType === "LIMIT" ? "请填写有效的开仓限价" : "请填写有效的触发价格");
       return;
+    }
+    if (openOrderType === "STOP_MARKET" && conditionalRiskEnabled) {
+      const takeProfitPrice = conditionalTakeProfit === "" ? null : conditionalTakeProfit;
+      const stopLossPrice = conditionalStopLoss === "" ? null : conditionalStopLoss;
+      if (takeProfitPrice === null && stopLossPrice === null) {
+        setError("开启止盈止损后，请至少填写一个价格");
+        return;
+      }
+      if (side === "LONG" && takeProfitPrice !== null && takeProfitPrice <= Number(openPrice)) {
+        setError("开多条件单止盈价必须高于触发价格");
+        return;
+      }
+      if (side === "LONG" && stopLossPrice !== null && stopLossPrice >= Number(openPrice)) {
+        setError("开多条件单止损价必须低于触发价格");
+        return;
+      }
+      if (side === "SHORT" && takeProfitPrice !== null && takeProfitPrice >= Number(openPrice)) {
+        setError("开空条件单止盈价必须低于触发价格");
+        return;
+      }
+      if (side === "SHORT" && stopLossPrice !== null && stopLossPrice <= Number(openPrice)) {
+        setError("开空条件单止损价必须高于触发价格");
+        return;
+      }
     }
     setError(null);
     try {
@@ -3173,7 +3202,9 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           notional_unit: notionalUnit,
           leverage,
           order_type: openOrderType,
-          price: openOrderType === "LIMIT" ? openPrice : null
+          price: openOrderType === "MARKET" ? null : openPrice,
+          take_profit_price: openOrderType === "STOP_MARKET" && conditionalRiskEnabled && conditionalTakeProfit !== "" ? conditionalTakeProfit : null,
+          stop_loss_price: openOrderType === "STOP_MARKET" && conditionalRiskEnabled && conditionalStopLoss !== "" ? conditionalStopLoss : null
         })
       }));
       if (openOrderType === "MARKET") setOrderTab("close");
@@ -3456,7 +3487,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const quantitySymbol = snapshot?.symbol ?? symbol;
   const quantityStep = baseQuantityStep(quantitySymbol);
   const orderPrice = snapshot?.current_candle.close_price ?? 0;
-  const entryTargetPrice = openOrderType === "LIMIT" && openPrice !== "" ? openPrice : orderPrice;
+  const entryTargetPrice = openOrderType !== "MARKET" && openPrice !== "" ? openPrice : orderPrice;
   const hasPendingOpenOrder = snapshot?.pending_orders.some((order) => order.order_kind === "OPEN") ?? false;
   const numericNotional = notional === "" ? null : notional;
   const numericLeverage = leverage === "" ? null : leverage;
@@ -3476,6 +3507,21 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     estimatedMargin === null || !Number.isFinite(estimatedMargin) || estimatedMargin > (snapshot?.available_balance ?? 0);
   const invalidLongLimit = openOrderType === "LIMIT" && (openPrice === "" || openPrice >= orderPrice);
   const invalidShortLimit = openOrderType === "LIMIT" && (openPrice === "" || openPrice <= orderPrice);
+  const invalidLongStop = openOrderType === "STOP_MARKET" && (openPrice === "" || openPrice <= orderPrice);
+  const invalidShortStop = openOrderType === "STOP_MARKET" && (openPrice === "" || openPrice >= orderPrice);
+  const missingConditionalRisk = openOrderType === "STOP_MARKET" && conditionalRiskEnabled && conditionalTakeProfit === "" && conditionalStopLoss === "";
+  const invalidConditionalRiskValue = openOrderType === "STOP_MARKET" && conditionalRiskEnabled && (
+    (conditionalTakeProfit !== "" && conditionalTakeProfit <= 0)
+    || (conditionalStopLoss !== "" && conditionalStopLoss <= 0)
+  );
+  const invalidLongConditionalRisk = openOrderType === "STOP_MARKET" && conditionalRiskEnabled && openPrice !== "" && (
+    (conditionalTakeProfit !== "" && conditionalTakeProfit <= openPrice)
+    || (conditionalStopLoss !== "" && conditionalStopLoss >= openPrice)
+  );
+  const invalidShortConditionalRisk = openOrderType === "STOP_MARKET" && conditionalRiskEnabled && openPrice !== "" && (
+    (conditionalTakeProfit !== "" && conditionalTakeProfit >= openPrice)
+    || (conditionalStopLoss !== "" && conditionalStopLoss <= openPrice)
+  );
   const maintenanceMarginRate = metadata?.maintenance_margin_rate ?? 0.005;
   const estimatedQuantity = notionalUsdt !== null && notionalUsdt > 0 && entryTargetPrice > 0
     ? notionalUsdt / entryTargetPrice
@@ -3590,19 +3636,28 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
               <div className="paper-close-type-tabs" role="tablist" aria-label="开仓类型">
                 <button type="button" className={openOrderType === "LIMIT" ? "active" : ""} onClick={() => { setOpenOrderType("LIMIT"); if (openPrice === "") setOpenPrice(orderPrice); }}>限价</button>
                 <button type="button" className={openOrderType === "MARKET" ? "active" : ""} onClick={() => setOpenOrderType("MARKET")}>市价</button>
+                <button type="button" className={openOrderType === "STOP_MARKET" ? "active" : ""} onClick={() => { setOpenOrderType("STOP_MARKET"); if (openPrice === "") setOpenPrice(orderPrice); }}>条件</button>
               </div>
-              {openOrderType === "MARKET" ? <div className="paper-market-price"><span>成交价格</span><strong>{formatNumber(orderPrice, 2)}</strong><em>USDT</em></div> : <label><span>价格</span><div className="paper-close-input"><input type="number" min="0" step="0.01" value={openPrice} onChange={(event) => setOpenPrice(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><em>USDT</em></div></label>}
-              <label><span>名义下单价值</span><div className="paper-notional-input"><input type="number" min={notionalUnit === "USDT" ? 1 : quantityStep} max={maximumNotional} step={notionalUnit === "USDT" ? 10 : quantityStep} value={notional} onChange={(event) => setNotional(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><select value={notionalUnit} onChange={(event) => setNotionalUnit(event.target.value as PaperNotionalUnit)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder}><option value="USDT">USDT</option><option value="BASE">{baseAsset}</option></select></div></label>
+              {openOrderType === "MARKET" ? <div className="paper-market-price"><span>成交价格</span><strong>{formatNumber(orderPrice, 2)}</strong><em>USDT</em></div> : <label><span>{openOrderType === "STOP_MARKET" ? "触发价格" : "价格"}</span><div className="paper-close-input paper-trigger-input"><input type="number" min="0" step="0.01" value={openPrice} onChange={(event) => setOpenPrice(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} />{openOrderType === "STOP_MARKET" ? <button type="button" onClick={() => setOpenPrice(orderPrice)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder}>最新</button> : <em>USDT</em>}</div></label>}
+              {openOrderType === "STOP_MARKET" && <label><span>价格</span><div className="paper-condition-market"><strong>市价</strong><em>触发后成交</em></div></label>}
+              <label><span>{openOrderType === "STOP_MARKET" ? "仓位大小" : "名义下单价值"}</span><div className="paper-notional-input"><input type="number" min={notionalUnit === "USDT" ? 1 : quantityStep} max={maximumNotional} step={notionalUnit === "USDT" ? 10 : quantityStep} value={notional} onChange={(event) => setNotional(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><select value={notionalUnit} onChange={(event) => setNotionalUnit(event.target.value as PaperNotionalUnit)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder}><option value="USDT">USDT</option><option value="BASE">{baseAsset}</option></select></div></label>
               <label className="paper-leverage-field"><span>杠杆</span><select value={leverage} onChange={(event) => setLeverage(Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} aria-label="杠杆倍数">{[1, 2, 3, 5, 10, 20, 25, 50, 75, 100].map((value) => <option key={value} value={value}>{value}x</option>)}</select></label>
               <div className="paper-order-percentages" aria-label="按可用余额选择名义价值">{[.25, .5, .75, 1].map((percentage) => <button key={percentage} type="button" onClick={() => applyNotionalPercentage(percentage)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || maximumNotional === undefined}>{percentage * 100}%</button>)}</div>
+              {openOrderType === "STOP_MARKET" && <div className="paper-condition-risk">
+                <label className="paper-condition-risk-toggle"><input type="checkbox" checked={conditionalRiskEnabled} onChange={(event) => setConditionalRiskEnabled(event.target.checked)} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><span>止盈 / 止损</span></label>
+                {conditionalRiskEnabled && <div className="paper-condition-risk-fields">
+                  <label><span>止盈价格</span><div className="paper-close-input"><input type="number" min="0" step="0.01" value={conditionalTakeProfit} placeholder="可选" onChange={(event) => setConditionalTakeProfit(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><em className="paper-tp-suffix">TP</em></div></label>
+                  <label><span>止损价格</span><div className="paper-close-input"><input type="number" min="0" step="0.01" value={conditionalStopLoss} placeholder="可选" onChange={(event) => setConditionalStopLoss(event.target.value === "" ? "" : Number(event.target.value))} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder} /><em className="paper-sl-suffix">SL</em></div></label>
+                </div>}
+              </div>}
               <p className="paper-order-warning">名义价值按可用余额和杠杆估算，实际下单前仍会校验保证金。</p>
               <div className="paper-order-estimates">
                 <div><span>预计保证金{numericLeverage === null ? "" : `（${numericLeverage}x）`}</span><strong>{estimatedMargin === null ? "—" : `${formatNumber(estimatedMargin, 2)} USDT`}</strong></div>
                 <div className="paper-liquidation-estimate"><span>预计全仓强平价</span><dl><div><dt>开多</dt><dd className="paper-long-price">{estimatedLongLiquidation === null || estimatedLongLiquidation <= 0 ? "—" : formatNumber(estimatedLongLiquidation, 2)}</dd></div><div><dt>开空</dt><dd className="paper-short-price">{estimatedShortLiquidation === null ? "—" : formatNumber(estimatedShortLiquidation, 2)}</dd></div></dl></div>
               </div>
-              <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || invalidOrder || invalidLongLimit}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || invalidOrder || invalidShortLimit}>开空</button></div>
+              <div className="paper-order-buttons"><button type="button" className="paper-long-button" onClick={() => void openPosition("LONG")} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || invalidOrder || invalidLongLimit || invalidLongStop || missingConditionalRisk || invalidConditionalRiskValue || invalidLongConditionalRisk}>开多</button><button type="button" className="paper-short-button" onClick={() => void openPosition("SHORT")} disabled={gameEnded || !!snapshot.position || hasPendingOpenOrder || invalidOrder || invalidShortLimit || invalidShortStop || missingConditionalRisk || invalidConditionalRiskValue || invalidShortConditionalRisk}>开空</button></div>
               <div className="paper-order-capacity"><span>最大可开</span><strong>{maximumBaseQuantity === null ? "—" : `${formatBaseQuantity(maximumBaseQuantity, quantitySymbol)} ${baseAsset}`}</strong></div>
-              <small>{openOrderType === "MARKET" ? "按当前已揭示 K 线收盘价成交，不收手续费与资金费。" : "限价委托将在后续 K 线触及价格时成交；开多限价需低于当前价，开空限价需高于当前价。"}</small>
+              <small>{openOrderType === "MARKET" ? "按当前已揭示 K 线收盘价成交，不收手续费与资金费。" : openOrderType === "LIMIT" ? "限价委托将在后续 K 线触及价格时成交；开多限价需低于当前价，开空限价需高于当前价。" : "条件委托触发后按触发价模拟成交；开多触发价需高于当前价，开空触发价需低于当前价。"}</small>
             </div> : <div className="paper-close-form">
               {snapshot.position ? <>
                 <div className="paper-close-type-tabs" role="tablist" aria-label="平仓类型">

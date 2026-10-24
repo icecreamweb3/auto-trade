@@ -121,6 +121,8 @@ class PaperPendingOrder(BaseModel):
     quantity: float
     leverage: int
     created_at: datetime
+    take_profit_price: float | None = None
+    stop_loss_price: float | None = None
 
 
 class PaperSessionCreate(BaseModel):
@@ -137,11 +139,18 @@ class PaperOrderCreate(BaseModel):
     leverage: int = Field(default=100, ge=1, le=100)
     order_type: PaperOrderType = PaperOrderType.MARKET
     price: float | None = Field(default=None, gt=0)
+    take_profit_price: float | None = Field(default=None, gt=0)
+    stop_loss_price: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def require_limit_price(self) -> PaperOrderCreate:
         if self.order_type is not PaperOrderType.MARKET and self.price is None:
             raise ValueError("限价或 Stop 委托必须填写价格")
+        has_attached_risk = (
+            self.take_profit_price is not None or self.stop_loss_price is not None
+        )
+        if has_attached_risk and self.order_type is not PaperOrderType.STOP_MARKET:
+            raise ValueError("预设止盈止损仅支持条件开仓委托")
         return self
 
 

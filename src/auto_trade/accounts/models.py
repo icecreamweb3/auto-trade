@@ -148,7 +148,7 @@ class PaperTraderPreferences(BaseModel):
     notional: float = Field(default=100, gt=0)
     notional_unit: Literal["USDT", "BASE"] = "USDT"
     leverage: Literal[1, 2, 3, 5, 10, 20, 25, 50, 75, 100] = 100
-    open_order_type: Literal["LIMIT", "MARKET"] = "MARKET"
+    open_order_type: Literal["LIMIT", "MARKET", "STOP_MARKET"] = "MARKET"
     close_order_type: Literal["LIMIT", "MARKET"] = "LIMIT"
     auto_two_r_take_profit: bool = True
     show_opening_range: bool = True

@@ -12,6 +12,7 @@ from auto_trade.paper_trading.models import (
     NotionalUnit,
     PaperCandle,
     PaperChartView,
+    PaperOrderKind,
     PaperOrderType,
     PositionSide,
 )
@@ -293,6 +294,56 @@ def test_stop_open_order_rejects_trigger_on_wrong_side_of_market() -> None:
         game.place_stop_open_order(PositionSide.LONG, 100, 10, 99)
     with pytest.raises(ValueError, match="Sell Stop"):
         game.place_stop_open_order(PositionSide.SHORT, 100, 10, 101)
+
+
+def test_stop_open_order_attaches_risk_orders_after_trigger() -> None:
+    game = session(
+        candle(0, close=100),
+        candle(1, close=106, high=108, low=99),
+        candle(2, close=109, high=111, low=104),
+    )
+
+    placed = game.place_stop_open_order(
+        PositionSide.LONG,
+        notional=1000,
+        leverage=10,
+        price=105,
+        take_profit_price=110,
+        stop_loss_price=98,
+    )
+    filled = game.advance()
+
+    assert placed.pending_orders[0].take_profit_price == 110
+    assert placed.pending_orders[0].stop_loss_price == 98
+    assert filled.position is not None
+    assert filled.position.take_profit_price == 110
+    assert filled.position.take_profit_quantity == filled.position.quantity
+    assert filled.position.stop_loss_price == 98
+    assert [order.order_kind for order in filled.pending_orders] == [
+        PaperOrderKind.CLOSE,
+        PaperOrderKind.CLOSE,
+    ]
+
+
+def test_stop_open_order_rejects_attached_risk_on_wrong_side_of_trigger() -> None:
+    game = session(candle(0, close=100), candle(1))
+
+    with pytest.raises(ValueError, match="止盈价必须高于触发价格"):
+        game.place_stop_open_order(
+            PositionSide.LONG,
+            100,
+            10,
+            105,
+            take_profit_price=104,
+        )
+    with pytest.raises(ValueError, match="止损价必须高于触发价格"):
+        game.place_stop_open_order(
+            PositionSide.SHORT,
+            100,
+            10,
+            95,
+            stop_loss_price=94,
+        )
 
 
 def test_session_uses_persisted_account_balance_without_resetting_it() -> None:

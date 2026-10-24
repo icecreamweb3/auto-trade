@@ -63,6 +63,8 @@ class PendingOpenOrder:
     price: float
     order_type: PaperOrderType
     created_at: datetime
+    take_profit_price: float | None = None
+    stop_loss_price: float | None = None
 
 
 @dataclass(slots=True)
@@ -139,12 +141,24 @@ class PaperSession:
         leverage: int,
         price: float,
         notional_unit: NotionalUnit = NotionalUnit.USDT,
+        take_profit_price: float | None = None,
+        stop_loss_price: float | None = None,
     ) -> PaperSessionSnapshot:
         mark_price = self.current_candle.close_price
         if side is PositionSide.LONG and price <= mark_price:
             raise ValueError("Buy Stop 价格必须高于当前价格")
         if side is PositionSide.SHORT and price >= mark_price:
             raise ValueError("Sell Stop 价格必须低于当前价格")
+        if side is PositionSide.LONG:
+            if take_profit_price is not None and take_profit_price <= price:
+                raise ValueError("开多条件单止盈价必须高于触发价格")
+            if stop_loss_price is not None and stop_loss_price >= price:
+                raise ValueError("开多条件单止损价必须低于触发价格")
+        else:
+            if take_profit_price is not None and take_profit_price >= price:
+                raise ValueError("开空条件单止盈价必须低于触发价格")
+            if stop_loss_price is not None and stop_loss_price <= price:
+                raise ValueError("开空条件单止损价必须高于触发价格")
         return self._place_pending_open_order(
             side,
             notional,
@@ -152,6 +166,8 @@ class PaperSession:
             price,
             PaperOrderType.STOP_MARKET,
             notional_unit,
+            take_profit_price,
+            stop_loss_price,
         )
 
     def _place_pending_open_order(
@@ -162,6 +178,8 @@ class PaperSession:
         price: float,
         order_type: PaperOrderType,
         notional_unit: NotionalUnit,
+        take_profit_price: float | None = None,
+        stop_loss_price: float | None = None,
     ) -> PaperSessionSnapshot:
         if self.status in (GameStatus.COMPLETED, GameStatus.LIQUIDATED):
             raise ValueError("本轮游戏已经结束, 请重新开始")
@@ -189,6 +207,8 @@ class PaperSession:
             price=price,
             order_type=order_type,
             created_at=self.current_candle.close_time,
+            take_profit_price=take_profit_price,
+            stop_loss_price=stop_loss_price,
         )
         self.status = GameStatus.RUNNING
         order_label = "限价" if order_type is PaperOrderType.LIMIT else "Stop"
@@ -387,6 +407,35 @@ class PaperSession:
                     NotionalUnit.BASE,
                     pending_open_order.price,
                 )
+                position = self.position
+                if position is not None:
+                    position.take_profit_price = pending_open_order.take_profit_price
+                    position.take_profit_quantity = (
+                        position.quantity
+                        if pending_open_order.take_profit_price is not None
+                        else None
+                    )
+                    position.take_profit_order_id = (
+                        str(uuid4())
+                        if pending_open_order.take_profit_price is not None
+                        else None
+                    )
+                    position.take_profit_created_at = (
+                        candle.close_time
+                        if pending_open_order.take_profit_price is not None
+                        else None
+                    )
+                    position.stop_loss_price = pending_open_order.stop_loss_price
+                    position.stop_loss_order_id = (
+                        str(uuid4())
+                        if pending_open_order.stop_loss_price is not None
+                        else None
+                    )
+                    position.stop_loss_created_at = (
+                        candle.close_time
+                        if pending_open_order.stop_loss_price is not None
+                        else None
+                    )
                 order_label = (
                     "限价"
                     if pending_open_order.order_type is PaperOrderType.LIMIT
@@ -499,6 +548,8 @@ class PaperSession:
                     quantity=self.pending_open_order.quantity,
                     leverage=self.pending_open_order.leverage,
                     created_at=self.pending_open_order.created_at,
+                    take_profit_price=self.pending_open_order.take_profit_price,
+                    stop_loss_price=self.pending_open_order.stop_loss_price,
                 )
             )
         if self.position is not None and self.position.take_profit_price is not None:
