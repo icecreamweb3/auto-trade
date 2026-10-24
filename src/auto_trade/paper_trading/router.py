@@ -26,6 +26,7 @@ from auto_trade.paper_trading.engine import (
 from auto_trade.paper_trading.models import (
     GameStatus,
     PaperCandle,
+    PaperChartView,
     PaperCloseOrderCreate,
     PaperMarketRange,
     PaperMetadata,
@@ -172,6 +173,22 @@ async def active_session(
         return None
     async with managed.lock:
         return managed.game.state()
+
+
+@router.put(
+    "/sessions/{session_id}/chart-view",
+    response_model=PaperChartView,
+)
+async def save_chart_view(
+    session_id: str,
+    payload: PaperChartView,
+    request: Request,
+    user: AuthenticatedUser,
+) -> PaperChartView:
+    managed = _session(request, session_id, user)
+    async with managed.lock:
+        managed.game.chart_view = payload
+    return payload
 
 
 async def _create_session(

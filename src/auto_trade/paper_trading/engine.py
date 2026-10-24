@@ -9,6 +9,7 @@ from auto_trade.paper_trading.models import (
     NotionalUnit,
     PaperCandle,
     PaperChartCandle,
+    PaperChartView,
     PaperOrderKind,
     PaperOrderType,
     PaperPendingOrder,
@@ -78,6 +79,7 @@ class PaperSession:
     pending_open_order: PendingOpenOrder | None = None
     trades: list[PaperTrade] = field(default_factory=list)
     message: str | None = None
+    chart_view: PaperChartView | None = None
 
     def open_position(
         self,
@@ -501,6 +503,7 @@ class PaperSession:
         return PaperSessionState(
             snapshot=self.snapshot(),
             candles=tuple(revealed_candles),
+            chart_view=self.chart_view,
         )
 
     def _anchored_price_change(self) -> tuple[float | None, float | None]:

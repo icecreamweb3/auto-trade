@@ -11,6 +11,7 @@ from auto_trade.paper_trading.models import (
     GameStatus,
     NotionalUnit,
     PaperCandle,
+    PaperChartView,
     PositionSide,
 )
 
@@ -483,6 +484,12 @@ def test_state_restores_revealed_chart_and_trading_state() -> None:
     game.set_risk_orders(take_profit_price=110, stop_loss_price=90)
     game.advance()
     game.advance()
+    game.chart_view = PaperChartView(
+        logical_from=-20,
+        logical_to=12,
+        price_from=80,
+        price_to=120,
+    )
 
     state = game.state()
 
@@ -493,3 +500,4 @@ def test_state_restores_revealed_chart_and_trading_state() -> None:
     assert [item.close_price for item in state.candles] == [100, 102, 104]
     assert state.candles[-1].ema20 == 101
     assert state.candles[-1].ema240 == 99
+    assert state.chart_view == game.chart_view

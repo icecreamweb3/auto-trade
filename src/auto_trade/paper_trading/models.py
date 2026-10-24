@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from math import isfinite
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -50,6 +51,31 @@ class PaperCandle(BaseModel):
 class PaperChartCandle(PaperCandle):
     ema20: float | None = None
     ema240: float | None = None
+
+
+class PaperChartView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    logical_from: float
+    logical_to: float
+    price_from: float
+    price_to: float
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> PaperChartView:
+        values = (
+            self.logical_from,
+            self.logical_to,
+            self.price_from,
+            self.price_to,
+        )
+        if not all(isfinite(value) for value in values):
+            raise ValueError("K 线视图范围必须是有限数值")
+        if self.logical_from >= self.logical_to:
+            raise ValueError("K 线横轴范围无效")
+        if self.price_from >= self.price_to:
+            raise ValueError("K 线价格轴范围无效")
+        return self
 
 
 class PaperPosition(BaseModel):
@@ -173,6 +199,7 @@ class PaperSessionState(BaseModel):
 
     snapshot: PaperSessionSnapshot
     candles: tuple[PaperChartCandle, ...]
+    chart_view: PaperChartView | None = None
 
 
 class PaperMarketRange(BaseModel):

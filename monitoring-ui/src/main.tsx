@@ -292,6 +292,14 @@ interface PaperChartPoint extends PaperCandle {
 interface PaperSessionState {
   snapshot: PaperSessionSnapshot;
   candles: PaperChartPoint[];
+  chart_view: PaperChartView | null;
+}
+
+interface PaperChartView {
+  logical_from: number;
+  logical_to: number;
+  price_from: number;
+  price_to: number;
 }
 
 interface PaperTimeAxisLabel {
@@ -2091,15 +2099,17 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onCancelPendingOrder, cancellingOrder }: {
+function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, initialView, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onViewChange, onCancelPendingOrder, cancellingOrder }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   pendingOrders: PaperPendingOrder[];
   intervalSeconds: number;
   sessionId: string;
+  initialView: PaperChartView | null;
   showOpeningRange: boolean;
   showUpperOpeningRange: boolean;
   showLowerOpeningRange: boolean;
+  onViewChange: (view: PaperChartView) => void;
   onCancelPendingOrder: (orderId: string) => void;
   cancellingOrder: boolean;
 }) {
@@ -2119,6 +2129,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   const loadedSessionRef = useRef<string | null>(null);
   const loadedCountRef = useRef(0);
   const followingLatestRef = useRef(true);
+  const onViewChangeRef = useRef(onViewChange);
   const [hoveredCandle, setHoveredCandle] = useState<PaperCandleReadout | null>(null);
   const [timeAxisLabels, setTimeAxisLabels] = useState<PaperTimeAxisLabel[]>([]);
   const [openingRangeOverlay, setOpeningRangeOverlay] = useState<PaperOpeningRangeOverlay | null>(null);
@@ -2129,6 +2140,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   const initialCandleHeightRatio = .1;
   chartPointsRef.current = candles;
   pendingOrdersRef.current = pendingOrders;
+  onViewChangeRef.current = onViewChange;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -2201,6 +2213,17 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       crosshairMarkerVisible: false,
     });
     volumeSeries.priceScale().applyOptions({ scaleMargins: { top: .84, bottom: 0 } });
+    const publishChartView = (priceRangeOverride?: { from: number; to: number }) => {
+      const logicalRange = chart.timeScale().getVisibleLogicalRange();
+      const priceRange = priceRangeOverride ?? chart.priceScale("right").getVisibleRange();
+      if (!logicalRange || !priceRange) return;
+      onViewChangeRef.current({
+        logical_from: logicalRange.from,
+        logical_to: logicalRange.to,
+        price_from: priceRange.from,
+        price_to: priceRange.to,
+      });
+    };
     const handlePriceScaleWheel = (event: WheelEvent) => {
       const priceScale = chart.priceScale("right");
       const scaleWidth = priceScale.width();
@@ -2214,10 +2237,12 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       const anchor = pointerPrice ?? (range.from + range.to) / 2;
       const factor = event.deltaY > 0 ? 1.12 : .89;
       priceScale.setAutoScale(false);
-      priceScale.setVisibleRange({
+      const nextRange = {
         from: anchor - (anchor - range.from) * factor,
         to: anchor + (range.to - anchor) * factor,
-      });
+      };
+      priceScale.setVisibleRange(nextRange);
+      publishChartView(nextRange);
       window.requestAnimationFrame(() => {
         refreshOpeningRangeOverlayRef.current();
         refreshOrderControlsRef.current();
@@ -2244,6 +2269,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
     const handleVisibleRangeChange = (range: LogicalRange | null) => {
       if (!range || loadedCountRef.current === 0) return;
       followingLatestRef.current = range.to >= loadedCountRef.current - 1;
+      publishChartView();
       refreshTimeAxisRef.current();
       refreshOpeningRangeOverlayRef.current();
       refreshOrderControlsRef.current();
@@ -2291,6 +2317,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
     const handlePointerEnd = () => window.requestAnimationFrame(() => {
       refreshOpeningRangeOverlayRef.current();
       refreshOrderControlsRef.current();
+      publishChartView();
     });
     resizeObserver.observe(container);
     container.addEventListener("wheel", handlePriceScaleWheel, { passive: false, capture: true });
@@ -2365,24 +2392,30 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       loadedSessionRef.current = sessionId;
       loadedCountRef.current = points.length;
       followingLatestRef.current = true;
-      const lowestPrice = Math.min(...points.map((point) => point.low_price));
-      const highestPrice = Math.max(...points.map((point) => point.high_price));
-      const priceCenter = (lowestPrice + highestPrice) / 2;
-      const observedPriceSpan = highestPrice - lowestPrice;
-      const minimumPriceSpan = Math.max(Math.abs(priceCenter) * .0001, .01);
-      const visiblePriceSpan = Math.max(observedPriceSpan, minimumPriceSpan) / initialCandleHeightRatio;
       const priceScale = chart.priceScale("right");
       priceScale.setAutoScale(false);
-      priceScale.setVisibleRange({
-        from: priceCenter - visiblePriceSpan / 2,
-        to: priceCenter + visiblePriceSpan / 2,
-      });
-      const latestIndex = points.length - 1;
-      const logicalRangeFrom = latestIndex - visibleCapacity * initialLatestPosition;
-      chart.timeScale().setVisibleLogicalRange({
-        from: logicalRangeFrom,
-        to: logicalRangeFrom + visibleCapacity,
-      });
+      if (initialView) {
+        priceScale.setVisibleRange({ from: initialView.price_from, to: initialView.price_to });
+        chart.timeScale().setVisibleLogicalRange({ from: initialView.logical_from, to: initialView.logical_to });
+        followingLatestRef.current = initialView.logical_to >= points.length - 1;
+      } else {
+        const lowestPrice = Math.min(...points.map((point) => point.low_price));
+        const highestPrice = Math.max(...points.map((point) => point.high_price));
+        const priceCenter = (lowestPrice + highestPrice) / 2;
+        const observedPriceSpan = highestPrice - lowestPrice;
+        const minimumPriceSpan = Math.max(Math.abs(priceCenter) * .0001, .01);
+        const visiblePriceSpan = Math.max(observedPriceSpan, minimumPriceSpan) / initialCandleHeightRatio;
+        priceScale.setVisibleRange({
+          from: priceCenter - visiblePriceSpan / 2,
+          to: priceCenter + visiblePriceSpan / 2,
+        });
+        const latestIndex = points.length - 1;
+        const logicalRangeFrom = latestIndex - visibleCapacity * initialLatestPosition;
+        chart.timeScale().setVisibleLogicalRange({
+          from: logicalRangeFrom,
+          to: logicalRangeFrom + visibleCapacity,
+        });
+      }
       window.requestAnimationFrame(() => {
         refreshTimeAxisRef.current();
         refreshOrderControlsRef.current();
@@ -2662,6 +2695,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [replaySource, setReplaySource] = useState<PaperReplaySource>("CUSTOM");
   const [snapshot, setSnapshot] = useState<PaperSessionSnapshot | null>(null);
   const [candles, setCandles] = useState<PaperChartPoint[]>([]);
+  const [chartView, setChartView] = useState<PaperChartView | null>(null);
   const [restoringSession, setRestoringSession] = useState(true);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2686,6 +2720,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         const next = state.snapshot;
         setSnapshot(next);
         setCandles(state.candles);
+        setChartView(state.chart_view);
         setSymbol(next.symbol);
         setIntervalSeconds(next.interval_seconds);
         setRangeStart(toUtc8Input(next.range_start));
@@ -2706,6 +2741,28 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!snapshot || !chartView) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetch(`/api/paper-trader/sessions/${snapshot.session_id}/chart-view`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify(chartView),
+      }).then(async (response) => {
+        await readPaperResponse<PaperChartView>(response, "K 线视图保存失败");
+      }).catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "K 线视图保存失败");
+      });
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [snapshot?.session_id, chartView]);
 
   useEffect(() => {
     void fetchPaperGet<PaperMetadata>("/api/paper-trader/metadata", "模拟器行情范围加载失败")
@@ -2869,6 +2926,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         body: JSON.stringify({ symbol: selectedSymbol, interval_seconds: selectedInterval, range_start: utc8InputToIso(selectedStart), range_end: utc8InputToIso(selectedEnd) })
       });
       applySnapshot(next, true);
+      setChartView(null);
       setOrderTab("open");
       setOpenPrice(next.current_candle.close_price);
       setRiskDialogOpen(false);
@@ -3329,7 +3387,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
+              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>

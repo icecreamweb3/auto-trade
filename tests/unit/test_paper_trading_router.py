@@ -7,8 +7,12 @@ from starlette.requests import Request
 
 from auto_trade.accounts.models import AccountSummary, CurrentUser, UserRole
 from auto_trade.paper_trading.engine import PaperSession
-from auto_trade.paper_trading.models import GameStatus, PaperCandle
-from auto_trade.paper_trading.router import UserPaperSession, active_session
+from auto_trade.paper_trading.models import GameStatus, PaperCandle, PaperChartView
+from auto_trade.paper_trading.router import (
+    UserPaperSession,
+    active_session,
+    save_chart_view,
+)
 
 
 def make_session(*, status: GameStatus = GameStatus.RUNNING) -> PaperSession:
@@ -91,3 +95,23 @@ async def test_active_session_returns_none_without_unfinished_round() -> None:
     )
 
     assert await active_session(request, user) is None
+
+
+@pytest.mark.asyncio
+async def test_chart_view_is_saved_in_current_users_session() -> None:
+    user = make_user()
+    game = make_session()
+    request = make_request({game.session_id: UserPaperSession(user.user_id, game)})
+    view = PaperChartView(
+        logical_from=-10,
+        logical_to=20,
+        price_from=90,
+        price_to=110,
+    )
+
+    saved = await save_chart_view(game.session_id, view, request, user)
+    restored = await active_session(request, user)
+
+    assert saved == view
+    assert restored is not None
+    assert restored.chart_view == view
