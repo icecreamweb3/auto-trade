@@ -321,8 +321,9 @@ interface PaperOrderControl {
   orderId: string;
   top: number;
   right: number;
+  quantity: number;
   label: string;
-  kind: "take-profit" | "stop-loss";
+  kind: "open-limit" | "open-stop" | "take-profit" | "stop-loss";
 }
 
 type PaperQuickOrderAction = "BUY_STOP" | "SELL_STOP" | "BUY_LIMIT" | "SELL_LIMIT" | "BUY_TAKE_PROFIT_LIMIT" | "SELL_TAKE_PROFIT_LIMIT";
@@ -2148,10 +2149,11 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, warmupSeconds, initialView, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onViewChange, onQuickOrder, onCancelPendingOrder, cancellingOrder }: {
+function PaperReplayChart({ candles, position, pendingOrders, symbol, intervalSeconds, sessionId, warmupSeconds, initialView, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onViewChange, onQuickOrder, onCancelPendingOrder, cancellingOrder }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   pendingOrders: PaperPendingOrder[];
+  symbol: string;
   intervalSeconds: number;
   sessionId: string;
   warmupSeconds: number;
@@ -2360,16 +2362,25 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       const priceScaleWidth = chart.priceScale("right").width();
       const plotWidth = Math.max(0, container.clientWidth - priceScaleWidth);
       setOrderControls(pendingOrdersRef.current.flatMap((order) => {
-        if (order.order_kind !== "CLOSE") return [];
         const coordinate = candleSeries.priceToCoordinate(order.price);
         if (coordinate === null || coordinate < 12 || coordinate > container.clientHeight - 26) return [];
-        const isStopLoss = order.order_type === "STOP_MARKET";
+        const isOpen = order.order_kind === "OPEN";
+        const isStop = order.order_type === "STOP_MARKET";
+        const label = isOpen
+          ? isStop
+            ? `${order.position_side === "LONG" ? "Buy" : "Sell"} Stop`
+            : `${order.position_side === "LONG" ? "Buy" : "Sell"} Limit`
+          : isStop ? "止损" : "限价止盈";
+        const kind: PaperOrderControl["kind"] = isOpen
+          ? isStop ? "open-stop" : "open-limit"
+          : isStop ? "stop-loss" : "take-profit";
         return [{
           orderId: order.order_id,
           top: coordinate,
           right: priceScaleWidth + plotWidth * .05,
-          label: isStopLoss ? "取消止损委托" : "取消止盈委托",
-          kind: isStopLoss ? "stop-loss" as const : "take-profit" as const,
+          quantity: order.quantity,
+          label,
+          kind,
         }];
       }));
     };
@@ -2583,11 +2594,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       ...pendingOrders.map((order) => ({
         price: order.price,
         color: order.order_kind === "OPEN" ? "#58a6ff" : order.order_type === "STOP_MARKET" ? "#ffb347" : "#0ecb81",
-        title: order.order_kind === "OPEN"
-          ? order.order_type === "STOP_MARKET"
-            ? `${order.position_side === "LONG" ? "Buy" : "Sell"} Stop`
-            : `${order.position_side === "LONG" ? "Buy" : "Sell"} Limit`
-          : order.order_type === "STOP_MARKET" ? "止损" : "限价止盈",
+        title: "",
         style: LineStyle.Dashed,
       })),
     ];
@@ -2735,17 +2742,12 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
         ><span>{item.label}</span><strong>{formatNumber(contextMenu.price, 2)}</strong></button>)}
       </div>}
       <div className="paper-order-line-controls">
-        {orderControls.map((control) => <button
+        {orderControls.map((control) => <div
           key={control.orderId}
-          type="button"
-          className={control.kind}
+          className={`paper-order-line-control ${control.kind}`}
           style={{ top: control.top, right: control.right }}
-          title={control.label}
-          aria-label={control.label}
-          disabled={cancellingOrder}
           onPointerDown={(event) => event.stopPropagation()}
-          onClick={() => onCancelPendingOrder(control.orderId)}
-        >×</button>)}
+        ><span>{formatBaseQuantity(control.quantity, symbol)}</span><strong>{control.label}</strong><button type="button" title={`取消 ${control.label}`} aria-label={`取消 ${control.label}`} disabled={cancellingOrder} onClick={() => onCancelPendingOrder(control.orderId)}>×</button></div>)}
       </div>
       {openingRangeOverlay && <svg className="paper-opening-range-overlay" viewBox={`0 0 ${openingRangeOverlay.width} ${openingRangeOverlay.height}`} aria-hidden="true">
         {showOpeningRange && <g className="paper-or-range"><rect className="paper-or-box" x={openingRangeOverlay.rangeLeft} y={openingRangeOverlay.highY} width={Math.max(0, openingRangeOverlay.rangeRight - openingRangeOverlay.rangeLeft)} height={Math.max(0, openingRangeOverlay.lowY - openingRangeOverlay.highY)} /><line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.highY} y2={openingRangeOverlay.highY} /><line className="paper-or-boundary" x1={openingRangeOverlay.rangeLeft} x2={openingRangeOverlay.projectionRight} y1={openingRangeOverlay.lowY} y2={openingRangeOverlay.lowY} /><text className="paper-or-label" x={(openingRangeOverlay.rangeLeft + openingRangeOverlay.rangeRight) / 2} y={openingRangeOverlay.highY + 15}>区间振幅 {formatNumber(openingRangeOverlay.trueRange, 2)}</text><text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.highY - 5}>{formatNumber(openingRangeOverlay.high, 2)}</text><text className="paper-or-price-label" x={openingRangeOverlay.rangeRight - 5} y={openingRangeOverlay.lowY - 5}>{formatNumber(openingRangeOverlay.low, 2)}</text></g>}
@@ -3764,7 +3766,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button>{!tradingFullscreen && <button type="button" onClick={() => void enterTradingFullscreen()}>全屏交易</button>}</div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} warmupSeconds={snapshot.warmup_seconds} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={requestQuickOrder} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
+              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} symbol={snapshot.symbol} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} warmupSeconds={snapshot.warmup_seconds} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={requestQuickOrder} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>
