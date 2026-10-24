@@ -2843,6 +2843,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [showUpperOpeningRange, setShowUpperOpeningRange] = useState(false);
   const [showLowerOpeningRange, setShowLowerOpeningRange] = useState(false);
   const [positionAction, setPositionAction] = useState(false);
+  const [refreshingOrderManager, setRefreshingOrderManager] = useState(false);
   const [riskDialogOpen, setRiskDialogOpen] = useState(false);
   const [riskDialogError, setRiskDialogError] = useState<string | null>(null);
   const [riskDialogOffset, setRiskDialogOffset] = useState({ x: 0, y: 0 });
@@ -3403,6 +3404,24 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     }
   }
 
+  async function refreshOrderManager() {
+    if (!snapshot || refreshingOrderManager) return;
+    setRefreshingOrderManager(true);
+    setError(null);
+    try {
+      const state = await fetchPaperGet<PaperSessionState | null>("/api/paper-trader/sessions/active", "订单状态刷新失败");
+      if (state === null) throw new Error("当前没有进行中的模拟交易");
+      if (state.snapshot.session_id !== snapshot.session_id) throw new Error("当前模拟交易已发生变化，请重新载入页面");
+      setSnapshot(state.snapshot);
+      setCandles(state.candles);
+      onBalanceChange(state.snapshot.balance);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "订单状态刷新失败");
+    } finally {
+      setRefreshingOrderManager(false);
+    }
+  }
+
   async function closePosition(quantity?: number) {
     if (!snapshot) return;
     setPositionAction(true);
@@ -3771,7 +3790,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
             </div>
           </div>
           <section className="panel paper-position-manager">
-            <div className="paper-position-tabs"><button type="button" className={positionTab === "position" ? "active" : ""} onClick={() => setPositionTab("position")}>当前持仓</button><button type="button" className={positionTab === "orders" ? "active" : ""} onClick={() => setPositionTab("orders")}>当前委托 <span>{snapshot.pending_orders.length}</span></button><button type="button" className={positionTab === "history" ? "active" : ""} onClick={() => setPositionTab("history")}>历史订单 <span>{snapshot.trades.length}</span></button><label className="paper-two-r-toggle"><input type="checkbox" checked={autoTwoRTakeProfit} onChange={toggleAutoTwoRTakeProfit} /><span aria-hidden="true" /><strong>自动 2R 止盈</strong></label></div>
+            <div className="paper-position-tabs"><button type="button" className={positionTab === "position" ? "active" : ""} onClick={() => setPositionTab("position")}>当前持仓</button><button type="button" className={positionTab === "orders" ? "active" : ""} onClick={() => setPositionTab("orders")}>当前委托 <span>{snapshot.pending_orders.length}</span></button><button type="button" className={positionTab === "history" ? "active" : ""} onClick={() => setPositionTab("history")}>历史订单 <span>{snapshot.trades.length}</span></button><label className="paper-two-r-toggle"><input type="checkbox" checked={autoTwoRTakeProfit} onChange={toggleAutoTwoRTakeProfit} /><span aria-hidden="true" /><strong>自动 2R 止盈</strong></label><button type="button" className="paper-position-refresh" onClick={() => void refreshOrderManager()} disabled={refreshingOrderManager || positionAction} aria-label="刷新订单管理">{refreshingOrderManager ? "刷新中…" : "↻ 刷新"}</button></div>
             {positionTab === "position" ? snapshot.position ? <div className="paper-position-table-wrap">
               <table className="paper-position-table">
                 <thead><tr><th>合约</th><th>方向</th><th>状态</th><th>数量 ({baseAsset})</th><th>开仓均价</th><th>持仓方式</th><th>强平价</th><th>未实现盈亏</th><th>保证金</th><th>止盈 / 止损</th><th>操作</th></tr></thead>

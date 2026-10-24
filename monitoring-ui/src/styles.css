@@ -432,6 +432,9 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-position-tabs button { height: 40px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 0 12px; color: #8e969f; background: transparent; font-size: 12px; font-weight: 700; }
 .paper-position-tabs button.active { color: #58d6c2; border-bottom-color: #58d6c2; }
 .paper-position-tabs button span { margin-left: 4px; color: #678197; }
+.paper-position-tabs .paper-position-refresh { height: 28px; margin-left: 4px; border: 1px solid #31506a; border-radius: 6px; padding: 4px 9px; color: #9db2c5; background: #102236; font-size: 10px; font-weight: 700; }
+.paper-position-tabs .paper-position-refresh:hover { color: #dffcf7; border-color: #3b8b80; background: #12312f; }
+.paper-position-tabs .paper-position-refresh:disabled { cursor: wait; opacity: .55; }
 .paper-two-r-toggle { display: flex; align-items: center; gap: 7px; margin-left: auto; padding: 0 12px; cursor: pointer; }
 .paper-two-r-toggle input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .paper-two-r-toggle > span { position: relative; width: 34px; height: 18px; border: 1px solid #466078; border-radius: 999px; background: #16293b; transition: .18s ease; }
