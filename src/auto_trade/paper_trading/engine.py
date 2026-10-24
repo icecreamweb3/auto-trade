@@ -59,6 +59,7 @@ class PendingOpenOrder:
     margin: float
     quantity: float
     price: float
+    order_type: PaperOrderType
     created_at: datetime
 
 
@@ -115,21 +116,61 @@ class PaperSession:
         price: float,
         notional_unit: NotionalUnit = NotionalUnit.USDT,
     ) -> PaperSessionSnapshot:
-        if self.status in (GameStatus.COMPLETED, GameStatus.LIQUIDATED):
-            raise ValueError("本轮游戏已经结束, 请重新开始")
-        if self.position is not None:
-            raise ValueError("当前已有持仓, 请先平仓")
-        if self.pending_open_order is not None:
-            raise ValueError("当前已有开仓限价委托, 请先撤单")
-        if leverage < 1 or leverage > 100:
-            raise ValueError("杠杆倍数必须在 1 到 100 之间")
-        if notional <= 0:
-            raise ValueError("名义下单价值必须大于 0")
         mark_price = self.current_candle.close_price
         if side is PositionSide.LONG and price >= mark_price:
             raise ValueError("开多限价必须低于当前价格")
         if side is PositionSide.SHORT and price <= mark_price:
             raise ValueError("开空限价必须高于当前价格")
+        return self._place_pending_open_order(
+            side,
+            notional,
+            leverage,
+            price,
+            PaperOrderType.LIMIT,
+            notional_unit,
+        )
+
+    def place_stop_open_order(
+        self,
+        side: PositionSide,
+        notional: float,
+        leverage: int,
+        price: float,
+        notional_unit: NotionalUnit = NotionalUnit.USDT,
+    ) -> PaperSessionSnapshot:
+        mark_price = self.current_candle.close_price
+        if side is PositionSide.LONG and price <= mark_price:
+            raise ValueError("Buy Stop 价格必须高于当前价格")
+        if side is PositionSide.SHORT and price >= mark_price:
+            raise ValueError("Sell Stop 价格必须低于当前价格")
+        return self._place_pending_open_order(
+            side,
+            notional,
+            leverage,
+            price,
+            PaperOrderType.STOP_MARKET,
+            notional_unit,
+        )
+
+    def _place_pending_open_order(
+        self,
+        side: PositionSide,
+        notional: float,
+        leverage: int,
+        price: float,
+        order_type: PaperOrderType,
+        notional_unit: NotionalUnit,
+    ) -> PaperSessionSnapshot:
+        if self.status in (GameStatus.COMPLETED, GameStatus.LIQUIDATED):
+            raise ValueError("本轮游戏已经结束, 请重新开始")
+        if self.position is not None:
+            raise ValueError("当前已有持仓, 请先平仓")
+        if self.pending_open_order is not None:
+            raise ValueError("当前已有开仓委托, 请先撤单")
+        if leverage < 1 or leverage > 100:
+            raise ValueError("杠杆倍数必须在 1 到 100 之间")
+        if notional <= 0:
+            raise ValueError("名义下单价值必须大于 0")
         quantity = notional / price if notional_unit is NotionalUnit.USDT else notional
         margin = quantity * price / leverage
         if margin > self.balance:
@@ -141,10 +182,12 @@ class PaperSession:
             margin=margin,
             quantity=quantity,
             price=price,
+            order_type=order_type,
             created_at=self.current_candle.close_time,
         )
         self.status = GameStatus.RUNNING
-        self.message = f"已提交开{side.value}限价委托 {price:.2f}"
+        order_label = "限价" if order_type is PaperOrderType.LIMIT else "Stop"
+        self.message = f"已提交开{side.value} {order_label} 委托 {price:.2f}"
         return self.snapshot()
 
     def _open_position_at_price(
@@ -184,7 +227,7 @@ class PaperSession:
     def cancel_order(self, order_id: str) -> PaperSessionSnapshot:
         if self.pending_open_order is not None and self.pending_open_order.order_id == order_id:
             self.pending_open_order = None
-            self.message = "开仓限价委托已取消"
+            self.message = "开仓委托已取消"
             return self.snapshot()
         position = self.position
         if position is not None and position.take_profit_order_id == order_id:
@@ -313,11 +356,18 @@ class PaperSession:
         candle = self.current_candle
         pending_open_order = self.pending_open_order
         if pending_open_order is not None:
-            order_touched = (
-                candle.low_price <= pending_open_order.price
-                if pending_open_order.side is PositionSide.LONG
-                else candle.high_price >= pending_open_order.price
-            )
+            if pending_open_order.order_type is PaperOrderType.LIMIT:
+                order_touched = (
+                    candle.low_price <= pending_open_order.price
+                    if pending_open_order.side is PositionSide.LONG
+                    else candle.high_price >= pending_open_order.price
+                )
+            else:
+                order_touched = (
+                    candle.high_price >= pending_open_order.price
+                    if pending_open_order.side is PositionSide.LONG
+                    else candle.low_price <= pending_open_order.price
+                )
             if order_touched:
                 self.pending_open_order = None
                 self._open_position_at_price(
@@ -327,7 +377,14 @@ class PaperSession:
                     NotionalUnit.BASE,
                     pending_open_order.price,
                 )
-                self.message = f"开仓限价委托已按 {pending_open_order.price:.2f} 成交"
+                order_label = (
+                    "限价"
+                    if pending_open_order.order_type is PaperOrderType.LIMIT
+                    else "Stop"
+                )
+                self.message = (
+                    f"开仓 {order_label} 委托已按 {pending_open_order.price:.2f} 成交"
+                )
                 return self.snapshot()
         position = self.position
         if position is not None:
@@ -426,7 +483,7 @@ class PaperSession:
                 PaperPendingOrder(
                     order_id=self.pending_open_order.order_id,
                     order_kind=PaperOrderKind.OPEN,
-                    order_type=PaperOrderType.LIMIT,
+                    order_type=self.pending_open_order.order_type,
                     position_side=self.pending_open_order.side,
                     price=self.pending_open_order.price,
                     quantity=self.pending_open_order.quantity,

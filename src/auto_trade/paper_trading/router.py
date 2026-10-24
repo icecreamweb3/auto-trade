@@ -318,6 +318,15 @@ async def create_order(
                     payload.notional_unit,
                 )
                 if payload.order_type is PaperOrderType.LIMIT and payload.price is not None
+                else game.place_stop_open_order(
+                    payload.side,
+                    payload.notional,
+                    payload.leverage,
+                    payload.price,
+                    payload.notional_unit,
+                )
+                if payload.order_type is PaperOrderType.STOP_MARKET
+                and payload.price is not None
                 else game.open_position(
                     payload.side,
                     payload.notional,

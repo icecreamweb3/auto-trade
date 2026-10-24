@@ -12,6 +12,7 @@ from auto_trade.paper_trading.models import (
     NotionalUnit,
     PaperCandle,
     PaperChartView,
+    PaperOrderType,
     PositionSide,
 )
 
@@ -210,6 +211,63 @@ def test_limit_open_order_can_be_cancelled_before_fill() -> None:
     assert cancelled.pending_orders == ()
     assert cancelled.available_balance == 1000
     assert advanced.position is None
+
+
+def test_buy_stop_order_waits_for_high_then_opens_long() -> None:
+    game = session(
+        candle(0, close=100),
+        candle(1, close=102, high=104, low=99),
+        candle(2, close=106, high=108, low=101),
+    )
+
+    placed = game.place_stop_open_order(
+        PositionSide.LONG,
+        notional=1000,
+        leverage=10,
+        price=105,
+    )
+    waiting = game.advance()
+    filled = game.advance()
+
+    assert placed.pending_orders[0].order_type is PaperOrderType.STOP_MARKET
+    assert waiting.position is None
+    assert len(waiting.pending_orders) == 1
+    assert filled.pending_orders == ()
+    assert filled.position is not None
+    assert filled.position.side is PositionSide.LONG
+    assert filled.position.entry_price == 105
+
+
+def test_sell_stop_order_waits_for_low_then_opens_short() -> None:
+    game = session(
+        candle(0, close=100),
+        candle(1, close=98, high=101, low=96),
+        candle(2, close=93, high=99, low=91),
+    )
+
+    placed = game.place_stop_open_order(
+        PositionSide.SHORT,
+        notional=1000,
+        leverage=10,
+        price=95,
+    )
+    waiting = game.advance()
+    filled = game.advance()
+
+    assert placed.pending_orders[0].order_type is PaperOrderType.STOP_MARKET
+    assert waiting.position is None
+    assert filled.position is not None
+    assert filled.position.side is PositionSide.SHORT
+    assert filled.position.entry_price == 95
+
+
+def test_stop_open_order_rejects_trigger_on_wrong_side_of_market() -> None:
+    game = session(candle(0, close=100), candle(1))
+
+    with pytest.raises(ValueError, match="Buy Stop"):
+        game.place_stop_open_order(PositionSide.LONG, 100, 10, 99)
+    with pytest.raises(ValueError, match="Sell Stop"):
+        game.place_stop_open_order(PositionSide.SHORT, 100, 10, 101)
 
 
 def test_session_uses_persisted_account_balance_without_resetting_it() -> None:

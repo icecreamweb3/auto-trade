@@ -310,6 +310,15 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .paper-order-line-controls button.stop-loss { border-color: #ffb347; color: #ffd08b; background: #4a3211; }
 .paper-order-line-controls button:hover { filter: brightness(1.25); }
 .paper-order-line-controls button:disabled { cursor: wait; opacity: .55; }
+.paper-chart-context-menu { position: absolute; z-index: 8; width: 260px; overflow: hidden; border: 1px solid #32475a; border-radius: 7px; padding: 5px; background: rgba(11, 18, 27, .98); box-shadow: 0 14px 38px rgba(0, 0, 0, .48); }
+.paper-chart-context-price { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #263747; padding: 7px 9px 9px; color: #7f93a6; font-size: 10px; font-variant-numeric: tabular-nums; }
+.paper-chart-context-price strong { color: #dbe7f1; font-size: 11px; }
+.paper-chart-context-menu button { display: flex; width: 100%; height: 34px; align-items: center; justify-content: space-between; gap: 12px; border: 0; border-radius: 4px; padding: 7px 9px; background: transparent; font-size: 11px; font-variant-numeric: tabular-nums; text-align: left; }
+.paper-chart-context-menu button:hover { background: #172535; }
+.paper-chart-context-menu button.buy span { color: #43d9ae; }
+.paper-chart-context-menu button.sell span { color: #ff7182; }
+.paper-chart-context-menu button strong { color: #9eb0c1; font-weight: 600; }
+.paper-chart-context-menu button:disabled { cursor: not-allowed; opacity: .42; }
 .paper-or-box { fill: rgba(245, 170, 25, .15); stroke: rgba(245, 170, 25, .88); stroke-width: 1; }
 .paper-or-boundary { stroke: rgba(245, 170, 25, .9); stroke-width: 1; }
 .paper-or-label, .paper-or-price-label, .paper-or-upper text, .paper-or-lower text { font-size: 10px; font-weight: 400; text-anchor: middle; paint-order: stroke; stroke: rgba(7, 21, 34, .9); stroke-width: 3px; stroke-linejoin: round; }

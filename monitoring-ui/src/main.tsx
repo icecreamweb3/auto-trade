@@ -316,6 +316,14 @@ interface PaperOrderControl {
   kind: "take-profit" | "stop-loss";
 }
 
+type PaperQuickOrderAction = "BUY_STOP" | "SELL_STOP" | "BUY_LIMIT" | "SELL_LIMIT" | "BUY_TAKE_PROFIT_LIMIT" | "SELL_TAKE_PROFIT_LIMIT";
+
+interface PaperChartContextMenu {
+  left: number;
+  top: number;
+  price: number;
+}
+
 interface PaperOpeningRange {
   high: number;
   low: number;
@@ -2099,7 +2107,7 @@ function BacktestWorkspace() {
   </main>;
 }
 
-function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, initialView, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onViewChange, onCancelPendingOrder, cancellingOrder }: {
+function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, sessionId, initialView, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, onViewChange, onQuickOrder, onCancelPendingOrder, cancellingOrder }: {
   candles: PaperChartPoint[];
   position: PaperPosition | null;
   pendingOrders: PaperPendingOrder[];
@@ -2110,6 +2118,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   showUpperOpeningRange: boolean;
   showLowerOpeningRange: boolean;
   onViewChange: (view: PaperChartView) => void;
+  onQuickOrder: (action: PaperQuickOrderAction, price: number) => void;
   onCancelPendingOrder: (orderId: string) => void;
   cancellingOrder: boolean;
 }) {
@@ -2134,6 +2143,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   const [timeAxisLabels, setTimeAxisLabels] = useState<PaperTimeAxisLabel[]>([]);
   const [openingRangeOverlay, setOpeningRangeOverlay] = useState<PaperOpeningRangeOverlay | null>(null);
   const [orderControls, setOrderControls] = useState<PaperOrderControl[]>([]);
+  const [contextMenu, setContextMenu] = useState<PaperChartContextMenu | null>(null);
   const visibleCapacity = intervalSeconds === 300 ? 112 : 64;
   const points = candles;
   const initialLatestPosition = .8;
@@ -2231,6 +2241,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       if (scaleWidth <= 0 || event.clientX - bounds.left < bounds.width - scaleWidth) return;
       const range = priceScale.getVisibleRange();
       if (!range) return;
+      setContextMenu(null);
       event.preventDefault();
       event.stopPropagation();
       const pointerPrice = candleSeries.coordinateToPrice(event.clientY - bounds.top);
@@ -2268,6 +2279,7 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
     };
     const handleVisibleRangeChange = (range: LogicalRange | null) => {
       if (!range || loadedCountRef.current === 0) return;
+      setContextMenu(null);
       followingLatestRef.current = range.to >= loadedCountRef.current - 1;
       publishChartView();
       refreshTimeAxisRef.current();
@@ -2360,6 +2372,44 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   }, []);
 
   useEffect(() => setHoveredCandle(null), [sessionId]);
+
+  useEffect(() => {
+    setContextMenu(null);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeMenu = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".paper-chart-context-menu")) return;
+      setContextMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [contextMenu]);
+
+  function openContextMenu(event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const container = containerRef.current;
+    const series = candleSeriesRef.current;
+    if (!container || !series || points.length === 0) return;
+    const bounds = container.getBoundingClientRect();
+    const price = series.coordinateToPrice(event.clientY - bounds.top);
+    if (price === null || !Number.isFinite(price)) return;
+    const menuWidth = 260;
+    const menuHeight = 164;
+    setContextMenu({
+      left: Math.max(8, Math.min(event.clientX - bounds.left, bounds.width - menuWidth - 8)),
+      top: Math.max(8, Math.min(event.clientY - bounds.top, bounds.height - menuHeight - 8)),
+      price,
+    });
+  }
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -2466,8 +2516,12 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       ...(position === null || position.liquidation_price <= 0 ? [] : [{ price: position.liquidation_price, color: "#ff6477", title: "强平", style: LineStyle.Dashed }]),
       ...pendingOrders.map((order) => ({
         price: order.price,
-        color: order.order_type === "STOP_MARKET" ? "#ffb347" : order.order_kind === "OPEN" ? "#58a6ff" : "#0ecb81",
-        title: order.order_type === "STOP_MARKET" ? "止损" : order.order_kind === "OPEN" ? `限价开${order.position_side === "LONG" ? "多" : "空"}` : "限价止盈",
+        color: order.order_kind === "OPEN" ? "#58a6ff" : order.order_type === "STOP_MARKET" ? "#ffb347" : "#0ecb81",
+        title: order.order_kind === "OPEN"
+          ? order.order_type === "STOP_MARKET"
+            ? `${order.position_side === "LONG" ? "Buy" : "Sell"} Stop`
+            : `${order.position_side === "LONG" ? "Buy" : "Sell"} Limit`
+          : order.order_type === "STOP_MARKET" ? "止损" : "限价止盈",
         style: LineStyle.Dashed,
       })),
     ];
@@ -2562,6 +2616,23 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
   }, [points, sessionId, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange]);
 
   const current = hoveredCandle ?? points[points.length - 1];
+  const markPrice = points[points.length - 1]?.close_price ?? null;
+  const openingOrderBlocked = position !== null || pendingOrders.some((order) => order.order_kind === "OPEN");
+  const quickOrderActions: Array<{ action: PaperQuickOrderAction; label: string; disabled: boolean }> = contextMenu && markPrice !== null
+    ? contextMenu.price > markPrice
+      ? [
+          { action: "BUY_STOP", label: "Buy Stop", disabled: openingOrderBlocked },
+          { action: "SELL_LIMIT", label: "Sell Limit", disabled: openingOrderBlocked },
+          ...(position?.side === "LONG" ? [{ action: "SELL_TAKE_PROFIT_LIMIT" as const, label: "Sell Take Profit Limit", disabled: false }] : []),
+        ]
+      : contextMenu.price < markPrice
+        ? [
+            { action: "SELL_STOP", label: "Sell Stop", disabled: openingOrderBlocked },
+            { action: "BUY_LIMIT", label: "Buy Limit", disabled: openingOrderBlocked },
+            ...(position?.side === "SHORT" ? [{ action: "BUY_TAKE_PROFIT_LIMIT" as const, label: "Buy Take Profit Limit", disabled: false }] : []),
+          ]
+        : []
+    : [];
   const candleChange = current ? current.close_price - current.open_price : null;
   const candleChangePercent = current && current.open_price > 0 ? candleChange! / current.open_price * 100 : null;
   const candleAmplitude = current && current.open_price > 0 ? (current.high_price - current.low_price) / current.open_price * 100 : null;
@@ -2581,7 +2652,22 @@ function PaperReplayChart({ candles, position, pendingOrders, intervalSeconds, s
       {current && <span className="paper-ema-legend"><span>EMA20 <strong>{current.ema20 === null ? "--" : formatNumber(current.ema20, 2)}</strong></span><span>EMA240 <strong>{current.ema240 === null ? "--" : formatNumber(current.ema240, 2)}</strong></span></span>}
     </div>
     <div className="paper-chart-canvas">
-      <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" />
+      <div ref={containerRef} className="paper-lightweight-chart" role="img" aria-label="PaperTrader K线回放图" onContextMenu={openContextMenu} />
+      {contextMenu && quickOrderActions.length > 0 && <div className="paper-chart-context-menu" role="menu" style={{ left: contextMenu.left, top: contextMenu.top }}>
+        <div className="paper-chart-context-price"><span>委托价格</span><strong>{formatNumber(contextMenu.price, 2)}</strong></div>
+        {quickOrderActions.map((item) => <button
+          key={item.action}
+          type="button"
+          role="menuitem"
+          className={item.action.startsWith("BUY") ? "buy" : "sell"}
+          disabled={cancellingOrder || item.disabled}
+          title={item.disabled ? "单持仓模式下，请先平仓或撤销当前开仓委托" : `${item.label} @ ${formatNumber(contextMenu.price, 2)}`}
+          onClick={() => {
+            setContextMenu(null);
+            onQuickOrder(item.action, contextMenu.price);
+          }}
+        ><span>{item.label}</span><strong>{formatNumber(contextMenu.price, 2)}</strong></button>)}
+      </div>}
       <div className="paper-order-line-controls">
         {orderControls.map((control) => <button
           key={control.orderId}
@@ -3079,6 +3165,58 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     }
   }
 
+  async function submitQuickOrder(action: PaperQuickOrderAction, price: number) {
+    if (!snapshot || positionAction) return;
+    const isTakeProfit = action === "BUY_TAKE_PROFIT_LIMIT" || action === "SELL_TAKE_PROFIT_LIMIT";
+    if (isTakeProfit) {
+      const position = snapshot.position;
+      if (!position) {
+        setError("当前没有可设置止盈的持仓");
+        return;
+      }
+      const expectedAction = position.side === "LONG" ? "SELL_TAKE_PROFIT_LIMIT" : "BUY_TAKE_PROFIT_LIMIT";
+      if (action !== expectedAction) {
+        setError("止盈方向与当前持仓不匹配");
+        return;
+      }
+    } else if (notional === "" || leverage === "") {
+      setError("请先在下单面板设置名义下单价值和杠杆倍数");
+      return;
+    }
+    setPositionAction(true);
+    setError(null);
+    try {
+      const next = isTakeProfit
+        ? await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/close`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              quantity: snapshot.position!.quantity,
+              order_type: "LIMIT",
+              price,
+            }),
+          })
+        : await requestSnapshot(`/api/paper-trader/sessions/${snapshot.session_id}/orders`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              side: action.startsWith("BUY") ? "LONG" : "SHORT",
+              notional,
+              notional_unit: notionalUnit,
+              leverage,
+              order_type: action.endsWith("STOP") ? "STOP_MARKET" : "LIMIT",
+              price,
+            }),
+          });
+      applySnapshot(next);
+      setPositionTab("orders");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "快捷下单失败");
+    } finally {
+      setPositionAction(false);
+    }
+  }
+
   async function cancelPendingOrder(orderId: string) {
     if (!snapshot) return;
     setPositionAction(true);
@@ -3387,7 +3525,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                 <label><span>回放速度</span><select value={speedSeconds} onChange={(event) => setSpeedSeconds(Number(event.target.value))}><option value={1}>每 1 秒一根</option><option value={3}>每 3 秒一根</option><option value={5}>每 5 秒一根</option><option value={10}>每 10 秒一根</option><option value={15}>每 15 秒一根</option><option value={30}>每 30 秒一根</option></select></label><button type="button" onClick={() => setPlaying((value) => !value)} disabled={gameEnded}>{playing ? "暂停" : "播放"}</button><button type="button" onClick={() => void advance()} disabled={playing || gameEnded}>下一根</button></div>
             </div>
             <div className="paper-chart-stage">
-              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
+              <PaperReplayChart candles={candles} position={snapshot.position} pendingOrders={snapshot.pending_orders} intervalSeconds={snapshot.interval_seconds} sessionId={snapshot.session_id} initialView={chartView} showOpeningRange={showOpeningRange} showUpperOpeningRange={showUpperOpeningRange} showLowerOpeningRange={showLowerOpeningRange} onViewChange={setChartView} onQuickOrder={(action, price) => void submitQuickOrder(action, price)} onCancelPendingOrder={(orderId) => void cancelPendingOrder(orderId)} cancellingOrder={positionAction} />
               {gameEnded && <section className={`paper-game-over ${snapshot.status === "LIQUIDATED" ? "liquidated" : ""}`}><p>{snapshot.status === "LIQUIDATED" ? "LIQUIDATED" : "REPLAY COMPLETE"}</p><h2>{snapshot.message}</h2><strong>最终余额 {formatNumber(snapshot.balance, 2)} USDT</strong><div className="paper-game-over-actions"><button type="button" onClick={restartCurrentRound} disabled={loading}>{loading ? "正在载入…" : "重来一轮"}</button><button className="primary-button" type="button" onClick={startRandomNextRound} disabled={loading || !metadata}>{loading ? "正在载入…" : "随机下一轮"}</button></div></section>}
             </div>
           </div>
@@ -3410,7 +3548,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
                   <td><button type="button" className="paper-market-close" onClick={() => void closePosition()} disabled={positionAction}>市价平仓</button></td>
                 </tr></tbody>
               </table>
-            </div> : <div className="paper-position-empty">当前没有持仓，可在右侧下单面板开多或开空。</div> : positionTab === "orders" ? snapshot.pending_orders.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-orders-table"><thead><tr><th>合约</th><th>委托方向</th><th>委托类型</th><th>价格</th><th>数量 ({baseAsset})</th><th>杠杆</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{snapshot.pending_orders.map((order) => <tr key={order.order_id}><td><strong>{snapshot.symbol}</strong></td><td className={order.position_side === "LONG" ? "paper-long-price" : "paper-short-price"}>{order.order_kind === "OPEN" ? "开" : "平"}{order.position_side === "LONG" ? "多" : "空"}</td><td>{order.order_type === "LIMIT" ? order.order_kind === "CLOSE" ? "限价止盈" : "限价" : "止损"}</td><td>{formatNumber(order.price, 2)}</td><td>{formatNumber(order.quantity, 6)}</td><td>{order.leverage}x</td><td>{formatKlineTime(order.created_at)}</td><td><span className="paper-order-active">委托中</span></td><td><button type="button" className="paper-cancel-order" onClick={() => void cancelPendingOrder(order.order_id)} disabled={positionAction}>撤单</button></td></tr>)}</tbody></table></div> : <div className="paper-position-empty">当前没有未成交委托。</div> : snapshot.trades.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-history-table"><thead><tr><th>平仓时间</th><th>方向</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>杠杆</th><th>已实现盈亏</th><th>原因</th></tr></thead><tbody>{snapshot.trades.slice().reverse().map((trade) => <tr key={`${trade.opened_at}-${trade.closed_at}`}><td>{formatKlineTime(trade.closed_at)}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{formatNumber(trade.quantity, 6)} {baseAsset}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td>{trade.leverage}x</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="paper-position-empty">本轮暂无历史订单。</div>}
+            </div> : <div className="paper-position-empty">当前没有持仓，可在右侧下单面板开多或开空。</div> : positionTab === "orders" ? snapshot.pending_orders.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-orders-table"><thead><tr><th>合约</th><th>委托方向</th><th>委托类型</th><th>价格</th><th>数量 ({baseAsset})</th><th>杠杆</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{snapshot.pending_orders.map((order) => <tr key={order.order_id}><td><strong>{snapshot.symbol}</strong></td><td className={order.position_side === "LONG" ? "paper-long-price" : "paper-short-price"}>{order.order_kind === "OPEN" ? "开" : "平"}{order.position_side === "LONG" ? "多" : "空"}</td><td>{order.order_type === "LIMIT" ? order.order_kind === "CLOSE" ? "限价止盈" : "限价" : order.order_kind === "OPEN" ? "Stop" : "止损"}</td><td>{formatNumber(order.price, 2)}</td><td>{formatNumber(order.quantity, 6)}</td><td>{order.leverage}x</td><td>{formatKlineTime(order.created_at)}</td><td><span className="paper-order-active">委托中</span></td><td><button type="button" className="paper-cancel-order" onClick={() => void cancelPendingOrder(order.order_id)} disabled={positionAction}>撤单</button></td></tr>)}</tbody></table></div> : <div className="paper-position-empty">当前没有未成交委托。</div> : snapshot.trades.length ? <div className="paper-position-table-wrap"><table className="paper-position-table paper-history-table"><thead><tr><th>平仓时间</th><th>方向</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>杠杆</th><th>已实现盈亏</th><th>原因</th></tr></thead><tbody>{snapshot.trades.slice().reverse().map((trade) => <tr key={`${trade.opened_at}-${trade.closed_at}`}><td>{formatKlineTime(trade.closed_at)}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{formatNumber(trade.quantity, 6)} {baseAsset}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td>{trade.leverage}x</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="paper-position-empty">本轮暂无历史订单。</div>}
           </section>
         </div>
         <aside className="panel paper-order-panel">

@@ -140,10 +140,8 @@ class PaperOrderCreate(BaseModel):
 
     @model_validator(mode="after")
     def require_limit_price(self) -> PaperOrderCreate:
-        if self.order_type is PaperOrderType.STOP_MARKET:
-            raise ValueError("开仓委托只支持市价或限价")
-        if self.order_type is PaperOrderType.LIMIT and self.price is None:
-            raise ValueError("限价委托必须填写价格")
+        if self.order_type is not PaperOrderType.MARKET and self.price is None:
+            raise ValueError("限价或 Stop 委托必须填写价格")
         return self
 
 
