@@ -3813,7 +3813,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     <section className="paper-session-shortcuts" aria-label="行情生成快捷入口">
       <span>行情生成</span>
       <button className="paper-session-random" type="button" onClick={() => startRandomSession("US")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机美盘 · 21:30—04:30"}</button>
-      <button className="paper-session-random" type="button" onClick={() => startRandomSession("ASIA")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机亚盘"}</button>
+      <button className="paper-session-random" type="button" onClick={() => startRandomSession("ASIA")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机亚盘 · 08:00—18:00"}</button>
       {replayPresets.map((preset) => <div className="paper-saved-preset" key={preset.id}><button type="button" onClick={() => startReplayPreset(preset)} disabled={restoringSession || loading || !!snapshot?.position}>{paperReplayPresetLabel(preset)}</button><button type="button" onClick={() => removeReplayPreset(preset.id)} disabled={restoringSession || loading || !!snapshot?.position} aria-label={`删除 ${paperReplayPresetLabel(preset)}`}>×</button></div>)}
     </section>
     {settingsOpen && <section className="panel paper-config">
