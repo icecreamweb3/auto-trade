@@ -440,15 +440,78 @@ interface AdminUser {
 interface AccountTrade extends PaperTrade {
   trade_id: string;
   session_id: string;
+  round_no: number;
   symbol: string;
   interval_seconds: number;
   balance_before: number;
   balance_after: number;
+  recorded_at: string;
 }
 
-interface AccountTradeHistory {
+interface AccountPerformanceSummary {
+  round_count: number;
+  completed_round_count: number;
+  trade_count: number;
+  winning_trade_count: number;
+  win_rate: number;
+  gross_pnl: number;
+  total_fees: number;
+  net_pnl: number;
+}
+
+interface DailyPerformance {
+  trade_date: string;
+  round_count: number;
+  trade_count: number;
+  winning_trade_count: number;
+  win_rate: number;
+  gross_pnl: number;
+  total_fees: number;
+  net_pnl: number;
+}
+
+interface RoundPerformance {
+  session_id: string;
+  round_no: number;
+  symbol: string;
+  interval_seconds: number;
+  range_start: string;
+  range_end: string;
+  status: "READY" | "RUNNING" | "COMPLETED" | "LIQUIDATED";
+  started_at: string;
+  completed_at: string | null;
+  starting_balance: number;
+  ending_balance: number;
+  trade_count: number;
+  winning_trade_count: number;
+  win_rate: number;
+  gross_pnl: number;
+  total_fees: number;
+  net_pnl: number;
+}
+
+interface ProfitRankingEntry {
+  rank: number;
+  user_id: string;
+  display_name: string;
+  balance: number;
+  round_count: number;
+  trade_count: number;
+  win_rate: number;
+  gross_pnl: number;
+  total_fees: number;
+  net_pnl: number;
+}
+
+interface AccountAnalytics {
   account: AccountSummary;
+  summary: AccountPerformanceSummary;
+  daily: DailyPerformance[];
+  rounds: RoundPerformance[];
   trades: AccountTrade[];
+  today_ranking: ProfitRankingEntry[];
+  overall_ranking: ProfitRankingEntry[];
+  timezone: string;
 }
 
 type NumericInput = number | "";
@@ -3750,7 +3813,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     <section className="paper-session-shortcuts" aria-label="行情生成快捷入口">
       <span>行情生成</span>
       <button className="paper-session-random" type="button" onClick={() => startRandomSession("US")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机美盘 · 21:30—04:30"}</button>
-      <button className="paper-session-random" type="button" onClick={() => startRandomSession("ASIA")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机亚洲 · 08:00—18:00"}</button>
+      <button className="paper-session-random" type="button" onClick={() => startRandomSession("ASIA")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机亚盘"}</button>
       {replayPresets.map((preset) => <div className="paper-saved-preset" key={preset.id}><button type="button" onClick={() => startReplayPreset(preset)} disabled={restoringSession || loading || !!snapshot?.position}>{paperReplayPresetLabel(preset)}</button><button type="button" onClick={() => removeReplayPreset(preset.id)} disabled={restoringSession || loading || !!snapshot?.position} aria-label={`删除 ${paperReplayPresetLabel(preset)}`}>×</button></div>)}
     </section>
     {settingsOpen && <section className="panel paper-config">
@@ -4031,37 +4094,65 @@ function UserManagementWorkspace() {
 }
 
 function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAccountChange: (account: AccountSummary) => void }) {
-  const [history, setHistory] = useState<AccountTradeHistory | null>(null);
+  const [analytics, setAnalytics] = useState<AccountAnalytics | null>(null);
+  const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
-    void fetch("/api/account/trades?limit=500", { cache: "no-store" })
+    setError(null);
+    void fetch(`/api/account/analytics?days=${days}`, { cache: "no-store" })
       .then(async (response) => {
-        const body = await response.json() as AccountTradeHistory | { detail?: string };
-        if (!response.ok) throw new Error(paperErrorMessage(body, "账户记录加载失败"));
-        const value = body as AccountTradeHistory;
-        setHistory(value);
+        const body = await response.json() as AccountAnalytics | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "收益分析加载失败"));
+        const value = body as AccountAnalytics;
+        setAnalytics(value);
         onAccountChange(value.account);
       })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "账户记录加载失败"))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "收益分析加载失败"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [days]);
 
-  const account = history?.account ?? user.account;
+  const account = analytics?.account ?? user.account;
+  const summary = analytics?.summary;
+  const chartDays = useMemo(() => analytics?.daily ?? [], [analytics]);
+  const chartMaximum = Math.max(0.01, ...chartDays.map((item) => Math.abs(item.net_pnl)));
+  const roundStatus = (status: RoundPerformance["status"]) => status === "READY" ? "待交易" : status === "RUNNING" ? "进行中" : status === "LIQUIDATED" ? "已强平" : "已结束";
+  const rankingTable = (rows: ProfitRankingEntry[]) => <div className="table-scroll"><table className="storage-table account-ranking-table"><thead><tr><th>排名</th><th>用户</th><th>净收益</th><th>轮次</th><th>交易数</th><th>胜率</th><th>手续费</th></tr></thead><tbody>{rows.map((entry) => <tr key={entry.user_id} className={entry.user_id === user.user_id ? "current-user" : ""}><td>#{entry.rank}</td><td>{entry.display_name}</td><td className={profitClass(entry.net_pnl)}>{entry.net_pnl >= 0 ? "+" : ""}{formatNumber(entry.net_pnl, 2)}</td><td>{entry.round_count}</td><td>{entry.trade_count}</td><td>{formatNumber(entry.win_rate, 1)}%</td><td>{formatNumber(entry.total_fees, 2)}</td></tr>)}</tbody></table></div>;
+
   return <main className="account-page">
-    <header className="topbar"><div><p className="brand-mark">MY ACCOUNT</p><h1>模拟账户</h1><p className="subtitle">{user.username ?? user.email} · {user.role === "NORMAL" ? "普通用户" : user.role === "ADVANCED" ? "高级用户" : "管理员"} · 注册于 {new Date(user.created_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })}</p></div></header>
-    <section className="paper-account-grid">
-      <article className="summary-card"><span>当前余额</span><strong>{formatNumber(account.balance, 2)}</strong><em>USDT</em></article>
-      <article className="summary-card"><span>初始资金</span><strong>{formatNumber(account.starting_balance, 2)}</strong><em>USDT</em></article>
-      <article className="summary-card"><span>累计已实现盈亏</span><strong className={profitClass(account.realized_pnl)}>{account.realized_pnl >= 0 ? "+" : ""}{formatNumber(account.realized_pnl, 2)}</strong><em>USDT</em></article>
-      <article className="summary-card"><span>累计成交</span><strong>{account.trade_count}</strong><em>笔已平仓交易</em></article>
+    <header className="topbar account-heading"><div><p className="brand-mark">PERFORMANCE</p><h1>账户统计与收益分析</h1><p className="subtitle">{user.username ?? user.email} · 按 UTC+8 自然日统计 · 净收益已扣除模拟手续费</p></div><div className="account-period-switch" aria-label="每日收益范围">{[7, 30, 90].map((value) => <button type="button" key={value} className={days === value ? "active" : ""} onClick={() => setDays(value)}>{value} 天</button>)}</div></header>
+    <section className="account-metric-grid">
+      <article className="summary-card"><span>账户余额</span><strong>{formatNumber(account.balance, 2)}</strong><em>USDT</em></article>
+      <article className="summary-card"><span>累计净收益</span><strong className={profitClass(summary?.net_pnl ?? account.realized_pnl)}>{(summary?.net_pnl ?? account.realized_pnl) >= 0 ? "+" : ""}{formatNumber(summary?.net_pnl ?? account.realized_pnl, 2)}</strong><em>USDT</em></article>
+      <article className="summary-card"><span>交易胜率</span><strong>{formatNumber(summary?.win_rate ?? 0, 1)}%</strong><em>{summary?.winning_trade_count ?? 0} 笔盈利</em></article>
+      <article className="summary-card"><span>交易轮次</span><strong>{summary?.round_count ?? 0}</strong><em>{summary?.completed_round_count ?? 0} 轮已结束</em></article>
+      <article className="summary-card"><span>总交易次数</span><strong>{summary?.trade_count ?? account.trade_count}</strong><em>笔已平仓交易</em></article>
+      <article className="summary-card"><span>总手续费</span><strong>{formatNumber(summary?.total_fees ?? 0, 2)}</strong><em>USDT</em></article>
     </section>
-    <section className="panel account-history-panel">
-      <div className="panel-heading"><div><p className="eyebrow">TRADE HISTORY</p><h3>全部模拟交易记录</h3></div></div>
-      {loading ? <div className="loading">正在读取账户记录…</div> : error ? <div className="alert alert-critical">{error}</div> : history?.trades.length ? <div className="table-scroll account-history-scroll"><table className="storage-table account-history-table"><thead><tr><th>平仓时间 UTC+8</th><th>交易对</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>手续费</th><th>已实现盈亏</th><th>平仓后余额</th><th>原因</th></tr></thead><tbody>{history.trades.map((trade) => <tr key={trade.trade_id}><td>{new Date(trade.closed_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{trade.symbol}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{trade.leverage}x</td><td>{formatBaseQuantity(trade.quantity, trade.symbol)}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td>{formatNumber(trade.fee, 4)}</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{formatNumber(trade.balance_after, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">暂无交易记录，前往交易模拟器开始第一笔练习。</div>}
-    </section>
+    {loading && !analytics ? <div className="panel loading account-loading">正在生成收益分析…</div> : error ? <div className="alert alert-critical">{error}</div> : analytics && <>
+      <section className="panel account-analysis-panel">
+        <div className="panel-heading"><div><p className="eyebrow">DAILY PNL</p><h3>每日净收益</h3></div><span>毛盈亏 {analytics.summary.gross_pnl >= 0 ? "+" : ""}{formatNumber(analytics.summary.gross_pnl, 2)} · 手续费 {formatNumber(analytics.summary.total_fees, 2)} USDT</span></div>
+        <div className="account-daily-chart" role="img" aria-label={`最近 ${days} 天每日净收益柱状图`}><div className="account-chart-zero" />{chartDays.map((item) => <div className="account-daily-bar" key={item.trade_date} title={`${item.trade_date}：${item.net_pnl >= 0 ? "+" : ""}${formatNumber(item.net_pnl, 2)} USDT，${item.trade_count} 笔交易`}><strong className={profitClass(item.net_pnl)}>{item.net_pnl === 0 ? "—" : `${item.net_pnl > 0 ? "+" : ""}${formatNumber(item.net_pnl, 2)}`}</strong><div><span className={item.net_pnl >= 0 ? "positive" : "negative"} style={{ height: `${Math.max(item.net_pnl === 0 ? 2 : 7, Math.abs(item.net_pnl) / chartMaximum * 100)}%` }} /></div><small>{item.trade_date.slice(5)}</small></div>)}</div>
+      </section>
+      <section className="account-ranking-grid">
+        <article className="panel"><div className="panel-heading"><div><p className="eyebrow">TODAY</p><h3>今日收益排名</h3></div><span>UTC+8</span></div>{rankingTable(analytics.today_ranking)}</article>
+        <article className="panel"><div className="panel-heading"><div><p className="eyebrow">ALL TIME</p><h3>总收益排名</h3></div><span>按净收益排序</span></div>{rankingTable(analytics.overall_ranking)}</article>
+      </section>
+      <section className="panel account-round-panel">
+        <div className="panel-heading"><div><p className="eyebrow">ROUNDS</p><h3>交易轮次统计</h3></div><strong>{analytics.rounds.length} 轮</strong></div>
+        {analytics.rounds.length ? <div className="table-scroll"><table className="storage-table account-round-table"><thead><tr><th>轮次</th><th>状态</th><th>开始时间 UTC+8</th><th>模拟行情</th><th>周期</th><th>交易次数</th><th>胜率</th><th>毛盈亏</th><th>手续费</th><th>净收益</th><th>结束余额</th></tr></thead><tbody>{analytics.rounds.map((round) => <tr key={round.session_id}><td><strong>#{round.round_no}</strong></td><td><span className={`round-status status-${round.status.toLowerCase()}`}>{roundStatus(round.status)}</span></td><td>{new Date(round.started_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{round.symbol}<small>{new Date(round.range_start).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" })} – {new Date(round.range_end).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" })}</small></td><td>{round.interval_seconds / 60}m</td><td>{round.trade_count}</td><td>{formatNumber(round.win_rate, 1)}%</td><td className={profitClass(round.gross_pnl)}>{round.gross_pnl >= 0 ? "+" : ""}{formatNumber(round.gross_pnl, 2)}</td><td>{formatNumber(round.total_fees, 4)}</td><td className={profitClass(round.net_pnl)}>{round.net_pnl >= 0 ? "+" : ""}{formatNumber(round.net_pnl, 2)}</td><td>{formatNumber(round.ending_balance, 2)}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">尚未开始任何模拟交易轮次。</div>}
+      </section>
+      <section className="panel account-daily-panel">
+        <div className="panel-heading"><div><p className="eyebrow">DAILY SUMMARY</p><h3>每日交易统计</h3></div><span>最近 {days} 天</span></div>
+        <div className="table-scroll account-daily-scroll"><table className="storage-table account-daily-table"><thead><tr><th>日期 UTC+8</th><th>开始轮次</th><th>交易次数</th><th>盈利次数</th><th>胜率</th><th>毛盈亏</th><th>手续费</th><th>净收益</th></tr></thead><tbody>{analytics.daily.map((item) => <tr key={item.trade_date}><td>{item.trade_date}</td><td>{item.round_count}</td><td>{item.trade_count}</td><td>{item.winning_trade_count}</td><td>{formatNumber(item.win_rate, 1)}%</td><td className={profitClass(item.gross_pnl)}>{item.gross_pnl >= 0 ? "+" : ""}{formatNumber(item.gross_pnl, 2)}</td><td>{formatNumber(item.total_fees, 4)}</td><td className={profitClass(item.net_pnl)}>{item.net_pnl >= 0 ? "+" : ""}{formatNumber(item.net_pnl, 2)}</td></tr>)}</tbody></table></div>
+      </section>
+      <section className="panel account-history-panel">
+        <div className="panel-heading"><div><p className="eyebrow">TRADE DETAILS</p><h3>持仓交易明细</h3></div><strong>{analytics.trades.length} 笔</strong></div>
+        {analytics.trades.length ? <div className="table-scroll account-history-scroll"><table className="storage-table account-history-table"><thead><tr><th>轮次</th><th>记录时间 UTC+8</th><th>模拟平仓时间</th><th>交易对</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>毛盈亏</th><th>手续费</th><th>净收益</th><th>平仓后余额</th><th>原因</th></tr></thead><tbody>{analytics.trades.map((trade) => <tr key={trade.trade_id}><td>#{trade.round_no}</td><td>{new Date(trade.recorded_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{new Date(trade.closed_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{trade.symbol}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{trade.leverage}x</td><td>{formatBaseQuantity(trade.quantity, trade.symbol)}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td className={profitClass(trade.gross_pnl)}>{trade.gross_pnl >= 0 ? "+" : ""}{formatNumber(trade.gross_pnl, 2)}</td><td>{formatNumber(trade.fee, 4)}</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{formatNumber(trade.balance_after, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">暂无交易记录，前往交易模拟器开始第一笔练习。</div>}
+      </section>
+    </>}
   </main>;
 }
 
@@ -4110,6 +4201,7 @@ function App() {
         {user.role !== "NORMAL" && <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>}
         {user.role !== "NORMAL" && <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>}
         <button className={view === "paper" ? "active" : ""} onClick={() => setView("paper")}>交易模拟器</button>
+        <button className={view === "account" ? "active" : ""} onClick={() => setView("account")}>收益分析</button>
         {user.role !== "NORMAL" && <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>}
         {user.role === "ADMIN" && <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>用户管理</button>}
       </nav>

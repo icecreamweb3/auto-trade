@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
 from uuid import UUID
@@ -93,6 +93,7 @@ class AccountTrade(BaseModel):
 
     trade_id: UUID
     session_id: UUID
+    round_no: int
     symbol: str
     interval_seconds: int
     side: str
@@ -110,6 +111,7 @@ class AccountTrade(BaseModel):
     balance_after: float
     opened_at: datetime
     closed_at: datetime
+    recorded_at: datetime
     exit_reason: str
 
 
@@ -118,6 +120,82 @@ class AccountTradeHistory(BaseModel):
 
     account: AccountSummary
     trades: tuple[AccountTrade, ...]
+
+
+class AccountPerformanceSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    round_count: int
+    completed_round_count: int
+    trade_count: int
+    winning_trade_count: int
+    win_rate: float
+    gross_pnl: float
+    total_fees: float
+    net_pnl: float
+
+
+class DailyPerformance(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    trade_date: date
+    round_count: int
+    trade_count: int
+    winning_trade_count: int
+    win_rate: float
+    gross_pnl: float
+    total_fees: float
+    net_pnl: float
+
+
+class RoundPerformance(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    round_no: int
+    symbol: str
+    interval_seconds: int
+    range_start: datetime
+    range_end: datetime
+    status: str
+    started_at: datetime
+    completed_at: datetime | None
+    starting_balance: float
+    ending_balance: float
+    trade_count: int
+    winning_trade_count: int
+    win_rate: float
+    gross_pnl: float
+    total_fees: float
+    net_pnl: float
+
+
+class ProfitRankingEntry(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    rank: int
+    user_id: UUID
+    display_name: str
+    balance: float
+    round_count: int
+    trade_count: int
+    win_rate: float
+    gross_pnl: float
+    total_fees: float
+    net_pnl: float
+
+
+class AccountAnalytics(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    account: AccountSummary
+    summary: AccountPerformanceSummary
+    daily: tuple[DailyPerformance, ...]
+    rounds: tuple[RoundPerformance, ...]
+    trades: tuple[AccountTrade, ...]
+    today_ranking: tuple[ProfitRankingEntry, ...]
+    overall_ranking: tuple[ProfitRankingEntry, ...]
+    timezone: str = "Asia/Shanghai"
 
 
 class PaperReplayPresetPreference(BaseModel):

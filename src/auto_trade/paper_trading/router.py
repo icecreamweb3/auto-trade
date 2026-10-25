@@ -99,6 +99,11 @@ async def _mutate_session(
                     balance_after=balance_after,
                 )
                 balance_before = balance_after
+            await repository.update_paper_session(
+                session_id=candidate.session_id,
+                ending_balance=candidate.balance,
+                status=candidate.status.value,
+            )
         except AccountBalanceChangedError as error:
             raise HTTPException(
                 status_code=409,
@@ -300,6 +305,18 @@ async def _create_session(
             raise HTTPException(status_code=409, detail="请先平掉当前模拟持仓再开始新一轮")
         if managed.user_id == user.user_id:
             previous_session_ids.append(session_id)
+    await AccountRepository(
+        request.app.state.database_engine
+    ).record_paper_session(
+        user_id=user.user_id,
+        session_id=session.session_id,
+        symbol=session.symbol,
+        interval_seconds=session.interval_seconds,
+        range_start=session.range_start,
+        range_end=session.range_end,
+        starting_balance=account.balance,
+        status=session.status.value,
+    )
     for session_id in previous_session_ids:
         sessions.pop(session_id, None)
     if len(sessions) >= 100:

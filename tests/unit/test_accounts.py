@@ -130,6 +130,68 @@ async def test_missing_paper_trader_preferences_return_defaults() -> None:
     assert preferences.show_lower_opening_range is False
 
 
+async def test_paper_round_is_persisted_and_updated() -> None:
+    connection = MagicMock()
+    connection.execute = AsyncMock()
+    engine = MagicMock()
+    engine.begin.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.begin.return_value.__aexit__ = AsyncMock(return_value=None)
+    repository = AccountRepository(engine)
+    user_id = uuid4()
+    session_id = str(uuid4())
+    range_start = datetime(2026, 1, 1, tzinfo=UTC)
+    range_end = datetime(2026, 1, 2, tzinfo=UTC)
+
+    await repository.record_paper_session(
+        user_id=user_id,
+        session_id=session_id,
+        symbol="BTCUSDT",
+        interval_seconds=300,
+        range_start=range_start,
+        range_end=range_end,
+        starting_balance=1000,
+        status="READY",
+    )
+
+    statement, parameters = connection.execute.await_args.args
+    assert "INSERT INTO trade.paper_sessions" in str(statement)
+    assert parameters["session_id"] == session_id
+    assert parameters["starting_balance"] == 1000
+
+    await repository.update_paper_session(
+        session_id=session_id,
+        ending_balance=1012.5,
+        status="COMPLETED",
+    )
+
+    statement, parameters = connection.execute.await_args.args
+    assert "UPDATE trade.paper_sessions" in str(statement)
+    assert parameters == {
+        "session_id": session_id,
+        "ending_balance": 1012.5,
+        "status": "COMPLETED",
+        "completed": True,
+    }
+
+
+async def test_today_profit_ranking_uses_actual_record_time() -> None:
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = []
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    ranking = await AccountRepository(engine)._profit_ranking(today_only=True)
+
+    assert ranking == ()
+    statement = str(connection.execute.await_args.args[0])
+    assert "created_at >=" in statement
+    assert "closed_at >=" not in statement
+    assert "Asia/Shanghai" in statement
+
+
 def current_user(role: UserRole) -> CurrentUser:
     return CurrentUser(
         user_id=uuid4(),
@@ -207,6 +269,7 @@ async def test_authentication_database_failure_returns_json_503(
     (
         (UserRole.NORMAL, "/api/paper-trader/metadata", True),
         (UserRole.NORMAL, "/api/account/trades", True),
+        (UserRole.NORMAL, "/api/account/analytics", True),
         (UserRole.NORMAL, "/api/account/preferences/paper-trader", True),
         (UserRole.NORMAL, "/api/rankings/daily", False),
         (UserRole.NORMAL, "/api/backtests/metadata", False),

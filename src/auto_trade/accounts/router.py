@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
 
 from auto_trade.accounts.models import (
+    AccountAnalytics,
     AccountTradeHistory,
     AdminUser,
     Credentials,
@@ -148,6 +149,15 @@ async def trade_history(
         account=await repository.account_summary(user.user_id),
         trades=await repository.trades(user.user_id, limit),
     )
+
+
+@router.get("/api/account/analytics", response_model=AccountAnalytics)
+async def account_analytics(
+    request: Request,
+    user: AuthenticatedUser,
+    days: int = Query(default=30, ge=7, le=90),
+) -> AccountAnalytics:
+    return await _repository(request).analytics(user.user_id, days=days)
 
 
 @router.get(

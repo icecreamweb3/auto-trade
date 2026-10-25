@@ -10,11 +10,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from auto_trade.accounts.models import (
+    AccountAnalytics,
+    AccountPerformanceSummary,
     AccountSummary,
     AccountTrade,
     AdminUser,
     CurrentUser,
+    DailyPerformance,
     PaperTraderPreferences,
+    ProfitRankingEntry,
+    RoundPerformance,
     UserRole,
 )
 from auto_trade.paper_trading.models import PaperTrade
@@ -209,14 +214,26 @@ class AccountRepository:
                 await connection.execute(
                     text(
                         """
-                        SELECT trade_id, session_id, symbol, interval_seconds,
+                        WITH numbered_sessions AS (
+                            SELECT session_id,
+                                   row_number() OVER (
+                                       PARTITION BY user_id
+                                       ORDER BY started_at, session_id
+                                   )::integer AS round_no
+                            FROM trade.paper_sessions
+                            WHERE user_id = :user_id
+                        )
+                        SELECT t.trade_id, t.session_id, s.round_no,
+                               t.symbol, t.interval_seconds,
                                side, leverage, margin, quantity, entry_price,
                                exit_price, gross_pnl, entry_fee, exit_fee, fee,
                                realized_pnl, balance_before,
-                               balance_after, opened_at, closed_at, exit_reason
-                        FROM trade.paper_trades
-                        WHERE user_id = :user_id
-                        ORDER BY closed_at DESC, trade_id DESC
+                               balance_after, opened_at, closed_at,
+                               t.created_at AS recorded_at, exit_reason
+                        FROM trade.paper_trades t
+                        JOIN numbered_sessions s ON s.session_id = t.session_id
+                        WHERE t.user_id = :user_id
+                        ORDER BY t.closed_at DESC, t.trade_id DESC
                         LIMIT :limit
                         """
                     ),
@@ -224,6 +241,280 @@ class AccountRepository:
                 )
             ).mappings().all()
         return tuple(AccountTrade.model_validate(row) for row in rows)
+
+    async def record_paper_session(
+        self,
+        *,
+        user_id: UUID,
+        session_id: str,
+        symbol: str,
+        interval_seconds: int,
+        range_start: datetime,
+        range_end: datetime,
+        starting_balance: float,
+        status: str,
+    ) -> None:
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO trade.paper_sessions (
+                        session_id, user_id, symbol, interval_seconds,
+                        range_start, range_end, starting_balance,
+                        ending_balance, status
+                    ) VALUES (
+                        :session_id, :user_id, :symbol, :interval_seconds,
+                        :range_start, :range_end, :starting_balance,
+                        :starting_balance, :status
+                    )
+                    ON CONFLICT (session_id) DO NOTHING
+                    """
+                ),
+                {
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "symbol": symbol,
+                    "interval_seconds": interval_seconds,
+                    "range_start": range_start,
+                    "range_end": range_end,
+                    "starting_balance": starting_balance,
+                    "status": status,
+                },
+            )
+
+    async def update_paper_session(
+        self,
+        *,
+        session_id: str,
+        ending_balance: float,
+        status: str,
+    ) -> None:
+        completed = status in ("COMPLETED", "LIQUIDATED")
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE trade.paper_sessions
+                    SET ending_balance = :ending_balance,
+                        status = :status,
+                        completed_at = CASE
+                            WHEN :completed THEN coalesce(completed_at, clock_timestamp())
+                            ELSE completed_at
+                        END
+                    WHERE session_id = :session_id
+                    """
+                ),
+                {
+                    "session_id": session_id,
+                    "ending_balance": ending_balance,
+                    "status": status,
+                    "completed": completed,
+                },
+            )
+
+    async def analytics(
+        self, user_id: UUID, *, days: int = 30, trade_limit: int = 500
+    ) -> AccountAnalytics:
+        account = await self.account_summary(user_id)
+        async with self.engine.connect() as connection:
+            summary_row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT count(DISTINCT s.session_id)::integer AS round_count,
+                               count(DISTINCT s.session_id) FILTER (
+                                   WHERE s.status IN ('COMPLETED', 'LIQUIDATED')
+                               )::integer AS completed_round_count,
+                               count(t.trade_id)::integer AS trade_count,
+                               count(t.trade_id) FILTER (
+                                   WHERE t.realized_pnl > 0
+                               )::integer AS winning_trade_count,
+                               CASE WHEN count(t.trade_id) = 0 THEN 0
+                                    ELSE count(t.trade_id) FILTER (
+                                        WHERE t.realized_pnl > 0
+                                    )::double precision / count(t.trade_id) * 100
+                               END AS win_rate,
+                               coalesce(sum(t.gross_pnl), 0) AS gross_pnl,
+                               coalesce(sum(t.fee), 0) AS total_fees,
+                               coalesce(sum(t.realized_pnl), 0) AS net_pnl
+                        FROM trade.paper_accounts a
+                        LEFT JOIN trade.paper_sessions s ON s.user_id = a.user_id
+                        LEFT JOIN trade.paper_trades t ON t.session_id = s.session_id
+                        WHERE a.user_id = :user_id
+                        """
+                    ),
+                    {"user_id": user_id},
+                )
+            ).mappings().one()
+            daily_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        WITH dates AS (
+                            SELECT generate_series(
+                                (now() AT TIME ZONE 'Asia/Shanghai')::date
+                                    - (CAST(:days AS integer) - 1),
+                                (now() AT TIME ZONE 'Asia/Shanghai')::date,
+                                interval '1 day'
+                            )::date AS trade_date
+                        ), trade_totals AS (
+                            SELECT (created_at AT TIME ZONE 'Asia/Shanghai')::date AS trade_date,
+                                   count(*)::integer AS trade_count,
+                                   count(*) FILTER (WHERE realized_pnl > 0)::integer
+                                       AS winning_trade_count,
+                                   sum(gross_pnl) AS gross_pnl,
+                                   sum(fee) AS total_fees,
+                                   sum(realized_pnl) AS net_pnl
+                            FROM trade.paper_trades
+                            WHERE user_id = :user_id
+                              AND created_at >= ((now() AT TIME ZONE 'Asia/Shanghai')::date
+                                  - (CAST(:days AS integer) - 1)) AT TIME ZONE 'Asia/Shanghai'
+                            GROUP BY 1
+                        ), round_totals AS (
+                            SELECT (started_at AT TIME ZONE 'Asia/Shanghai')::date AS trade_date,
+                                   count(*)::integer AS round_count
+                            FROM trade.paper_sessions
+                            WHERE user_id = :user_id
+                              AND started_at >= ((now() AT TIME ZONE 'Asia/Shanghai')::date
+                                  - (CAST(:days AS integer) - 1)) AT TIME ZONE 'Asia/Shanghai'
+                            GROUP BY 1
+                        )
+                        SELECT d.trade_date,
+                               coalesce(r.round_count, 0)::integer AS round_count,
+                               coalesce(t.trade_count, 0)::integer AS trade_count,
+                               coalesce(t.winning_trade_count, 0)::integer
+                                   AS winning_trade_count,
+                               CASE WHEN coalesce(t.trade_count, 0) = 0 THEN 0
+                                    ELSE t.winning_trade_count::double precision
+                                         / t.trade_count * 100
+                               END AS win_rate,
+                               coalesce(t.gross_pnl, 0) AS gross_pnl,
+                               coalesce(t.total_fees, 0) AS total_fees,
+                               coalesce(t.net_pnl, 0) AS net_pnl
+                        FROM dates d
+                        LEFT JOIN trade_totals t USING (trade_date)
+                        LEFT JOIN round_totals r USING (trade_date)
+                        ORDER BY d.trade_date DESC
+                        """
+                    ),
+                    {"user_id": user_id, "days": days},
+                )
+            ).mappings().all()
+            round_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        WITH numbered_sessions AS (
+                            SELECT s.*,
+                                   row_number() OVER (
+                                       PARTITION BY user_id
+                                       ORDER BY started_at, session_id
+                                   )::integer AS round_no
+                            FROM trade.paper_sessions s
+                            WHERE user_id = :user_id
+                        )
+                        SELECT s.session_id, s.round_no, s.symbol,
+                               s.interval_seconds, s.range_start, s.range_end,
+                               s.status, s.started_at, s.completed_at,
+                               s.starting_balance, s.ending_balance,
+                               count(t.trade_id)::integer AS trade_count,
+                               count(t.trade_id) FILTER (
+                                   WHERE t.realized_pnl > 0
+                               )::integer AS winning_trade_count,
+                               CASE WHEN count(t.trade_id) = 0 THEN 0
+                                    ELSE count(t.trade_id) FILTER (
+                                        WHERE t.realized_pnl > 0
+                                    )::double precision / count(t.trade_id) * 100
+                               END AS win_rate,
+                               coalesce(sum(t.gross_pnl), 0) AS gross_pnl,
+                               coalesce(sum(t.fee), 0) AS total_fees,
+                               coalesce(sum(t.realized_pnl), 0) AS net_pnl
+                        FROM numbered_sessions s
+                        LEFT JOIN trade.paper_trades t ON t.session_id = s.session_id
+                        GROUP BY s.session_id, s.round_no, s.symbol,
+                                 s.interval_seconds, s.range_start, s.range_end,
+                                 s.status, s.started_at, s.completed_at,
+                                 s.starting_balance, s.ending_balance
+                        ORDER BY s.round_no DESC
+                        LIMIT 200
+                        """
+                    ),
+                    {"user_id": user_id},
+                )
+            ).mappings().all()
+        return AccountAnalytics(
+            account=account,
+            summary=AccountPerformanceSummary.model_validate(summary_row),
+            daily=tuple(DailyPerformance.model_validate(row) for row in daily_rows),
+            rounds=tuple(RoundPerformance.model_validate(row) for row in round_rows),
+            trades=await self.trades(user_id, trade_limit),
+            today_ranking=await self._profit_ranking(today_only=True),
+            overall_ranking=await self._profit_ranking(today_only=False),
+        )
+
+    async def _profit_ranking(
+        self, *, today_only: bool
+    ) -> tuple[ProfitRankingEntry, ...]:
+        trade_filter = (
+            "AND created_at >= (now() AT TIME ZONE 'Asia/Shanghai')::date "
+            "AT TIME ZONE 'Asia/Shanghai'"
+            if today_only
+            else ""
+        )
+        round_filter = (
+            "AND started_at >= (now() AT TIME ZONE 'Asia/Shanghai')::date "
+            "AT TIME ZONE 'Asia/Shanghai'"
+            if today_only
+            else ""
+        )
+        statement = text(
+            f"""
+            WITH trade_totals AS (
+                SELECT user_id, count(*)::integer AS trade_count,
+                       count(*) FILTER (WHERE realized_pnl > 0)::integer
+                           AS winning_trade_count,
+                       sum(gross_pnl) AS gross_pnl,
+                       sum(fee) AS total_fees,
+                       sum(realized_pnl) AS net_pnl
+                FROM trade.paper_trades
+                WHERE true {trade_filter}
+                GROUP BY user_id
+            ), round_totals AS (
+                SELECT user_id, count(*)::integer AS round_count
+                FROM trade.paper_sessions
+                WHERE true {round_filter}
+                GROUP BY user_id
+            ), ranked AS (
+                SELECT u.user_id,
+                       coalesce(u.username, split_part(u.email, '@', 1)) AS display_name,
+                       a.balance,
+                       coalesce(r.round_count, 0)::integer AS round_count,
+                       coalesce(t.trade_count, 0)::integer AS trade_count,
+                       CASE WHEN coalesce(t.trade_count, 0) = 0 THEN 0
+                            ELSE t.winning_trade_count::double precision
+                                 / t.trade_count * 100
+                       END AS win_rate,
+                       coalesce(t.gross_pnl, 0) AS gross_pnl,
+                       coalesce(t.total_fees, 0) AS total_fees,
+                       coalesce(t.net_pnl, 0) AS net_pnl
+                FROM core.app_users u
+                JOIN trade.paper_accounts a ON a.user_id = u.user_id
+                LEFT JOIN trade_totals t ON t.user_id = u.user_id
+                LEFT JOIN round_totals r ON r.user_id = u.user_id
+            )
+            SELECT row_number() OVER (
+                       ORDER BY net_pnl DESC, win_rate DESC, trade_count DESC, user_id
+                   )::integer AS rank,
+                   user_id, display_name, balance, round_count, trade_count,
+                   win_rate, gross_pnl, total_fees, net_pnl
+            FROM ranked
+            ORDER BY rank
+            LIMIT 50
+            """
+        )
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
+        return tuple(ProfitRankingEntry.model_validate(row) for row in rows)
 
     async def paper_trader_preferences(
         self, user_id: UUID
