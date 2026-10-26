@@ -128,6 +128,29 @@ services:
         condition: service_healthy
     network_mode: host
 
+  telegram-auth:
+    profiles: ["tools"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      <<: *file-logging-environment
+      SERVICE_NAME: telegram-auth
+      ALL_PROXY: ${ALL_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost,database,nats}
+      TZ: UTC
+    volumes:
+      - auto_trade_telegram_session:/data/telegram
+    entrypoint: ["python", "-m", "auto_trade.collectors.telegram_auth"]
+    stdin_open: true
+    tty: true
+    network_mode: host
+
   ema-indicators-history:
     profiles: ["tools"]
     build:
@@ -294,6 +317,37 @@ services:
     networks:
       - backend
 
+  telegram-subscriber:
+    profiles: ["runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    container_name: auto-trade-telegram-subscriber
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *file-logging-environment
+      SERVICE_NAME: telegram-subscriber
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      NATS_URL: nats://127.0.0.1:4222
+      ALL_PROXY: ${ALL_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost,database,nats}
+      TZ: UTC
+    volumes:
+      - auto_trade_logs:/var/log/auto-trade
+      - auto_trade_telegram_session:/data/telegram
+    command: ["python", "-m", "auto_trade.collectors.telegram_subscriber"]
+    network_mode: host
+    depends_on:
+      database:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
   monitor-api:
     profiles: ["runtime"]
     build:
@@ -361,6 +415,8 @@ volumes:
     name: auto-trade-nats-data
   auto_trade_logs:
     name: auto-trade-logs
+  auto_trade_telegram_session:
+    name: auto-trade-telegram-session
 
 networks:
   backend:

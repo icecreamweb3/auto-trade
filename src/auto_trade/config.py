@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        env_ignore_empty=True,
     )
 
     environment: Literal["DEV", "TEST", "SHADOW", "PROD"] = "DEV"
@@ -76,6 +77,15 @@ class Settings(BaseSettings):
     paper_history_request_interval_seconds: float = Field(
         default=0.5, ge=0, le=60
     )
+    telegram_api_id: int | None = Field(default=None, ge=1)
+    telegram_api_hash: SecretStr | None = None
+    telegram_phone: SecretStr | None = None
+    telegram_channel: str = Field(default="wizzalert", min_length=1, max_length=80)
+    telegram_session_path: str = "/data/telegram/wizzalert.session"
+    telegram_proxy_url: SecretStr | None = None
+    telegram_recent_rescan_messages: int = Field(default=200, ge=0, le=5000)
+    telegram_reconnect_delay_seconds: float = Field(default=5.0, ge=1, le=300)
+    telegram_strategy_trigger_enabled: bool = False
     auth_session_days: int = Field(default=30, ge=1, le=365)
     auth_cookie_secure: bool = False
     default_admin_username: str = Field(default="Admin", min_length=1, max_length=80)

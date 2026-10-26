@@ -21,6 +21,7 @@ from auto_trade.backtesting.service import BacktestManager
 from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import check_database, create_database_engine
 from auto_trade.logging_config import configure_logging
+from auto_trade.messages.router import router as messages_router
 from auto_trade.monitoring.models import (
     DailyKlineResult,
     DailyRankingEntry,
@@ -113,6 +114,7 @@ async def enforce_user_access(request: Request, call_next):  # type: ignore[no-u
 app.include_router(accounts_router)
 app.include_router(backtest_router)
 app.include_router(paper_trader_router)
+app.include_router(messages_router)
 
 
 @app.get("/health/live")

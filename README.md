@@ -63,6 +63,38 @@ make monitor-logs
 make repair-once
 ```
 
+## Telegram 频道订阅
+
+Telegram 订阅器通过代理连接 MTProto，首次启动会从频道最早可见消息开始补录，
+之后持续接收新增和编辑消息。原文、历史修订和结构化信号分别保存到
+`market.telegram_messages`、`market.telegram_message_revisions` 和
+`market.telegram_signals`，同时发布到 `decision.telegram.<channel>.history`
+或 `decision.telegram.<channel>.realtime`。
+
+先在 `.env` 配置 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、
+`TELEGRAM_PHONE`、`TELEGRAM_CHANNEL`。建议通过 `TELEGRAM_PROXY_URL`
+显式配置 `http://`、`socks4://` 或 `socks5://` 代理；未配置时依次读取
+`ALL_PROXY`、`HTTPS_PROXY`、`HTTP_PROXY`。订阅器不允许绕过代理直连。
+
+应用迁移并构建镜像后，在本机终端执行一次授权：
+
+```bash
+docker compose --profile tools run --rm telegram-auth
+```
+
+默认选择二维码授权：在手机 Telegram 打开“设置 > 设备 > 连接桌面设备”扫码；
+也可选择手机号验证码方式，此时终端会显示 Telegram 实际采用的投递渠道。
+验证码和两步验证密码只在本机终端输入，不要写入 `.env`、日志或聊天记录。
+授权会话保存在 Docker 命名卷 `auto-trade-telegram-session`。授权成功后启动订阅器：
+
+```bash
+docker compose --profile runtime up -d telegram-subscriber
+docker compose logs -f telegram-subscriber
+```
+
+`TELEGRAM_STRATEGY_TRIGGER_ENABLED` 默认是 `false`。当前阶段只采集、解析和
+发布信号；在频道规则完成样本回测和人工验收前，不会自动触发真实交易。
+
 为 PaperTrader 独立补齐 BTCUSDT、ETHUSDT 自 `2020-04-01 00:00 UTC`
 起的 5 分钟 Trade OHLCV：
 

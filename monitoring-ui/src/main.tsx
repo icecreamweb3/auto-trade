@@ -121,6 +121,42 @@ interface MonitoringSnapshot {
   notices: string[];
 }
 
+interface MessageChannelSummary {
+  channel_id: number;
+  username: string;
+  title: string;
+  history_complete: boolean;
+  message_count: number;
+  earliest_message_at: string | null;
+  latest_message_at: string | null;
+  last_realtime_at: string | null;
+}
+
+interface ChannelMessage {
+  channel_id: number;
+  message_id: number;
+  title: string;
+  posted_at: string;
+  edited_at: string | null;
+  message_text: string;
+  media_type: string | null;
+  symbol: string | null;
+  signal_kind: string | null;
+  direction: string | null;
+  score: number | null;
+  change_24h_percent: number | null;
+  is_actionable: boolean;
+}
+
+interface ChannelMessagePage {
+  channel: MessageChannelSummary;
+  page: number;
+  page_size: number;
+  total: number;
+  signal_kind: string | null;
+  items: ChannelMessage[];
+}
+
 interface RankingEntry {
   utc_trade_date: string;
   snapshot_at: string;
@@ -4249,7 +4285,182 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
   </main>;
 }
 
-type WorkspaceView = "rankings" | "backtest" | "paper" | "monitoring" | "account" | "admin";
+const messageKindLabels: Record<string, string> = {
+  ENTRY: "入场",
+  CONTINUATION: "趋势延续",
+  REVERSAL_WARNING: "反转预警",
+  INVALIDATION: "信号失效",
+  VOLATILITY_WAKE: "波动率苏醒",
+  EXIT: "退出",
+  UNKNOWN: "未分类"
+};
+
+const messageKindFilters = [
+  { value: "", label: "全部" },
+  { value: "CONTINUATION", label: "趋势延续" },
+  { value: "REVERSAL_WARNING", label: "反转预警" },
+  { value: "VOLATILITY_WAKE", label: "波动率苏醒" },
+  { value: "INVALIDATION", label: "信号失效" },
+  { value: "ENTRY", label: "入场" },
+  { value: "UNKNOWN", label: "未分类" }
+] as const;
+
+function formatMessageTime(value: string | null) {
+  if (!value) return "—";
+  return new Date(value).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function MessageManagementWorkspace() {
+  const [channels, setChannels] = useState<MessageChannelSummary[]>([]);
+  const [selectedChannelId, setSelectedChannelId] = useState<number | null>(null);
+  const [messages, setMessages] = useState<ChannelMessagePage | null>(null);
+  const [page, setPage] = useState(1);
+  const [signalKind, setSignalKind] = useState("");
+  const [selectedMessage, setSelectedMessage] = useState<ChannelMessage | null>(null);
+  const [loadingChannels, setLoadingChannels] = useState(true);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadChannels() {
+    setLoadingChannels(true);
+    try {
+      const response = await fetch("/api/messages/channels", { cache: "no-store" });
+      const body = await response.json() as MessageChannelSummary[] | { detail?: string };
+      if (!response.ok) throw new Error(paperErrorMessage(body, "频道列表加载失败"));
+      const items = body as MessageChannelSummary[];
+      setChannels(items);
+      setSelectedChannelId((current) => current != null && items.some((item) => item.channel_id === current) ? current : items[0]?.channel_id ?? null);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "频道列表加载失败");
+    } finally {
+      setLoadingChannels(false);
+    }
+  }
+
+  async function loadMessages(channelId: number, targetPage: number, kind = signalKind) {
+    setLoadingMessages(true);
+    try {
+      const parameters = new URLSearchParams({ page: String(targetPage), page_size: "20" });
+      if (kind) parameters.set("signal_kind", kind);
+      const response = await fetch(`/api/messages/channels/${channelId}?${parameters}`, { cache: "no-store" });
+      const body = await response.json() as ChannelMessagePage | { detail?: string };
+      if (!response.ok) throw new Error(paperErrorMessage(body, "消息列表加载失败"));
+      setMessages(body as ChannelMessagePage);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "消息列表加载失败");
+    } finally {
+      setLoadingMessages(false);
+    }
+  }
+
+  useEffect(() => { void loadChannels(); }, []);
+  useEffect(() => {
+    if (selectedChannelId != null) void loadMessages(selectedChannelId, page, signalKind);
+  }, [selectedChannelId, page, signalKind]);
+  useEffect(() => {
+    if (!selectedMessage) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedMessage(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [selectedMessage]);
+
+  function selectChannel(channelId: number) {
+    if (selectedChannelId === channelId && page === 1) {
+      void loadMessages(channelId, 1, signalKind);
+      return;
+    }
+    if (selectedChannelId !== channelId) setMessages(null);
+    setSelectedChannelId(channelId);
+    setPage(1);
+  }
+
+  function refresh() {
+    void loadChannels();
+    if (selectedChannelId != null) void loadMessages(selectedChannelId, page, signalKind);
+  }
+
+  function selectKind(kind: string) {
+    if (kind === signalKind && page === 1 && selectedChannelId != null) {
+      void loadMessages(selectedChannelId, 1, kind);
+      return;
+    }
+    setMessages(null);
+    setSignalKind(kind);
+    setPage(1);
+  }
+
+  const totalPages = Math.max(1, Math.ceil((messages?.total ?? 0) / (messages?.page_size ?? 20)));
+
+  return <main className="message-page">
+    <header className="topbar message-heading">
+      <div><p className="brand-mark">MESSAGE CENTER</p><h1>消息管理</h1><p className="subtitle">按频道查看已归档消息 · 发布时间统一显示为 UTC+8</p></div>
+      <button type="button" onClick={refresh} disabled={loadingChannels || loadingMessages}>{loadingChannels || loadingMessages ? "刷新中…" : "刷新消息"}</button>
+    </header>
+    {error && <div className="alert alert-critical">{error}</div>}
+    <section className="message-workspace">
+      <aside className="panel message-channels">
+        <div className="message-section-heading"><div><p className="eyebrow">CHANNELS</p><h3>频道分类</h3></div><span>{channels.length}</span></div>
+        {loadingChannels && channels.length === 0 ? <div className="message-list-loading">正在读取频道…</div> : channels.length === 0 ? <div className="message-empty">暂无已订阅频道</div> : <div className="message-channel-list">
+          {channels.map((channel) => <button type="button" key={channel.channel_id} className={selectedChannelId === channel.channel_id ? "active" : ""} onClick={() => selectChannel(channel.channel_id)}>
+            <span className="message-channel-avatar">{channel.title.trim().slice(0, 1).toUpperCase()}</span>
+            <span className="message-channel-copy"><strong>{channel.title}</strong><small>@{channel.username}</small><time>{formatMessageTime(channel.latest_message_at)}</time></span>
+            <span className="message-channel-count">{channel.message_count.toLocaleString()}</span>
+          </button>)}
+        </div>}
+      </aside>
+      <div className="panel message-feed">
+        <div className="message-feed-heading">
+          <div><p className="eyebrow">MESSAGES</p><h2>{messages?.channel.title ?? "频道消息"}</h2>{messages?.channel && <p>@{messages.channel.username} · {messages.channel.history_complete ? "历史同步完成" : "历史同步中"}</p>}</div>
+          <div className="message-feed-count"><strong>{messages?.total.toLocaleString() ?? "—"}</strong><span>条消息</span></div>
+        </div>
+        <div className="message-kind-filters" aria-label="消息分类筛选">{messageKindFilters.map((kind) => <button type="button" key={kind.value || "ALL"} className={signalKind === kind.value ? "active" : ""} onClick={() => selectKind(kind.value)} disabled={loadingMessages}>{kind.label}</button>)}</div>
+        <div className="message-list-columns" aria-hidden="true"><span>分类</span><span>时间</span><span>Ticker</span><span>24hChg</span><span>多空方向</span><span>评分</span><span /></div>
+        {loadingMessages && !messages ? <div className="message-list-loading">正在读取消息…</div> : messages?.items.length ? <div className={`message-list ${loadingMessages ? "is-loading" : ""}`}>
+          {messages.items.map((message) => <button type="button" className="message-row" key={`${message.channel_id}-${message.message_id}`} onClick={() => setSelectedMessage(message)}>
+            <span><span className={`message-kind kind-${(message.signal_kind ?? "unknown").toLowerCase()}`}>{messageKindLabels[message.signal_kind ?? "UNKNOWN"] ?? message.signal_kind}</span></span>
+            <time>{formatMessageTime(message.posted_at)}</time>
+            <strong>{message.symbol ?? "—"}</strong>
+            <span className={message.change_24h_percent == null ? "message-change-neutral" : message.change_24h_percent >= 0 ? "message-change-positive" : "message-change-negative"}>{message.change_24h_percent == null ? "—" : `${message.change_24h_percent >= 0 ? "+" : ""}${message.change_24h_percent.toFixed(2)}%`}</span>
+            <span className={`message-direction message-direction-${(message.direction ?? "neutral").toLowerCase()}`}>{message.direction === "LONG" ? "多" : message.direction === "SHORT" ? "空" : "—"}</span>
+            <span className="message-score">{message.score ?? "—"}</span>
+            <span className="message-row-arrow" aria-hidden="true">›</span>
+          </button>)}
+        </div> : selectedChannelId == null ? <div className="message-empty">请选择一个频道</div> : !loadingMessages && <div className="message-empty">该分类暂无消息</div>}
+        {messages && messages.total > 0 && <div className="pagination message-pagination"><button type="button" disabled={loadingMessages || page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>上一页</button><span>第 {messages.page} / {totalPages} 页 · 每页 {messages.page_size} 条</span><button type="button" disabled={loadingMessages || page >= totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>下一页</button></div>}
+      </div>
+    </section>
+    {selectedMessage && <div className="message-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedMessage(null); }}>
+      <section className="message-modal" role="dialog" aria-modal="true" aria-labelledby="message-detail-title">
+        <header><div><p className="eyebrow">MESSAGE DETAIL</p><h2 id="message-detail-title">{selectedMessage.title}</h2></div><button type="button" aria-label="关闭消息详情" onClick={() => setSelectedMessage(null)}>×</button></header>
+        <div className="message-modal-meta">
+          <div><span>分类</span><strong>{messageKindLabels[selectedMessage.signal_kind ?? "UNKNOWN"] ?? selectedMessage.signal_kind}</strong></div>
+          <div><span>发布时间</span><strong>{formatMessageTime(selectedMessage.posted_at)}</strong></div>
+          <div><span>Ticker</span><strong>{selectedMessage.symbol ?? "—"}</strong></div>
+          <div><span>24hChg</span><strong className={selectedMessage.change_24h_percent == null ? "message-change-neutral" : selectedMessage.change_24h_percent >= 0 ? "message-change-positive" : "message-change-negative"}>{selectedMessage.change_24h_percent == null ? "—" : `${selectedMessage.change_24h_percent >= 0 ? "+" : ""}${selectedMessage.change_24h_percent.toFixed(2)}%`}</strong></div>
+          <div><span>方向</span><strong>{selectedMessage.direction === "LONG" ? "多" : selectedMessage.direction === "SHORT" ? "空" : "中性"}</strong></div>
+          <div><span>评分</span><strong>{selectedMessage.score ?? "—"}</strong></div>
+        </div>
+        <div className="message-modal-content">{selectedMessage.message_text}</div>
+        <footer><span>消息 #{selectedMessage.message_id}{selectedMessage.edited_at ? ` · 编辑于 ${formatMessageTime(selectedMessage.edited_at)}` : ""}</span><button type="button" onClick={() => setSelectedMessage(null)}>关闭</button></footer>
+      </section>
+    </div>}
+  </main>;
+}
+
+type WorkspaceView = "rankings" | "backtest" | "messages" | "paper" | "monitoring" | "account" | "admin";
 
 function App() {
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -4293,6 +4504,7 @@ function App() {
       <nav className="workspace-tabs" aria-label="工具导航">
         {user.role !== "NORMAL" && <button className={view === "rankings" ? "active" : ""} onClick={() => setView("rankings")}>数据查询</button>}
         {user.role !== "NORMAL" && <button className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>策略回测</button>}
+        {user.role !== "NORMAL" && <button className={view === "messages" ? "active" : ""} onClick={() => setView("messages")}>消息管理</button>}
         <button className={view === "paper" ? "active" : ""} onClick={() => setView("paper")}>交易模拟器</button>
         <button className={view === "account" ? "active" : ""} onClick={() => setView("account")}>收益分析</button>
         {user.role !== "NORMAL" && <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>}
@@ -4300,7 +4512,7 @@ function App() {
       </nav>
       <div className="workspace-user"><button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}><span>{user.email}</span><strong>{formatNumber(user.account.balance, 2)} USDT</strong></button><button type="button" onClick={() => void logout()}>退出</button></div>
     </div>
-    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "paper" ? <PaperTraderWorkspace onBalanceChange={updateBalance} /> : view === "account" ? <AccountWorkspace user={user} onAccountChange={updateAccount} /> : view === "admin" ? <UserManagementWorkspace /> : <MonitoringDashboard />}
+    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "messages" ? <MessageManagementWorkspace /> : view === "paper" ? <PaperTraderWorkspace onBalanceChange={updateBalance} /> : view === "account" ? <AccountWorkspace user={user} onAccountChange={updateAccount} /> : view === "admin" ? <UserManagementWorkspace /> : <MonitoringDashboard />}
   </>;
 }
 

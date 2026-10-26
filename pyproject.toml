@@ -15,8 +15,11 @@ dependencies = [
   "nats-py>=2.10,<3",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "qrcode>=8,<9",
   "sqlalchemy[asyncio]>=2.0,<3",
   "structlog>=24.4,<27",
+  "telethon>=1.40,<2",
+  "python-socks[asyncio]>=2,<3",
   "uvicorn[standard]>=0.34,<1",
   "websockets>=14,<16",
 ]
