@@ -192,6 +192,36 @@ async def test_today_profit_ranking_uses_actual_record_time() -> None:
     assert "Asia/Shanghai" in statement
 
 
+async def test_account_trades_apply_record_time_and_pnl_filters() -> None:
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = []
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+    recorded_from = datetime(2026, 10, 25, tzinfo=UTC)
+    recorded_to = datetime(2026, 10, 26, tzinfo=UTC)
+
+    trades = await AccountRepository(engine).trades(
+        uuid4(),
+        500,
+        recorded_from=recorded_from,
+        recorded_to=recorded_to,
+        pnl_result="LOSS",
+    )
+
+    assert trades == ()
+    statement, parameters = connection.execute.await_args.args
+    query = str(statement)
+    assert "t.created_at >= CAST(:recorded_from AS timestamptz)" in query
+    assert "t.created_at < CAST(:recorded_to AS timestamptz)" in query
+    assert "t.realized_pnl < 0" in query
+    assert parameters["recorded_from"] == recorded_from
+    assert parameters["recorded_to"] == recorded_to
+    assert parameters["pnl_result"] == "LOSS"
+
+
 def current_user(role: UserRole) -> CurrentUser:
     return CurrentUser(
         user_id=uuid4(),

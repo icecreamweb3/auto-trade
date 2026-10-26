@@ -208,7 +208,15 @@ class AccountRepository:
             ).mappings().one()
         return self._account_summary(row)
 
-    async def trades(self, user_id: UUID, limit: int) -> tuple[AccountTrade, ...]:
+    async def trades(
+        self,
+        user_id: UUID,
+        limit: int,
+        *,
+        recorded_from: datetime | None = None,
+        recorded_to: datetime | None = None,
+        pnl_result: str = "ALL",
+    ) -> tuple[AccountTrade, ...]:
         async with self.engine.connect() as connection:
             rows = (
                 await connection.execute(
@@ -233,11 +241,31 @@ class AccountRepository:
                         FROM trade.paper_trades t
                         JOIN numbered_sessions s ON s.session_id = t.session_id
                         WHERE t.user_id = :user_id
+                          AND (
+                              CAST(:recorded_from AS timestamptz) IS NULL
+                              OR t.created_at >= CAST(:recorded_from AS timestamptz)
+                          )
+                          AND (
+                              CAST(:recorded_to AS timestamptz) IS NULL
+                              OR t.created_at < CAST(:recorded_to AS timestamptz)
+                          )
+                          AND (
+                              :pnl_result = 'ALL'
+                              OR (:pnl_result = 'PROFIT' AND t.realized_pnl > 0)
+                              OR (:pnl_result = 'LOSS' AND t.realized_pnl < 0)
+                              OR (:pnl_result = 'BREAKEVEN' AND t.realized_pnl = 0)
+                          )
                         ORDER BY t.closed_at DESC, t.trade_id DESC
                         LIMIT :limit
                         """
                     ),
-                    {"user_id": user_id, "limit": limit},
+                    {
+                        "user_id": user_id,
+                        "limit": limit,
+                        "recorded_from": recorded_from,
+                        "recorded_to": recorded_to,
+                        "pnl_result": pnl_result,
+                    },
                 )
             ).mappings().all()
         return tuple(AccountTrade.model_validate(row) for row in rows)

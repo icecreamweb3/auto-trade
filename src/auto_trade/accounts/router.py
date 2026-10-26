@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
@@ -143,11 +143,25 @@ async def trade_history(
     request: Request,
     user: AuthenticatedUser,
     limit: int = Query(default=100, ge=1, le=500),
+    recorded_from: Annotated[datetime | None, Query()] = None,
+    recorded_to: Annotated[datetime | None, Query()] = None,
+    pnl_result: Annotated[
+        Literal["ALL", "PROFIT", "LOSS", "BREAKEVEN"], Query()
+    ] = "ALL",
 ) -> AccountTradeHistory:
+    if recorded_from is not None and recorded_to is not None:
+        if recorded_from >= recorded_to:
+            raise HTTPException(status_code=422, detail="结束时间必须晚于开始时间")
     repository = _repository(request)
     return AccountTradeHistory(
         account=await repository.account_summary(user.user_id),
-        trades=await repository.trades(user.user_id, limit),
+        trades=await repository.trades(
+            user.user_id,
+            limit,
+            recorded_from=recorded_from,
+            recorded_to=recorded_to,
+            pnl_result=pnl_result,
+        ),
     )
 
 

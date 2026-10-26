@@ -448,6 +448,20 @@ interface AccountTrade extends PaperTrade {
   recorded_at: string;
 }
 
+interface AccountTradeHistory {
+  account: AccountSummary;
+  trades: AccountTrade[];
+}
+
+type AccountTradePnlResult = "ALL" | "PROFIT" | "LOSS" | "BREAKEVEN";
+type AccountTradeQuickRange = "TODAY" | "YESTERDAY" | "THIS_WEEK" | "LAST_WEEK";
+
+interface AccountTradeFilters {
+  pnlResult: AccountTradePnlResult;
+  startAt: string;
+  endAt: string;
+}
+
 interface AccountPerformanceSummary {
   round_count: number;
   completed_round_count: number;
@@ -872,6 +886,30 @@ function toUtc8Input(value: string): string {
 
 function utc8InputToIso(value: string): string {
   return new Date(`${value}:00+08:00`).toISOString();
+}
+
+function accountTradeQuickRange(range: AccountTradeQuickRange): Pick<AccountTradeFilters, "startAt" | "endAt"> {
+  const shanghaiNow = new Date(Date.now() + UTC8_OFFSET_MS);
+  const today = Date.UTC(shanghaiNow.getUTCFullYear(), shanghaiNow.getUTCMonth(), shanghaiNow.getUTCDate());
+  const weekday = shanghaiNow.getUTCDay() || 7;
+  const thisMonday = today - (weekday - 1) * 24 * 60 * 60 * 1000;
+  const oneDay = 24 * 60 * 60 * 1000;
+  let start = today;
+  let end = today + oneDay;
+  if (range === "YESTERDAY") {
+    start = today - oneDay;
+    end = today;
+  } else if (range === "THIS_WEEK") {
+    start = thisMonday;
+    end = thisMonday + 7 * oneDay;
+  } else if (range === "LAST_WEEK") {
+    start = thisMonday - 7 * oneDay;
+    end = thisMonday;
+  }
+  return {
+    startAt: new Date(start).toISOString().slice(0, 16),
+    endAt: new Date(end).toISOString().slice(0, 16)
+  };
 }
 
 function randomTradingSession(
@@ -4098,6 +4136,12 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tradeResults, setTradeResults] = useState<AccountTrade[] | null>(null);
+  const [tradePnlResult, setTradePnlResult] = useState<AccountTradePnlResult>("ALL");
+  const [tradeStartAt, setTradeStartAt] = useState("");
+  const [tradeEndAt, setTradeEndAt] = useState("");
+  const [tradeFilterLoading, setTradeFilterLoading] = useState(false);
+  const [tradeFilterError, setTradeFilterError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -4108,6 +4152,7 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
         if (!response.ok) throw new Error(paperErrorMessage(body, "收益分析加载失败"));
         const value = body as AccountAnalytics;
         setAnalytics(value);
+        setTradeResults((current) => current ?? value.trades);
         onAccountChange(value.account);
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "收益分析加载失败"))
@@ -4118,8 +4163,47 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
   const summary = analytics?.summary;
   const chartDays = useMemo(() => analytics?.daily ?? [], [analytics]);
   const chartMaximum = Math.max(0.01, ...chartDays.map((item) => Math.abs(item.net_pnl)));
+  const displayedTrades = tradeResults ?? analytics?.trades ?? [];
   const roundStatus = (status: RoundPerformance["status"]) => status === "READY" ? "待交易" : status === "RUNNING" ? "进行中" : status === "LIQUIDATED" ? "已强平" : "已结束";
   const rankingTable = (rows: ProfitRankingEntry[]) => <div className="table-scroll"><table className="storage-table account-ranking-table"><thead><tr><th>排名</th><th>用户</th><th>净收益</th><th>轮次</th><th>交易数</th><th>胜率</th><th>手续费</th></tr></thead><tbody>{rows.map((entry) => <tr key={entry.user_id} className={entry.user_id === user.user_id ? "current-user" : ""}><td>#{entry.rank}</td><td>{entry.display_name}</td><td className={profitClass(entry.net_pnl)}>{entry.net_pnl >= 0 ? "+" : ""}{formatNumber(entry.net_pnl, 2)}</td><td>{entry.round_count}</td><td>{entry.trade_count}</td><td>{formatNumber(entry.win_rate, 1)}%</td><td>{formatNumber(entry.total_fees, 2)}</td></tr>)}</tbody></table></div>;
+
+  async function loadAccountTrades(filters: AccountTradeFilters) {
+    if (filters.startAt && filters.endAt && filters.startAt >= filters.endAt) {
+      setTradeFilterError("结束时间必须晚于开始时间");
+      return;
+    }
+    setTradeFilterLoading(true);
+    setTradeFilterError(null);
+    const params = new URLSearchParams({ limit: "500", pnl_result: filters.pnlResult });
+    if (filters.startAt) params.set("recorded_from", utc8InputToIso(filters.startAt));
+    if (filters.endAt) params.set("recorded_to", utc8InputToIso(filters.endAt));
+    try {
+      const response = await fetch(`/api/account/trades?${params}`, { cache: "no-store" });
+      const body = await response.json() as AccountTradeHistory | { detail?: string };
+      if (!response.ok) throw new Error(paperErrorMessage(body, "持仓交易明细查询失败"));
+      const value = body as AccountTradeHistory;
+      setTradeResults(value.trades);
+      onAccountChange(value.account);
+    } catch (reason) {
+      setTradeFilterError(reason instanceof Error ? reason.message : "持仓交易明细查询失败");
+    } finally {
+      setTradeFilterLoading(false);
+    }
+  }
+
+  function applyAccountTradeQuickRange(range: AccountTradeQuickRange) {
+    const nextRange = accountTradeQuickRange(range);
+    setTradeStartAt(nextRange.startAt);
+    setTradeEndAt(nextRange.endAt);
+    void loadAccountTrades({ pnlResult: tradePnlResult, ...nextRange });
+  }
+
+  function clearAccountTradeFilters() {
+    setTradePnlResult("ALL");
+    setTradeStartAt("");
+    setTradeEndAt("");
+    void loadAccountTrades({ pnlResult: "ALL", startAt: "", endAt: "" });
+  }
 
   return <main className="account-page">
     <header className="topbar account-heading"><div><p className="brand-mark">PERFORMANCE</p><h1>账户统计与收益分析</h1><p className="subtitle">{user.username ?? user.email} · 按 UTC+8 自然日统计 · 净收益已扣除模拟手续费</p></div><div className="account-period-switch" aria-label="每日收益范围">{[7, 30, 90].map((value) => <button type="button" key={value} className={days === value ? "active" : ""} onClick={() => setDays(value)}>{value} 天</button>)}</div></header>
@@ -4149,8 +4233,17 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
         <div className="table-scroll account-daily-scroll"><table className="storage-table account-daily-table"><thead><tr><th>日期 UTC+8</th><th>开始轮次</th><th>交易次数</th><th>盈利次数</th><th>胜率</th><th>毛盈亏</th><th>手续费</th><th>净收益</th></tr></thead><tbody>{analytics.daily.map((item) => <tr key={item.trade_date}><td>{item.trade_date}</td><td>{item.round_count}</td><td>{item.trade_count}</td><td>{item.winning_trade_count}</td><td>{formatNumber(item.win_rate, 1)}%</td><td className={profitClass(item.gross_pnl)}>{item.gross_pnl >= 0 ? "+" : ""}{formatNumber(item.gross_pnl, 2)}</td><td>{formatNumber(item.total_fees, 4)}</td><td className={profitClass(item.net_pnl)}>{item.net_pnl >= 0 ? "+" : ""}{formatNumber(item.net_pnl, 2)}</td></tr>)}</tbody></table></div>
       </section>
       <section className="panel account-history-panel">
-        <div className="panel-heading"><div><p className="eyebrow">TRADE DETAILS</p><h3>持仓交易明细</h3></div><strong>{analytics.trades.length} 笔</strong></div>
-        {analytics.trades.length ? <div className="table-scroll account-history-scroll"><table className="storage-table account-history-table"><thead><tr><th>轮次</th><th>记录时间 UTC+8</th><th>模拟平仓时间</th><th>交易对</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>毛盈亏</th><th>手续费</th><th>净收益</th><th>平仓后余额</th><th>原因</th></tr></thead><tbody>{analytics.trades.map((trade) => <tr key={trade.trade_id}><td>#{trade.round_no}</td><td>{new Date(trade.recorded_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{new Date(trade.closed_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{trade.symbol}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{trade.leverage}x</td><td>{formatBaseQuantity(trade.quantity, trade.symbol)}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td className={profitClass(trade.gross_pnl)}>{trade.gross_pnl >= 0 ? "+" : ""}{formatNumber(trade.gross_pnl, 2)}</td><td>{formatNumber(trade.fee, 4)}</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{formatNumber(trade.balance_after, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">暂无交易记录，前往交易模拟器开始第一笔练习。</div>}
+        <div className="panel-heading"><div><p className="eyebrow">TRADE DETAILS</p><h3>持仓交易明细</h3></div><strong>{displayedTrades.length} 笔</strong></div>
+        <form className="account-trade-filters" onSubmit={(event) => { event.preventDefault(); void loadAccountTrades({ pnlResult: tradePnlResult, startAt: tradeStartAt, endAt: tradeEndAt }); }}>
+          <label><span>盈亏</span><select value={tradePnlResult} onChange={(event) => setTradePnlResult(event.target.value as AccountTradePnlResult)}><option value="ALL">全部</option><option value="PROFIT">盈利</option><option value="LOSS">亏损</option><option value="BREAKEVEN">持平</option></select></label>
+          <label><span>开始时间 UTC+8</span><input type="datetime-local" value={tradeStartAt} onChange={(event) => setTradeStartAt(event.target.value)} /></label>
+          <label><span>结束时间 UTC+8（不含）</span><input type="datetime-local" value={tradeEndAt} onChange={(event) => setTradeEndAt(event.target.value)} /></label>
+          <button className="primary-button" type="submit" disabled={tradeFilterLoading}>{tradeFilterLoading ? "查询中…" : "查询"}</button>
+          <label className="account-trade-quick-range"><span>快捷时间</span><select value="" aria-label="快捷时间" onChange={(event) => { if (event.target.value) applyAccountTradeQuickRange(event.target.value as AccountTradeQuickRange); }} disabled={tradeFilterLoading}><option value="" disabled>选择范围</option><option value="THIS_WEEK">本周</option><option value="LAST_WEEK">上周</option><option value="TODAY">今日</option><option value="YESTERDAY">昨日</option></select></label>
+          <button type="button" onClick={clearAccountTradeFilters} disabled={tradeFilterLoading}>清空</button>
+        </form>
+        {tradeFilterError && <div className="account-trade-filter-error">{tradeFilterError}</div>}
+        {displayedTrades.length ? <div className="table-scroll account-history-scroll"><table className="storage-table account-history-table"><thead><tr><th>轮次</th><th>记录时间 UTC+8</th><th>模拟平仓时间</th><th>交易对</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>平仓价</th><th>毛盈亏</th><th>手续费</th><th>净收益</th><th>平仓后余额</th><th>原因</th></tr></thead><tbody>{displayedTrades.map((trade) => <tr key={trade.trade_id}><td>#{trade.round_no}</td><td>{new Date(trade.recorded_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{new Date(trade.closed_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{trade.symbol}</td><td className={trade.side === "LONG" ? "paper-long-price" : "paper-short-price"}>{trade.side === "LONG" ? "多" : "空"}</td><td>{trade.leverage}x</td><td>{formatBaseQuantity(trade.quantity, trade.symbol)}</td><td>{formatNumber(trade.entry_price, 2)}</td><td>{formatNumber(trade.exit_price, 2)}</td><td className={profitClass(trade.gross_pnl)}>{trade.gross_pnl >= 0 ? "+" : ""}{formatNumber(trade.gross_pnl, 2)}</td><td>{formatNumber(trade.fee, 4)}</td><td className={profitClass(trade.realized_pnl)}>{trade.realized_pnl >= 0 ? "+" : ""}{formatNumber(trade.realized_pnl, 2)}</td><td>{formatNumber(trade.balance_after, 2)}</td><td>{trade.exit_reason}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">没有符合查询条件的交易记录。</div>}
       </section>
     </>}
   </main>;

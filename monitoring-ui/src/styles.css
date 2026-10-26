@@ -600,6 +600,11 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .account-daily-table th:first-child, .account-daily-table td:first-child { text-align: left; }
 .account-history-panel { min-height: 330px; }
 .account-history-panel .panel-heading { margin-bottom: 18px; }
+.account-trade-filters { display: grid; grid-template-columns: 150px minmax(210px, 1fr) minmax(210px, 1fr) auto 150px auto; align-items: end; gap: 10px; margin-bottom: 14px; padding: 14px; border: 1px solid #1b3348; border-radius: 10px; background: #081522; }
+.account-trade-filters label > span { display: block; margin-bottom: 7px; color: #8da4ba; font-size: 10px; font-weight: 800; letter-spacing: .04em; }
+.account-trade-filters input, .account-trade-filters select, .account-trade-filters button { min-height: 40px; }
+.account-trade-filters button { white-space: nowrap; }
+.account-trade-filter-error { margin: -3px 0 14px; border: 1px solid #7a3540; border-radius: 8px; padding: 9px 12px; color: #ffb0b9; background: #351920; font-size: 11px; }
 .account-history-table { min-width: 1420px; }
 .account-history-table th:first-child, .account-history-table td:first-child { text-align: left; }
 .account-history-empty { display: grid; min-height: 220px; place-items: center; color: #718ba1; }
@@ -619,6 +624,7 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
   .workspace-user { justify-self: auto; }
   .account-metric-grid { grid-template-columns: repeat(3, 1fr); }
   .account-ranking-grid { grid-template-columns: 1fr; }
+  .account-trade-filters { grid-template-columns: 140px 1fr 1fr; }
 }
 
 @media (max-width: 680px) {
@@ -635,6 +641,8 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
   .workspace-user { width: 100%; }
   .workspace-user button:first-child { min-width: 0; flex: 1; justify-content: space-between; }
   .workspace-user span { max-width: 145px; }
+  .account-trade-filters { grid-template-columns: 1fr 1fr; }
+  .account-trade-filters label:not(:first-child) { grid-column: 1 / -1; }
   .paper-page-actions { width: 100%; justify-items: stretch; }
   .paper-page-actions > div:last-child { display: grid; grid-template-columns: 1fr; }
   .paper-playback-bar { align-items: flex-start; flex-direction: column; }
