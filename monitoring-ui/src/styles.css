@@ -571,14 +571,14 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .account-analysis-panel, .account-round-panel, .account-daily-panel { margin-bottom: 14px; }
 .account-analysis-panel .panel-heading, .account-ranking-grid .panel-heading, .account-round-panel .panel-heading, .account-daily-panel .panel-heading { margin-bottom: 16px; }
 .account-analysis-panel .panel-heading > span, .account-ranking-grid .panel-heading > span, .account-daily-panel .panel-heading > span { color: #71899f; font-size: 10px; }
-.account-daily-chart { position: relative; display: grid; height: 250px; grid-auto-columns: minmax(48px, 1fr); grid-auto-flow: column; align-items: end; gap: 7px; overflow-x: auto; overflow-y: hidden; border: 1px solid #1b3348; border-radius: 10px; padding: 24px 14px 12px; background: #081522; }
-.account-chart-zero { position: absolute; right: 14px; bottom: 39px; left: 14px; height: 1px; background: #294055; }
-.account-daily-bar { position: relative; z-index: 1; display: grid; height: 100%; grid-template-rows: 22px 1fr 18px; align-items: end; gap: 5px; text-align: center; }
+.account-daily-chart { position: relative; display: grid; height: 288px; grid-auto-columns: minmax(48px, 1fr); grid-auto-flow: column; align-items: end; gap: 7px; overflow-x: auto; overflow-y: hidden; border: 1px solid #1b3348; border-radius: 10px; padding: 24px 14px 12px; background: #081522; }
+.account-chart-zero { position: absolute; z-index: 1; top: 151px; right: 14px; left: 14px; height: 1px; background: #294055; }
+.account-daily-bar { position: relative; z-index: 2; display: grid; height: 250px; grid-template-rows: 22px 200px 18px; align-items: end; gap: 5px; text-align: center; }
 .account-daily-bar strong { overflow: hidden; font-size: 9px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
-.account-daily-bar > div { display: flex; height: 172px; align-items: flex-end; justify-content: center; }
-.account-daily-bar > div > span { display: block; width: min(28px, 72%); min-height: 2px; border-radius: 3px 3px 0 0; opacity: .9; }
-.account-daily-bar > div > span.positive { background: linear-gradient(180deg, #3be2b8, #0d9f7d); }
-.account-daily-bar > div > span.negative { background: linear-gradient(180deg, #ff7383, #e73550); }
+.account-daily-bar > div { position: relative; height: 200px; }
+.account-daily-bar > div > span { position: absolute; left: 50%; display: block; width: min(28px, 72%); min-height: 2px; max-height: calc(50% - 4px); transform: translateX(-50%); opacity: .9; }
+.account-daily-bar > div > span.positive { bottom: 50%; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, #3be2b8, #0d9f7d); }
+.account-daily-bar > div > span.negative { top: 50%; border-radius: 0 0 3px 3px; background: linear-gradient(180deg, #e73550, #ff7383); }
 .account-daily-bar small { color: #71899f; font-size: 9px; font-variant-numeric: tabular-nums; }
 .account-ranking-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
 .account-ranking-table { min-width: 650px; }
@@ -593,12 +593,13 @@ dd { margin: 0; overflow: hidden; color: #c8d7e6; font-size: 13px; text-overflow
 .round-status.status-running { color: #58d6c2; border-color: #287b6d; background: #0c302b; }
 .round-status.status-completed { color: #8fb9e3; border-color: #315d83; background: #10273b; }
 .round-status.status-liquidated { color: #ff8997; border-color: #843947; background: #35171d; }
-.account-daily-scroll { max-height: 420px; }
+.account-round-panel .table-scroll, .account-daily-scroll, .account-history-scroll { max-height: 458px; overflow: auto; }
+.account-round-panel .storage-table th, .account-daily-scroll .storage-table th, .account-history-scroll .storage-table th { position: sticky; z-index: 2; top: 0; height: 38px; background: #091522; box-shadow: 0 1px #1d3348; }
+.account-round-panel .storage-table td, .account-daily-scroll .storage-table td, .account-history-scroll .storage-table td { height: 42px; padding-top: 6px; padding-bottom: 6px; }
 .account-daily-table { min-width: 900px; }
 .account-daily-table th:first-child, .account-daily-table td:first-child { text-align: left; }
 .account-history-panel { min-height: 330px; }
 .account-history-panel .panel-heading { margin-bottom: 18px; }
-.account-history-scroll { max-height: 650px; }
 .account-history-table { min-width: 1420px; }
 .account-history-table th:first-child, .account-history-table td:first-child { text-align: left; }
 .account-history-empty { display: grid; min-height: 220px; place-items: center; color: #718ba1; }
