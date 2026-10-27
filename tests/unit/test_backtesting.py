@@ -16,7 +16,6 @@ from auto_trade.backtesting.models import (
 from auto_trade.backtesting.service import BacktestManager
 from auto_trade.strategies.feature_scan import (
     ALL_FACTORS,
-    EARLY_BREAKOUT_FACTORS,
     DatabaseScanResult,
     FactorResult,
     StrategyEvaluation,
@@ -37,7 +36,8 @@ def _request() -> BacktestCreateRequest:
 def test_request_normalizes_tickers_and_requires_aware_time() -> None:
     assert _request().symbols == ("BRUSDT", "BTCUSDT")
     assert _request().preserve_log_history is False
-    assert BacktestParameters().required_factors == EARLY_BREAKOUT_FACTORS
+    assert BacktestParameters().required_factors == ALL_FACTORS
+    assert sum(BacktestParameters().factor_weights.values()) == Decimal("100")
 
     with pytest.raises(ValidationError, match="timezone"):
         BacktestCreateRequest(
@@ -66,6 +66,10 @@ def test_saved_strategy_normalizes_metadata_and_serializes_parameters() -> None:
 
     assert strategy.name == "BR 提前突破 v1"
     assert strategy.description == "连续强势阳线与 EMA 临近金叉"
+    assert strategy.parameters.single_bar_price_rise_saturation_percent == Decimal("4.875")
+    assert strategy.parameters.factor_parameters["single_bar_price_rise"][
+        "single_bar_price_rise_percent"
+    ] == Decimal("3.25")
     values = BacktestManager._strategy_values(strategy)
     assert '"single_bar_price_rise_percent": "3.25"' in str(values["parameters"])
     assert '"required_factors": ["single_bar_price_rise", "ema_bullish_setup"]' in str(
@@ -74,6 +78,14 @@ def test_saved_strategy_normalizes_metadata_and_serializes_parameters() -> None:
 
     with pytest.raises(ValidationError, match="strategy name must not be blank"):
         BacktestStrategyWrite(name="   ")
+
+    with pytest.raises(ValidationError, match="unknown factors"):
+        BacktestParameters(required_factors=("future_factor_without_registration",))
+
+    with pytest.raises(ValidationError, match="unknown parameters"):
+        BacktestParameters(
+            factor_parameters={"rapid_price_rise": {"unknown_parameter": Decimal("1")}}
+        )
 
 
 async def test_metadata_reads_only_first_and_last_timescale_chunks() -> None:
@@ -142,6 +154,15 @@ async def test_metadata_reads_only_first_and_last_timescale_chunks() -> None:
 
     assert metadata.intervals["300"].symbols == ("BTCUSDT", "ETHUSDT")
     assert metadata.intervals["900"].symbols == ("BTCUSDT",)
+    assert len(metadata.factors) == len(ALL_FACTORS)
+    rapid = next(factor for factor in metadata.factors if factor.name == "rapid_price_rise")
+    assert rapid.label == "价格快速拉升"
+    assert rapid.default_weight == 10
+    assert {parameter.key for parameter in rapid.parameters} == {
+        "rapid_price_window_bars",
+        "rapid_price_rise_percent",
+        "rapid_price_rise_saturation_percent",
+    }
     calls = connection.execute.await_args_list
     assert "force_custom_plan" in str(calls[0].args[0])
     assert "timescaledb_information.chunks" in str(calls[1].args[0])
@@ -162,9 +183,19 @@ async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.Monkey
                 passed=name == "rapid_price_rise",
                 value=Decimal("4.2") if name == "rapid_price_rise" else None,
                 threshold="test",
+                metrics={"window_bars": 4} if name == "rapid_price_rise" else {},
+                score=Decimal("88") if name == "rapid_price_rise" else Decimal(0),
+                weight=Decimal("10") if name == "rapid_price_rise" else Decimal(0),
+                contribution=(Decimal("8.8") if name == "rapid_price_rise" else Decimal(0)),
             )
             for name in ALL_FACTORS
         },
+        score=Decimal("78.5"),
+        grade="A",
+        coverage_percent=Decimal("90"),
+        trigger_reason="窗口涨幅",
+        group_scores={"price_action": Decimal("82")},
+        risk_flags=("单根涨幅过热",),
     )
     received: dict[str, Any] = {}
 
@@ -188,6 +219,17 @@ async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.Monkey
     assert response.total_instruments == 2
     assert response.signal_count == 1
     assert response.signals[0].factors["rapid_price_rise"].value == pytest.approx(4.2)
+    assert response.signals[0].score == pytest.approx(78.5)
+    assert response.signals[0].grade == "A"
+    assert response.signals[0].coverage_percent == pytest.approx(90)
+    assert response.signals[0].trigger_reason == "窗口涨幅"
+    assert response.signals[0].group_scores == {"price_action": 82.0}
+    assert response.signals[0].risk_flags == ("单根涨幅过热",)
+    rapid = response.signals[0].factors["rapid_price_rise"]
+    assert rapid.score == pytest.approx(88)
+    assert rapid.weight == pytest.approx(10)
+    assert rapid.contribution == pytest.approx(8.8)
+    assert rapid.metrics == {"window_bars": 4}
     assert received["symbols"] == ("BRUSDT", "BTCUSDT")
     assert received["start"] == request.start_at
     assert received["end"] == request.end_at
@@ -195,6 +237,9 @@ async def test_manager_runs_scan_and_exposes_progress(monkeypatch: pytest.Monkey
     assert received["parameters"].bullish_sequence_bars == 2
     assert received["parameters"].volume_acceleration_average_bars == 20
     assert received["parameters"].ema_near_cross_gap_percent == Decimal("1")
+    assert received["parameters"].factor_parameters["rapid_price_rise"][
+        "rapid_price_window_bars"
+    ] == Decimal("4")
     assert response.log_available is False
 
 
@@ -263,6 +308,8 @@ async def test_optional_html_log_is_generated_and_resolvable(
     assert "EMA20: 108700.12 | EMA240: 108650.57" in html
     assert "成交量: 18788.71" in html
     assert "成交额: 2043370000.00" in html
+    assert "总分: 0.00 (弱)" in html
+    assert "覆盖率: 0.00%" in html
     assert "实际值: 4.20%" in html
     assert "成交量暴涨: " in html and "实际值: 0.08x" in html
     assert "连续振幅异常: " in html and "实际值: 0.33x" in html
@@ -308,9 +355,7 @@ async def test_preserve_log_history_keeps_previous_log(
     first_path = first.log_path
     assert first_path is not None and first_path.is_file()
 
-    second = manager.create(
-        _request().model_copy(update={"preserve_log_history": True})
-    )
+    second = manager.create(_request().model_copy(update={"preserve_log_history": True}))
     assert first_path.is_file()
     assert manager.response(first).log_available is True
     assert second.task is not None

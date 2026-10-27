@@ -580,7 +580,7 @@ interface RankingFilters {
   rankTo: NumericInput;
 }
 
-type FactorName = "bullish_candle_sequence" | "single_bar_price_rise" | "volume_acceleration" | "ema_bullish_setup" | "ema_bullish_cross" | "rapid_price_rise" | "open_interest_rise" | "volume_surge" | "amplitude_spike_streak" | "low_average_amplitude";
+type FactorName = string;
 type BacktestStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
 type BacktestInterval = 300 | 900;
 
@@ -592,6 +592,27 @@ interface BacktestIntervalMetadata {
 
 interface BacktestMetadata {
   intervals: Record<"300" | "900", BacktestIntervalMetadata>;
+  factors: BacktestFactorMetadata[];
+}
+
+interface BacktestFactorParameterMetadata {
+  key: string;
+  label: string;
+  value_type: "decimal" | "integer";
+  default: number;
+  minimum: number;
+  maximum: number;
+  step: number;
+}
+
+interface BacktestFactorMetadata {
+  name: FactorName;
+  label: string;
+  group: string;
+  value_format: "percent" | "multiple" | "bars" | "number";
+  default_weight: number;
+  default_enabled: boolean;
+  parameters: BacktestFactorParameterMetadata[];
 }
 
 interface BacktestFactorResult {
@@ -599,6 +620,11 @@ interface BacktestFactorResult {
   value: number | null;
   threshold: string;
   reason: string | null;
+  metrics: Record<string, number | boolean>;
+  score: number;
+  weight: number;
+  contribution: number;
+  available: boolean;
 }
 
 interface BacktestSignal {
@@ -606,6 +632,12 @@ interface BacktestSignal {
   open_time: string;
   close_price: number;
   factors: Record<FactorName, BacktestFactorResult>;
+  score: number;
+  grade: string;
+  coverage_percent: number;
+  trigger_reason: string | null;
+  group_scores: Record<string, number>;
+  risk_flags: string[];
 }
 
 interface BacktestJob {
@@ -640,20 +672,40 @@ interface BacktestParameterPayload {
   bullish_last_close_position_percent: number;
   bullish_last_max_upper_shadow_percent: number;
   single_bar_price_rise_percent: number;
+  single_bar_price_rise_saturation_percent: number;
   volume_acceleration_average_bars: number;
   volume_acceleration_average_multiple: number;
+  volume_acceleration_average_saturation_multiple: number;
   volume_acceleration_previous_multiple: number;
+  volume_acceleration_previous_saturation_multiple: number;
   ema_near_cross_gap_percent: number;
   ema_gap_shrink_min_percent: number;
   ema_cross_lookback_bars: number;
   rapid_price_window_bars: number;
   rapid_price_rise_percent: number;
+  rapid_price_rise_saturation_percent: number;
   open_interest_window_bars: number;
   open_interest_rise_percent: number;
+  open_interest_rise_saturation_percent: number;
   volume_surge_multiple: number;
+  volume_surge_saturation_multiple: number;
   amplitude_spike_multiple: number;
+  amplitude_spike_saturation_multiple: number;
   amplitude_consecutive_bars: number;
   average_amplitude_max_percent: number;
+  average_amplitude_excellent_percent: number;
+  average_amplitude_bad_percent: number;
+  trigger_single_bar_rise_percent: number;
+  trigger_rapid_price_rise_percent: number;
+  trigger_volume_average_multiple: number;
+  trigger_close_position_percent: number;
+  signal_score_threshold: number;
+  minimum_data_coverage_percent: number;
+  rearm_score_threshold: number;
+  cooldown_bars: number;
+  score_improvement_for_repeat: number;
+  factor_weights: Record<FactorName, number>;
+  factor_parameters: Record<FactorName, Record<string, number>>;
   required_factors: FactorName[];
 }
 
@@ -674,21 +726,42 @@ interface BacktestParameterValues {
   bullishLastClosePositionPercent: NumericInput;
   bullishLastMaxUpperShadowPercent: NumericInput;
   singleBarPriceRisePercent: NumericInput;
+  singleBarPriceRiseSaturationPercent: NumericInput;
   volumeAccelerationAverageBars: NumericInput;
   volumeAccelerationAverageMultiple: NumericInput;
+  volumeAccelerationAverageSaturationMultiple: NumericInput;
   volumeAccelerationPreviousMultiple: NumericInput;
+  volumeAccelerationPreviousSaturationMultiple: NumericInput;
   emaNearCrossGapPercent: NumericInput;
   emaGapShrinkMinPercent: NumericInput;
   emaCrossBars: NumericInput;
   priceWindowBars: NumericInput;
   priceRisePercent: NumericInput;
+  priceRiseSaturationPercent: NumericInput;
   oiWindowBars: NumericInput;
   oiRisePercent: NumericInput;
+  oiRiseSaturationPercent: NumericInput;
   volumeMultiple: NumericInput;
+  volumeSaturationMultiple: NumericInput;
   amplitudeMultiple: NumericInput;
+  amplitudeSaturationMultiple: NumericInput;
   amplitudeConsecutiveBars: NumericInput;
   averageAmplitudeMaxPercent: NumericInput;
+  averageAmplitudeExcellentPercent: NumericInput;
+  averageAmplitudeBadPercent: NumericInput;
+  triggerSingleBarRisePercent: NumericInput;
+  triggerRapidPriceRisePercent: NumericInput;
+  triggerVolumeAverageMultiple: NumericInput;
+  triggerClosePositionPercent: NumericInput;
+  signalScoreThreshold: NumericInput;
+  minimumDataCoveragePercent: NumericInput;
+  rearmScoreThreshold: NumericInput;
+  cooldownBars: NumericInput;
+  scoreImprovementForRepeat: NumericInput;
 }
+
+type FactorWeightValues = Record<FactorName, NumericInput>;
+type FactorParameterValues = Record<FactorName, Record<string, NumericInput>>;
 
 const defaultBacktestParameters: Record<keyof BacktestParameterValues, number> = {
   averageDays: 7,
@@ -696,21 +769,52 @@ const defaultBacktestParameters: Record<keyof BacktestParameterValues, number> =
   bullishMinClosePositionPercent: 50,
   bullishLastClosePositionPercent: 85,
   bullishLastMaxUpperShadowPercent: 15,
-  singleBarPriceRisePercent: 3,
+  singleBarPriceRisePercent: 0.8,
+  singleBarPriceRiseSaturationPercent: 2.5,
   volumeAccelerationAverageBars: 20,
-  volumeAccelerationAverageMultiple: 2,
-  volumeAccelerationPreviousMultiple: 1.3,
+  volumeAccelerationAverageMultiple: 1.8,
+  volumeAccelerationAverageSaturationMultiple: 3,
+  volumeAccelerationPreviousMultiple: 1.2,
+  volumeAccelerationPreviousSaturationMultiple: 2,
   emaNearCrossGapPercent: 1,
   emaGapShrinkMinPercent: 30,
   emaCrossBars: 4,
   priceWindowBars: 4,
-  priceRisePercent: 3,
+  priceRisePercent: 1.5,
+  priceRiseSaturationPercent: 4,
   oiWindowBars: 4,
-  oiRisePercent: 5,
-  volumeMultiple: 5,
-  amplitudeMultiple: 5,
+  oiRisePercent: 2,
+  oiRiseSaturationPercent: 8,
+  volumeMultiple: 2,
+  volumeSaturationMultiple: 5,
+  amplitudeMultiple: 2,
+  amplitudeSaturationMultiple: 5,
   amplitudeConsecutiveBars: 2,
-  averageAmplitudeMaxPercent: 2
+  averageAmplitudeMaxPercent: 0.8,
+  averageAmplitudeExcellentPercent: 0.6,
+  averageAmplitudeBadPercent: 2,
+  triggerSingleBarRisePercent: 0.6,
+  triggerRapidPriceRisePercent: 1.2,
+  triggerVolumeAverageMultiple: 1.5,
+  triggerClosePositionPercent: 70,
+  signalScoreThreshold: 70,
+  minimumDataCoveragePercent: 85,
+  rearmScoreThreshold: 60,
+  cooldownBars: 4,
+  scoreImprovementForRepeat: 5
+};
+
+const defaultFactorWeights: FactorWeightValues = {
+  bullish_candle_sequence: 12,
+  single_bar_price_rise: 8,
+  volume_acceleration: 15,
+  ema_bullish_setup: 12,
+  ema_bullish_cross: 8,
+  rapid_price_rise: 10,
+  open_interest_rise: 10,
+  volume_surge: 10,
+  amplitude_spike_streak: 7,
+  low_average_amplitude: 8
 };
 
 const backtestParameterLabels: Record<keyof BacktestParameterValues, string> = {
@@ -720,20 +824,38 @@ const backtestParameterLabels: Record<keyof BacktestParameterValues, string> = {
   bullishLastClosePositionPercent: "最后阳线最低收盘位置",
   bullishLastMaxUpperShadowPercent: "最后阳线最大上影线",
   singleBarPriceRisePercent: "单根 K 线涨幅",
+  singleBarPriceRiseSaturationPercent: "单根涨幅饱和值",
   volumeAccelerationAverageBars: "成交量均值窗口",
   volumeAccelerationAverageMultiple: "成交量均值倍数",
+  volumeAccelerationAverageSaturationMultiple: "成交量均值饱和值",
   volumeAccelerationPreviousMultiple: "上一根成交量倍数",
+  volumeAccelerationPreviousSaturationMultiple: "上一根成交量饱和值",
   emaNearCrossGapPercent: "EMA 最大临近差距",
   emaGapShrinkMinPercent: "EMA 差距最小收缩幅度",
   emaCrossBars: "EMA 上穿窗口",
   priceWindowBars: "价格窗口",
   priceRisePercent: "价格涨幅",
+  priceRiseSaturationPercent: "窗口涨幅饱和值",
   oiWindowBars: "OI 窗口",
   oiRisePercent: "OI 涨幅",
+  oiRiseSaturationPercent: "OI 涨幅饱和值",
   volumeMultiple: "成交量倍数",
+  volumeSaturationMultiple: "长期成交量饱和值",
   amplitudeMultiple: "振幅倍数",
+  amplitudeSaturationMultiple: "振幅饱和值",
   amplitudeConsecutiveBars: "连续 K 线数量",
-  averageAmplitudeMaxPercent: "平均振幅上限"
+  averageAmplitudeMaxPercent: "平均振幅参考值",
+  averageAmplitudeExcellentPercent: "平均振幅优秀值",
+  averageAmplitudeBadPercent: "平均振幅失效值",
+  triggerSingleBarRisePercent: "候选单根涨幅",
+  triggerRapidPriceRisePercent: "候选窗口涨幅",
+  triggerVolumeAverageMultiple: "候选成交量倍数",
+  triggerClosePositionPercent: "候选收盘位置",
+  signalScoreThreshold: "正式信号分数",
+  minimumDataCoveragePercent: "最低数据覆盖率",
+  rearmScoreThreshold: "重新激活分数",
+  cooldownBars: "信号冷却 K 线",
+  scoreImprovementForRepeat: "重复信号最低提分"
 };
 
 function requiredBacktestParameterKeys(selectedFactors: FactorName[]): Set<keyof BacktestParameterValues> {
@@ -773,7 +895,7 @@ function requiredBacktestParameterKeys(selectedFactors: FactorName[]): Set<keyof
   return keys;
 }
 
-function buildBacktestParameterPayload(parameters: BacktestParameterValues, selectedFactors: FactorName[]): BacktestParameterPayload {
+function buildBacktestParameterPayload(parameters: BacktestParameterValues, selectedFactors: FactorName[], factorWeights: FactorWeightValues, factorParameters: FactorParameterValues): BacktestParameterPayload {
   const value = (key: keyof BacktestParameterValues): number => parameters[key] === "" ? defaultBacktestParameters[key] : parameters[key];
   return {
     average_days: value("averageDays"),
@@ -782,20 +904,40 @@ function buildBacktestParameterPayload(parameters: BacktestParameterValues, sele
     bullish_last_close_position_percent: value("bullishLastClosePositionPercent"),
     bullish_last_max_upper_shadow_percent: value("bullishLastMaxUpperShadowPercent"),
     single_bar_price_rise_percent: value("singleBarPriceRisePercent"),
+    single_bar_price_rise_saturation_percent: value("singleBarPriceRiseSaturationPercent"),
     volume_acceleration_average_bars: value("volumeAccelerationAverageBars"),
     volume_acceleration_average_multiple: value("volumeAccelerationAverageMultiple"),
+    volume_acceleration_average_saturation_multiple: value("volumeAccelerationAverageSaturationMultiple"),
     volume_acceleration_previous_multiple: value("volumeAccelerationPreviousMultiple"),
+    volume_acceleration_previous_saturation_multiple: value("volumeAccelerationPreviousSaturationMultiple"),
     ema_near_cross_gap_percent: value("emaNearCrossGapPercent"),
     ema_gap_shrink_min_percent: value("emaGapShrinkMinPercent"),
     ema_cross_lookback_bars: value("emaCrossBars"),
     rapid_price_window_bars: value("priceWindowBars"),
     rapid_price_rise_percent: value("priceRisePercent"),
+    rapid_price_rise_saturation_percent: value("priceRiseSaturationPercent"),
     open_interest_window_bars: value("oiWindowBars"),
     open_interest_rise_percent: value("oiRisePercent"),
+    open_interest_rise_saturation_percent: value("oiRiseSaturationPercent"),
     volume_surge_multiple: value("volumeMultiple"),
+    volume_surge_saturation_multiple: value("volumeSaturationMultiple"),
     amplitude_spike_multiple: value("amplitudeMultiple"),
+    amplitude_spike_saturation_multiple: value("amplitudeSaturationMultiple"),
     amplitude_consecutive_bars: value("amplitudeConsecutiveBars"),
     average_amplitude_max_percent: value("averageAmplitudeMaxPercent"),
+    average_amplitude_excellent_percent: value("averageAmplitudeExcellentPercent"),
+    average_amplitude_bad_percent: value("averageAmplitudeBadPercent"),
+    trigger_single_bar_rise_percent: value("triggerSingleBarRisePercent"),
+    trigger_rapid_price_rise_percent: value("triggerRapidPriceRisePercent"),
+    trigger_volume_average_multiple: value("triggerVolumeAverageMultiple"),
+    trigger_close_position_percent: value("triggerClosePositionPercent"),
+    signal_score_threshold: value("signalScoreThreshold"),
+    minimum_data_coverage_percent: value("minimumDataCoveragePercent"),
+    rearm_score_threshold: value("rearmScoreThreshold"),
+    cooldown_bars: value("cooldownBars"),
+    score_improvement_for_repeat: value("scoreImprovementForRepeat"),
+    factor_weights: Object.fromEntries(Object.entries(factorWeights).map(([name, weight]) => [name, weight === "" ? defaultFactorWeights[name as FactorName] : weight])) as Record<FactorName, number>,
+    factor_parameters: Object.fromEntries(Object.entries(factorParameters).map(([name, values]) => [name, Object.fromEntries(Object.entries(values).map(([key, parameterValue]) => [key, parameterValue === "" ? 0 : parameterValue]))])) as Record<FactorName, Record<string, number>>,
     required_factors: selectedFactors
   };
 }
@@ -808,20 +950,38 @@ function parameterValuesFromPayload(value: BacktestParameterPayload): BacktestPa
     bullishLastClosePositionPercent: Number(value.bullish_last_close_position_percent),
     bullishLastMaxUpperShadowPercent: Number(value.bullish_last_max_upper_shadow_percent),
     singleBarPriceRisePercent: Number(value.single_bar_price_rise_percent),
+    singleBarPriceRiseSaturationPercent: Number(value.single_bar_price_rise_saturation_percent),
     volumeAccelerationAverageBars: Number(value.volume_acceleration_average_bars),
     volumeAccelerationAverageMultiple: Number(value.volume_acceleration_average_multiple),
+    volumeAccelerationAverageSaturationMultiple: Number(value.volume_acceleration_average_saturation_multiple),
     volumeAccelerationPreviousMultiple: Number(value.volume_acceleration_previous_multiple),
+    volumeAccelerationPreviousSaturationMultiple: Number(value.volume_acceleration_previous_saturation_multiple),
     emaNearCrossGapPercent: Number(value.ema_near_cross_gap_percent),
     emaGapShrinkMinPercent: Number(value.ema_gap_shrink_min_percent),
     emaCrossBars: Number(value.ema_cross_lookback_bars),
     priceWindowBars: Number(value.rapid_price_window_bars),
     priceRisePercent: Number(value.rapid_price_rise_percent),
+    priceRiseSaturationPercent: Number(value.rapid_price_rise_saturation_percent),
     oiWindowBars: Number(value.open_interest_window_bars),
     oiRisePercent: Number(value.open_interest_rise_percent),
+    oiRiseSaturationPercent: Number(value.open_interest_rise_saturation_percent),
     volumeMultiple: Number(value.volume_surge_multiple),
+    volumeSaturationMultiple: Number(value.volume_surge_saturation_multiple),
     amplitudeMultiple: Number(value.amplitude_spike_multiple),
+    amplitudeSaturationMultiple: Number(value.amplitude_spike_saturation_multiple),
     amplitudeConsecutiveBars: Number(value.amplitude_consecutive_bars),
-    averageAmplitudeMaxPercent: Number(value.average_amplitude_max_percent)
+    averageAmplitudeMaxPercent: Number(value.average_amplitude_max_percent),
+    averageAmplitudeExcellentPercent: Number(value.average_amplitude_excellent_percent),
+    averageAmplitudeBadPercent: Number(value.average_amplitude_bad_percent),
+    triggerSingleBarRisePercent: Number(value.trigger_single_bar_rise_percent),
+    triggerRapidPriceRisePercent: Number(value.trigger_rapid_price_rise_percent),
+    triggerVolumeAverageMultiple: Number(value.trigger_volume_average_multiple),
+    triggerClosePositionPercent: Number(value.trigger_close_position_percent),
+    signalScoreThreshold: Number(value.signal_score_threshold),
+    minimumDataCoveragePercent: Number(value.minimum_data_coverage_percent),
+    rearmScoreThreshold: Number(value.rearm_score_threshold),
+    cooldownBars: Number(value.cooldown_bars),
+    scoreImprovementForRepeat: Number(value.score_improvement_for_repeat)
   };
 }
 
@@ -1923,13 +2083,12 @@ const factorLabels: Record<FactorName, string> = {
   low_average_amplitude: "7日平均振幅低"
 };
 
-const earlyBreakoutFactors: FactorName[] = ["bullish_candle_sequence", "single_bar_price_rise", "volume_acceleration", "ema_bullish_setup", "low_average_amplitude"];
-
-function factorValue(name: FactorName, value: number | null): string {
+function factorValue(value: number | null, valueFormat: BacktestFactorMetadata["value_format"] = "number"): string {
   if (value === null) return "—";
-  if (name === "ema_bullish_cross") return `${value} 根前`;
-  if (name === "bullish_candle_sequence" || name === "single_bar_price_rise" || name === "ema_bullish_setup" || name === "rapid_price_rise" || name === "open_interest_rise" || name === "low_average_amplitude") return `${value.toFixed(2)}%`;
-  return `${value.toFixed(2)}×`;
+  if (valueFormat === "bars") return `${value} 根前`;
+  if (valueFormat === "percent") return `${value.toFixed(2)}%`;
+  if (valueFormat === "multiple") return `${value.toFixed(2)}×`;
+  return formatNumber(value, 4);
 }
 
 function SignalKlineModal({ signal, intervalSeconds, onClose }: { signal: BacktestSignal; intervalSeconds: BacktestInterval; onClose: () => void }) {
@@ -1990,7 +2149,7 @@ function SignalKlineModal({ signal, intervalSeconds, onClose }: { signal: Backte
       {!result && !error && <div className="chart-state">正在读取本地 {intervalSeconds / 60}min K 线…</div>}
       {error && <div className="chart-state chart-state-error">K 线加载失败：{error}</div>}
       {chartData && chartData.items.length > 0 && <div className="chart-modal-body">
-        <div className="chart-summary"><span>命中时间 <strong>{formatKlineTime(signal.open_time)}</strong></span><span>命中收盘价 <strong>{formatNumber(signal.close_price, 8)}</strong></span><span>K线数量 <strong>{loadedRange?.count ?? chartData.items.length}</strong></span><span className="ema20-label">━ EMA20</span><span className="ema240-label">━ EMA240</span></div>
+        <div className="chart-summary"><span>命中时间 <strong>{formatKlineTime(signal.open_time)}</strong></span><span>信号强度 <strong>{formatNumber(signal.score, 2)} · {signal.grade}</strong></span><span>数据覆盖率 <strong>{formatNumber(signal.coverage_percent, 2)}%</strong></span><span>价格 / 量能 / 趋势 <strong>{formatNumber(signal.group_scores.price_action ?? 0, 0)} / {formatNumber(signal.group_scores.volume ?? 0, 0)} / {formatNumber(signal.group_scores.trend ?? 0, 0)}</strong></span><span>风险标记 <strong>{signal.risk_flags.length > 0 ? signal.risk_flags.join("、") : "无"}</strong></span><span>命中收盘价 <strong>{formatNumber(signal.close_price, 8)}</strong></span><span>K线数量 <strong>{loadedRange?.count ?? chartData.items.length}</strong></span><span className="ema20-label">━ EMA20</span><span className="ema240-label">━ EMA240</span></div>
         <CandlestickChart data={chartData} signalTime={signal.open_time} onLoadedRangeChange={setLoadedRange} />
         <p className="chart-footnote">橙色箭头标记命中 K 线；数据直接读取本地 {intervalSeconds / 60}min K 线和同周期 EMA 指标，图表时间统一显示为 UTC+8。</p>
       </div>}
@@ -2014,8 +2173,10 @@ function BacktestWorkspace() {
   const [symbolSearch, setSymbolSearch] = useState("");
   const [generateLog, setGenerateLog] = useState(false);
   const [preserveLogHistory, setPreserveLogHistory] = useState(false);
-  const [selectedFactors, setSelectedFactors] = useState<FactorName[]>(earlyBreakoutFactors);
+  const [selectedFactors, setSelectedFactors] = useState<FactorName[]>([]);
   const [parameters, setParameters] = useState<BacktestParameterValues>({ ...defaultBacktestParameters });
+  const [factorWeights, setFactorWeights] = useState<FactorWeightValues>({});
+  const [factorParameters, setFactorParameters] = useState<FactorParameterValues>({});
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<BacktestJob | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -2028,7 +2189,12 @@ function BacktestWorkspace() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json() as Promise<BacktestMetadata>;
       })
-      .then(setMetadata)
+      .then((value) => {
+        setMetadata(value);
+        setSelectedFactors((current) => current.length > 0 ? current : value.factors.filter((factor) => factor.default_enabled).map((factor) => factor.name));
+        setFactorWeights((current) => ({ ...Object.fromEntries(value.factors.map((factor) => [factor.name, factor.default_weight])), ...current }));
+        setFactorParameters((current) => ({ ...Object.fromEntries(value.factors.map((factor) => [factor.name, Object.fromEntries(factor.parameters.map((parameter) => [parameter.key, parameter.default]))])), ...current }));
+      })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "无法读取回测数据范围"));
   }, []);
 
@@ -2090,6 +2256,17 @@ function BacktestWorkspace() {
     setSelectedFactors((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
   }
 
+  function setFactorWeight(name: FactorName, value: string) {
+    setFactorWeights((current) => ({ ...current, [name]: value === "" ? "" : Number(value) }));
+  }
+
+  function setFactorParameter(name: FactorName, key: string, value: string) {
+    setFactorParameters((current) => ({
+      ...current,
+      [name]: { ...current[name], [key]: value === "" ? "" : Number(value) }
+    }));
+  }
+
   function toggleSymbol(symbol: string) {
     setSelectedSymbols((current) => current.includes(symbol) ? current.filter((item) => item !== symbol) : [...current, symbol]);
   }
@@ -2097,7 +2274,15 @@ function BacktestWorkspace() {
   function configurationError(): string | null {
     if (selectedFactors.length === 0) return "请至少选择一个策略因子";
     const missingParameter = [...requiredBacktestParameterKeys(selectedFactors)].find((key) => parameters[key] === "");
-    return missingParameter ? `请填写${backtestParameterLabels[missingParameter]}` : null;
+    if (missingParameter) return `请填写${backtestParameterLabels[missingParameter]}`;
+    const missingScoringParameter = (Object.keys(parameters) as Array<keyof BacktestParameterValues>).find((key) => parameters[key] === "");
+    if (missingScoringParameter) return `请填写${backtestParameterLabels[missingScoringParameter]}`;
+    const invalidWeight = selectedFactors.find((name) => factorWeights[name] === "" || factorWeights[name] <= 0);
+    if (invalidWeight) return `请填写${metadata?.factors.find((factor) => factor.name === invalidWeight)?.label ?? invalidWeight}的正权重`;
+    const missingFactorParameter = metadata?.factors.flatMap((factor) => factor.parameters.map((parameter) => ({ factor, parameter }))).find(({ factor, parameter }) => selectedFactors.includes(factor.name) && (factorParameters[factor.name]?.[parameter.key] === "" || factorParameters[factor.name]?.[parameter.key] === undefined));
+    if (missingFactorParameter) return `请填写${missingFactorParameter.factor.label}的${missingFactorParameter.parameter.label}`;
+    if (Number(parameters.rearmScoreThreshold) >= Number(parameters.signalScoreThreshold)) return "重新激活分数必须低于正式信号分数";
+    return null;
   }
 
   function loadStrategy(strategyId: string) {
@@ -2116,6 +2301,9 @@ function BacktestWorkspace() {
     setIntervalSeconds(strategy.interval_seconds);
     setSelectedFactors([...strategy.parameters.required_factors]);
     setParameters(parameterValuesFromPayload(strategy.parameters));
+    const definitions = metadata?.factors ?? [];
+    setFactorWeights(Object.fromEntries(definitions.map((factor) => [factor.name, Number(strategy.parameters.factor_weights[factor.name] ?? factor.default_weight)])) as FactorWeightValues);
+    setFactorParameters(Object.fromEntries(definitions.map((factor) => [factor.name, Object.fromEntries(factor.parameters.map((parameter) => [parameter.key, Number(strategy.parameters.factor_parameters[factor.name]?.[parameter.key] ?? parameter.default)]))])) as FactorParameterValues);
     setStrategyMessage(`已加载策略“${strategy.name}”`);
   }
 
@@ -2135,7 +2323,7 @@ function BacktestWorkspace() {
           name: normalizedName,
           description: strategyDescription,
           interval_seconds: intervalSeconds,
-          parameters: buildBacktestParameterPayload(parameters, selectedFactors)
+          parameters: buildBacktestParameterPayload(parameters, selectedFactors, factorWeights, factorParameters)
         })
       });
       if (!response.ok) {
@@ -2201,7 +2389,7 @@ function BacktestWorkspace() {
           generate_log: generateLog,
           preserve_log_history: preserveLogHistory,
           symbols: allSymbols ? [] : selectedSymbols,
-          parameters: buildBacktestParameterPayload(parameters, selectedFactors)
+          parameters: buildBacktestParameterPayload(parameters, selectedFactors, factorWeights, factorParameters)
         })
       });
       if (!response.ok) {
@@ -2221,6 +2409,9 @@ function BacktestWorkspace() {
   const filteredSymbols = intervalMetadata?.symbols.filter((symbol) => symbol.includes(symbolSearch.trim().toUpperCase())) ?? [];
   const progress = job?.total_instruments ? job.scanned_instruments / job.total_instruments * 100 : 0;
   const visibleFactors = job?.request.parameters.required_factors ?? selectedFactors;
+  const selectedWeightTotal = selectedFactors.reduce((total, name) => total + Number(factorWeights[name] || 0), 0);
+  const factorLabel = (name: FactorName) => metadata?.factors.find((factor) => factor.name === name)?.label ?? factorLabels[name] ?? name;
+  const factorValueFormat = (name: FactorName): BacktestFactorMetadata["value_format"] => metadata?.factors.find((factor) => factor.name === name)?.value_format ?? "number";
 
   return <main className="backtest-page">
     <header className="topbar ranking-header">
@@ -2253,18 +2444,25 @@ function BacktestWorkspace() {
           <label><span>结束时间（不含）</span><input type="datetime-local" value={endAt} onChange={(event) => setEndAt(event.target.value)} /></label>
           <label><span>均值周期（天）</span><input type="number" min="1" max="30" value={parameters.averageDays} onChange={(event) => setNumeric("averageDays", event.target.value)} /></label>
         </div>
-        <div className="factor-grid">
-          <fieldset className={selectedFactors.includes("bullish_candle_sequence") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("bullish_candle_sequence")} onChange={() => toggleFactor("bullish_candle_sequence")} /><strong>{factorLabels.bullish_candle_sequence}</strong></label><div className="factor-params"><label><span>连续阳线</span><input type="number" min="2" max="10" value={parameters.bullishSequenceBars} onChange={(event) => setNumeric("bullishSequenceBars", event.target.value)} /></label><label><span>前序收盘位置 ≥ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.bullishMinClosePositionPercent} onChange={(event) => setNumeric("bullishMinClosePositionPercent", event.target.value)} /></label><label><span>最后收盘位置 ≥ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.bullishLastClosePositionPercent} onChange={(event) => setNumeric("bullishLastClosePositionPercent", event.target.value)} /></label><label><span>最后上影线 ≤ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.bullishLastMaxUpperShadowPercent} onChange={(event) => setNumeric("bullishLastMaxUpperShadowPercent", event.target.value)} /></label></div></fieldset>
-          <fieldset className={selectedFactors.includes("single_bar_price_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("single_bar_price_rise")} onChange={() => toggleFactor("single_bar_price_rise")} /><strong>{factorLabels.single_bar_price_rise}</strong></label><label><span>实体涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.singleBarPriceRisePercent} onChange={(event) => setNumeric("singleBarPriceRisePercent", event.target.value)} /></label></fieldset>
-          <fieldset className={selectedFactors.includes("volume_acceleration") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("volume_acceleration")} onChange={() => toggleFactor("volume_acceleration")} /><strong>{factorLabels.volume_acceleration}</strong></label><div className="factor-params"><label><span>均值窗口 K 根</span><input type="number" min="2" max="2016" value={parameters.volumeAccelerationAverageBars} onChange={(event) => setNumeric("volumeAccelerationAverageBars", event.target.value)} /></label><label><span>均值倍数 ≥</span><input type="number" min="0" step="0.01" value={parameters.volumeAccelerationAverageMultiple} onChange={(event) => setNumeric("volumeAccelerationAverageMultiple", event.target.value)} /></label><label><span>上一根倍数 ≥</span><input type="number" min="0" step="0.01" value={parameters.volumeAccelerationPreviousMultiple} onChange={(event) => setNumeric("volumeAccelerationPreviousMultiple", event.target.value)} /></label></div></fieldset>
-          <fieldset className={selectedFactors.includes("ema_bullish_setup") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("ema_bullish_setup")} onChange={() => toggleFactor("ema_bullish_setup")} /><strong>{factorLabels.ema_bullish_setup}</strong></label><div className="factor-params"><label><span>临近差距 ≤ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.emaNearCrossGapPercent} onChange={(event) => setNumeric("emaNearCrossGapPercent", event.target.value)} /></label><label><span>差距收缩 ≥ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.emaGapShrinkMinPercent} onChange={(event) => setNumeric("emaGapShrinkMinPercent", event.target.value)} /></label></div></fieldset>
-          <fieldset className={selectedFactors.includes("ema_bullish_cross") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("ema_bullish_cross")} onChange={() => toggleFactor("ema_bullish_cross")} /><strong>{factorLabels.ema_bullish_cross}</strong></label><label><span>上穿发生于最近 K 根</span><input type="number" min="1" max="96" value={parameters.emaCrossBars} onChange={(event) => setNumeric("emaCrossBars", event.target.value)} /></label></fieldset>
-          <fieldset className={selectedFactors.includes("rapid_price_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("rapid_price_rise")} onChange={() => toggleFactor("rapid_price_rise")} /><strong>{factorLabels.rapid_price_rise}</strong></label><div className="factor-params"><label><span>窗口 K 根</span><input type="number" min="1" max="96" value={parameters.priceWindowBars} onChange={(event) => setNumeric("priceWindowBars", event.target.value)} /></label><label><span>涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.priceRisePercent} onChange={(event) => setNumeric("priceRisePercent", event.target.value)} /></label></div></fieldset>
-          <fieldset className={selectedFactors.includes("open_interest_rise") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("open_interest_rise")} onChange={() => toggleFactor("open_interest_rise")} /><strong>{factorLabels.open_interest_rise}</strong></label><div className="factor-params"><label><span>窗口 K 根</span><input type="number" min="1" max="96" value={parameters.oiWindowBars} onChange={(event) => setNumeric("oiWindowBars", event.target.value)} /></label><label><span>涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.oiRisePercent} onChange={(event) => setNumeric("oiRisePercent", event.target.value)} /></label></div></fieldset>
-          <fieldset className={selectedFactors.includes("volume_surge") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("volume_surge")} onChange={() => toggleFactor("volume_surge")} /><strong>{factorLabels.volume_surge}</strong></label><label><span>当前成交额 ≥ 均值倍数</span><input type="number" min="0" step="0.1" value={parameters.volumeMultiple} onChange={(event) => setNumeric("volumeMultiple", event.target.value)} /></label></fieldset>
-          <fieldset className={selectedFactors.includes("amplitude_spike_streak") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("amplitude_spike_streak")} onChange={() => toggleFactor("amplitude_spike_streak")} /><strong>{factorLabels.amplitude_spike_streak}</strong></label><div className="factor-params"><label><span>振幅 ≥ 均值倍数</span><input type="number" min="0" step="0.1" value={parameters.amplitudeMultiple} onChange={(event) => setNumeric("amplitudeMultiple", event.target.value)} /></label><label><span>连续 K 根</span><input type="number" min="1" max="96" value={parameters.amplitudeConsecutiveBars} onChange={(event) => setNumeric("amplitudeConsecutiveBars", event.target.value)} /></label></div></fieldset>
-          <fieldset className={selectedFactors.includes("low_average_amplitude") ? "factor-card enabled" : "factor-card"}><label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes("low_average_amplitude")} onChange={() => toggleFactor("low_average_amplitude")} /><strong>{factorLabels.low_average_amplitude}</strong></label><label><span>周期均值 &lt; %</span><input type="number" min="0" step="0.01" value={parameters.averageAmplitudeMaxPercent} onChange={(event) => setNumeric("averageAmplitudeMaxPercent", event.target.value)} /></label></fieldset>
-        </div>
+        <section className="scoring-model-panel">
+          <div className="scoring-model-heading"><div><p className="eyebrow">WEIGHTED SCORE V2</p><h4>候选触发与信号控制</h4></div><span>启用权重 {formatNumber(selectedWeightTotal, 2)}，运行时归一化为 100</span></div>
+          <div className="scoring-control-grid">
+            <label><span>候选单根涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.triggerSingleBarRisePercent} onChange={(event) => setNumeric("triggerSingleBarRisePercent", event.target.value)} /></label>
+            <label><span>候选窗口涨幅 ≥ %</span><input type="number" min="0" step="0.01" value={parameters.triggerRapidPriceRisePercent} onChange={(event) => setNumeric("triggerRapidPriceRisePercent", event.target.value)} /></label>
+            <label><span>候选成交量 ≥ 均值倍数</span><input type="number" min="0" step="0.01" value={parameters.triggerVolumeAverageMultiple} onChange={(event) => setNumeric("triggerVolumeAverageMultiple", event.target.value)} /></label>
+            <label><span>量价触发收盘位置 ≥ %</span><input type="number" min="0" max="100" step="0.01" value={parameters.triggerClosePositionPercent} onChange={(event) => setNumeric("triggerClosePositionPercent", event.target.value)} /></label>
+            <label><span>正式信号分数 ≥</span><input type="number" min="0" max="100" step="0.1" value={parameters.signalScoreThreshold} onChange={(event) => setNumeric("signalScoreThreshold", event.target.value)} /></label>
+            <label><span>最低数据覆盖率 ≥ %</span><input type="number" min="0" max="100" step="0.1" value={parameters.minimumDataCoveragePercent} onChange={(event) => setNumeric("minimumDataCoveragePercent", event.target.value)} /></label>
+            <label><span>重新激活分数 &lt;</span><input type="number" min="0" max="100" step="0.1" value={parameters.rearmScoreThreshold} onChange={(event) => setNumeric("rearmScoreThreshold", event.target.value)} /></label>
+            <label><span>冷却 K 线</span><input type="number" min="1" max="96" value={parameters.cooldownBars} onChange={(event) => setNumeric("cooldownBars", event.target.value)} /></label>
+            <label><span>连续行情再次触发需提分</span><input type="number" min="0" max="100" step="0.1" value={parameters.scoreImprovementForRepeat} onChange={(event) => setNumeric("scoreImprovementForRepeat", event.target.value)} /></label>
+          </div>
+          <div className="scoring-model-heading compact"><h4>策略因子注册表</h4><span>因子、参数和默认权重由后端元数据驱动</span></div>
+          <div className="factor-grid dynamic-factor-grid">{metadata?.factors.map((factor) => <fieldset key={factor.name} className={selectedFactors.includes(factor.name) ? "factor-card enabled" : "factor-card"}>
+            <label className="factor-toggle"><input type="checkbox" checked={selectedFactors.includes(factor.name)} onChange={() => toggleFactor(factor.name)} /><strong>{factor.label}</strong><small>{factor.group}</small></label>
+            <div className="factor-params"><label><span>评分权重</span><input type="number" min="0.01" step="0.1" value={factorWeights[factor.name] ?? factor.default_weight} disabled={!selectedFactors.includes(factor.name)} onChange={(event) => setFactorWeight(factor.name, event.target.value)} /></label>{factor.parameters.map((parameter) => <label key={parameter.key}><span>{parameter.label}</span><input type="number" min={parameter.minimum} max={parameter.maximum} step={parameter.step} value={factorParameters[factor.name]?.[parameter.key] ?? parameter.default} disabled={!selectedFactors.includes(factor.name)} onChange={(event) => setFactorParameter(factor.name, parameter.key, event.target.value)} /></label>)}</div>
+          </fieldset>)}</div>
+        </section>
       </section>
       <aside className="panel ticker-picker">
         <div className="panel-heading"><div><p className="eyebrow">UNIVERSE</p><h3>Tickers</h3></div><strong>{allSymbols ? `全部 ${intervalMetadata?.symbols.length ?? 0}` : `已选 ${selectedSymbols.length}`}</strong></div>
@@ -2274,7 +2472,7 @@ function BacktestWorkspace() {
         <label className="backtest-log-option"><input type="checkbox" checked={generateLog} onChange={(event) => setGenerateLog(event.target.checked)} /><span>生成逐 K 线 HTML 日志</span></label>
         <label className="backtest-log-option"><input type="checkbox" checked={preserveLogHistory} onChange={(event) => setPreserveLogHistory(event.target.checked)} /><span>不删除历史日志</span></label>
         <button className="primary-button backtest-run" type="submit" disabled={submitting || !metadata}>{submitting ? "回测运行中…" : "开始回测"}</button>
-        <p className="message">日志默认不生成，新回测默认删除历史日志；勾选“不删除历史日志”可保留。单份日志最多记录 100,000 根 K 线；选择的因子采用 AND 关系。</p>
+        <p className="message">日志默认不生成，新回测默认删除历史日志；勾选“不删除历史日志”可保留。先由宽松量价门槛产生候选，再按因子绝对强度、权重、覆盖率与冷却规则生成信号。</p>
       </aside>
     </form>
     <section className="panel backtest-results">
@@ -2282,10 +2480,10 @@ function BacktestWorkspace() {
       {job && (job.status === "QUEUED" || job.status === "RUNNING") && <div className="backtest-progress"><span style={{ width: `${progress}%` }} /></div>}
       {job?.truncated && <div className="alert">结果已达到 {job.max_signals.toLocaleString()} 条上限，请缩短时间范围、收紧参数或减少 Tickers。</div>}
       {job?.request.generate_log && <div className={`backtest-log-status${job.log_truncated ? " truncated" : ""}`}><span>诊断日志：{job.log_line_count.toLocaleString()} 根 K 线{job.log_truncated ? `（已达到 ${job.max_log_lines.toLocaleString()} 条上限）` : ""}</span>{job.log_available && job.log_url && (job.status === "COMPLETED" || job.status === "FAILED") && <a href={job.log_url} target="_blank" rel="noopener noreferrer">浏览 HTML 日志 ↗</a>}</div>}
-      <p className="backtest-list-hint">双击任一信号，在 {job ? job.request.interval_seconds / 60 : intervalSeconds / 60}min K 线图中查看橙色箭头标记。</p>
-      <div className="table-scroll backtest-signal-scroll"><table className="storage-table backtest-signal-table"><thead><tr><th>信号时间 UTC+8</th><th>Ticker</th><th>收盘价</th>{visibleFactors.map((name) => <th key={name}>{factorLabels[name]}</th>)}</tr></thead><tbody>
-        {job?.signals.map((signal) => <tr key={`${signal.symbol}-${signal.open_time}`} tabIndex={0} onDoubleClick={() => setChartSignal({ signal, intervalSeconds: job.request.interval_seconds })} onKeyDown={(event) => { if (event.key === "Enter") setChartSignal({ signal, intervalSeconds: job.request.interval_seconds }); }}><td>{formatKlineTime(signal.open_time)}</td><td><strong>{signal.symbol}</strong></td><td>{formatNumber(signal.close_price, 8)}</td>{visibleFactors.map((name) => <td key={name} title={signal.factors[name].threshold}>{factorValue(name, signal.factors[name].value)}</td>)}</tr>)}
-        {!submitting && (!job || job.signals.length === 0) && <tr><td className="empty-cell" colSpan={3 + visibleFactors.length}>{job?.status === "COMPLETED" ? "当前配置没有命中信号" : "配置策略后点击“开始回测”"}</td></tr>}
+      <p className="backtest-list-hint">双击任一信号，在 {job ? job.request.interval_seconds / 60 : intervalSeconds / 60}min K 线图中查看橙色箭头标记；因子列显示“实际值 / 评分”。</p>
+      <div className="table-scroll backtest-signal-scroll"><table className="storage-table backtest-signal-table"><thead><tr><th>信号时间 UTC+8</th><th>Ticker</th><th>强度</th><th>等级</th><th>覆盖率</th><th>候选触发</th><th>收盘价</th>{visibleFactors.map((name) => <th key={name}>{factorLabel(name)}</th>)}</tr></thead><tbody>
+        {job?.signals.map((signal) => <tr key={`${signal.symbol}-${signal.open_time}`} tabIndex={0} onDoubleClick={() => setChartSignal({ signal, intervalSeconds: job.request.interval_seconds })} onKeyDown={(event) => { if (event.key === "Enter") setChartSignal({ signal, intervalSeconds: job.request.interval_seconds }); }}><td>{formatKlineTime(signal.open_time)}</td><td><strong>{signal.symbol}</strong></td><td><strong>{formatNumber(signal.score, 2)}</strong></td><td><span className={`signal-grade grade-${signal.grade.replace("+", "plus")}`}>{signal.grade}</span></td><td>{formatNumber(signal.coverage_percent, 2)}%</td><td>{signal.trigger_reason ?? "—"}</td><td>{formatNumber(signal.close_price, 8)}</td>{visibleFactors.map((name) => <td key={name} className={signal.factors[name].available ? "" : "factor-unavailable"} title={`${signal.factors[name].threshold}；权重 ${formatNumber(signal.factors[name].weight, 2)}；贡献 ${formatNumber(signal.factors[name].contribution, 2)}${signal.factors[name].reason ? `；${signal.factors[name].reason}` : ""}`}>{factorValue(signal.factors[name].value, factorValueFormat(name))}<small>{signal.factors[name].available ? `${formatNumber(signal.factors[name].score, 2)} 分` : "不可用"}</small></td>)}</tr>)}
+        {!submitting && (!job || job.signals.length === 0) && <tr><td className="empty-cell" colSpan={7 + visibleFactors.length}>{job?.status === "COMPLETED" ? "当前配置没有命中信号" : "配置策略后点击“开始回测”"}</td></tr>}
       </tbody></table></div>
     </section>
     {chartSignal && <SignalKlineModal signal={chartSignal.signal} intervalSeconds={chartSignal.intervalSeconds} onClose={() => setChartSignal(null)} />}

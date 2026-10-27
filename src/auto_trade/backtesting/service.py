@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from auto_trade.backtesting.models import (
     BacktestCreateRequest,
+    BacktestFactorMetadata,
+    BacktestFactorParameterMetadata,
     BacktestFactorResult,
     BacktestIntervalMetadata,
     BacktestJobResult,
@@ -30,6 +32,8 @@ from auto_trade.backtesting.models import (
 from auto_trade.monitoring.models import KlinePoint
 from auto_trade.strategies.feature_scan import (
     ALL_FACTORS,
+    FACTOR_DEFINITION_BY_NAME,
+    FACTOR_DEFINITIONS,
     FactorResult,
     StrategyEvaluation,
     StrategyParameters,
@@ -43,32 +47,6 @@ MAX_ACTIVE_JOBS = 2
 MAX_LOG_LINES = 100_000
 UTC_PLUS_8 = timezone(timedelta(hours=8))
 DEFAULT_PRICE_PRECISION = 8
-
-FACTOR_LOG_LABELS = {
-    "bullish_candle_sequence": "连续强势阳线",
-    "single_bar_price_rise": "单根K线快速拉升",
-    "volume_acceleration": "短周期成交量加速",
-    "ema_bullish_setup": "EMA金叉/临近金叉",
-    "ema_bullish_cross": "EMA20上穿EMA240",
-    "rapid_price_rise": "价格快速拉升",
-    "open_interest_rise": "OI价值快速提升",
-    "volume_surge": "成交量暴涨",
-    "amplitude_spike_streak": "连续振幅异常",
-    "low_average_amplitude": "平均振幅低",
-}
-PERCENT_FACTORS = frozenset(
-    {
-        "bullish_candle_sequence",
-        "single_bar_price_rise",
-        "ema_bullish_setup",
-        "rapid_price_rise",
-        "open_interest_rise",
-        "low_average_amplitude",
-    }
-)
-MULTIPLE_FACTORS = frozenset(
-    {"volume_acceleration", "volume_surge", "amplitude_spike_streak"}
-)
 
 
 @dataclass(slots=True)
@@ -94,6 +72,10 @@ def _factor_value(value: Decimal | int | None) -> float | int | None:
     return float(value) if isinstance(value, Decimal) else value
 
 
+def _metric_value(value: Decimal | int | bool) -> float | int | bool:
+    return float(value) if isinstance(value, Decimal) else value
+
+
 def _signal_model(signal: StrategySignal) -> BacktestSignal:
     return BacktestSignal(
         symbol=signal.symbol,
@@ -105,9 +87,20 @@ def _signal_model(signal: StrategySignal) -> BacktestSignal:
                 value=_factor_value(result.value),
                 threshold=result.threshold,
                 reason=result.reason,
+                metrics={key: _metric_value(value) for key, value in result.metrics.items()},
+                score=float(result.score),
+                weight=float(result.weight),
+                contribution=float(result.contribution),
+                available=result.available,
             )
             for name, result in signal.factors.items()
         },
+        score=float(signal.score),
+        grade=signal.grade,
+        coverage_percent=float(signal.coverage_percent),
+        trigger_reason=signal.trigger_reason,
+        group_scores={key: float(value) for key, value in signal.group_scores.items()},
+        risk_flags=signal.risk_flags,
     )
 
 
@@ -115,9 +108,10 @@ def _log_value(name: str, value: Decimal | int | None) -> str:
     if value is None:
         return "无"
     if isinstance(value, Decimal):
-        if name in PERCENT_FACTORS:
+        value_format = FACTOR_DEFINITION_BY_NAME[name].value_format
+        if value_format == "percent":
             return f"{value:.2f}%"
-        if name in MULTIPLE_FACTORS:
+        if value_format == "multiple":
             return f"{value:.2f}x"
         return format(value, "f")
     return str(value)
@@ -126,8 +120,10 @@ def _log_value(name: str, value: Decimal | int | None) -> str:
 def _factor_log(name: str, result: FactorResult) -> str:
     status = "✓" if result.passed else "✗"
     detail = (
-        f"{FACTOR_LOG_LABELS[name]}: {status}"
-        f" (实际值: {_log_value(name, result.value)}, 阈值: {result.threshold}"
+        f"{FACTOR_DEFINITION_BY_NAME[name].label}: {status}"
+        f" (实际值: {_log_value(name, result.value)}, 阈值: {result.threshold}, "
+        f"评分: {result.score:.2f}, 权重: {result.weight:.2f}, "
+        f"贡献: {result.contribution:.2f}, 可用: {'是' if result.available else '否'}"
     )
     if result.reason:
         detail += f", 原因: {result.reason}"
@@ -135,32 +131,29 @@ def _factor_log(name: str, result: FactorResult) -> str:
 
 
 def _format_price(value: Decimal, price_precision: int | None) -> str:
-    precision = (
-        price_precision if price_precision is not None else DEFAULT_PRICE_PRECISION
-    )
+    precision = price_precision if price_precision is not None else DEFAULT_PRICE_PRECISION
     return f"{value:.{precision}f}"
 
 
-def format_evaluation_log_line(
-    evaluation: StrategyEvaluation, interval_seconds: int
-) -> str:
-    timestamp = evaluation.open_time.astimezone(UTC_PLUS_8).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+def format_evaluation_log_line(evaluation: StrategyEvaluation, interval_seconds: int) -> str:
+    timestamp = evaluation.open_time.astimezone(UTC_PLUS_8).strftime("%Y-%m-%d %H:%M:%S")
     close_price = _format_price(evaluation.close_price, evaluation.price_precision)
     ema20 = _format_price(evaluation.ema20, evaluation.price_precision)
     ema240 = _format_price(evaluation.ema240, evaluation.price_precision)
-    prefix = "🚀" if evaluation.matched else " "
-    factors = " | ".join(
-        _factor_log(name, evaluation.factors[name]) for name in ALL_FACTORS
-    )
+    prefix = "🚀" if evaluation.matched else "·" if evaluation.candidate_triggered else " "
+    factors = " | ".join(_factor_log(name, evaluation.factors[name]) for name in ALL_FACTORS)
     return (
         f"{prefix} {evaluation.symbol} | {interval_seconds // 60}min"
         f" | K线 #{evaluation.bar_number} | {timestamp}"
         f" | 收盘价: {close_price}"
         f" | EMA20: {ema20} | EMA240: {ema240}"
         f" | 成交量: {evaluation.base_volume:.2f}"
-        f" | 成交额: {evaluation.quote_volume:.2f} | {factors}"
+        f" | 成交额: {evaluation.quote_volume:.2f}"
+        f" | 总分: {evaluation.score:.2f} ({evaluation.grade})"
+        f" | 覆盖率: {evaluation.coverage_percent:.2f}%"
+        f" | 候选触发: {evaluation.trigger_reason or '否'}"
+        f" | 风险标记: {','.join(evaluation.risk_flags) if evaluation.risk_flags else '无'}"
+        f" | {factors}"
     )
 
 
@@ -240,9 +233,7 @@ class BacktestManager:
 
     def create(self, request: BacktestCreateRequest) -> _Job:
         self._cleanup_expired_logs()
-        active_jobs = sum(
-            job.status in ("QUEUED", "RUNNING") for job in self.jobs.values()
-        )
+        active_jobs = sum(job.status in ("QUEUED", "RUNNING") for job in self.jobs.values())
         if active_jobs >= MAX_ACTIVE_JOBS:
             raise RuntimeError("too many active backtests")
         if not request.preserve_log_history:
@@ -276,11 +267,7 @@ class BacktestManager:
             log_line_count=job.log_line_count,
             log_truncated=job.log_truncated,
             log_available=log_path is not None,
-            log_url=(
-                f"/api/backtests/logs/{log_path.name}"
-                if log_path is not None
-                else None
-            ),
+            log_url=(f"/api/backtests/logs/{log_path.name}" if log_path is not None else None),
             max_log_lines=MAX_LOG_LINES,
             error=job.error,
             request=job.request,
@@ -404,15 +391,13 @@ class BacktestManager:
         intervals: dict[str, BacktestIntervalMetadata] = {}
         async with self.engine.connect() as connection:
             await connection.execute(
-                text(
-                    "SELECT set_config("
-                    "'plan_cache_mode', 'force_custom_plan', true)"
-                )
+                text("SELECT set_config('plan_cache_mode', 'force_custom_plan', true)")
             )
             chunk_rows = (
-                await connection.execute(
-                    text(
-                        """
+                (
+                    await connection.execute(
+                        text(
+                            """
                         WITH ranked AS (
                             SELECT hypertable_name, range_start, range_end,
                                    row_number() OVER (
@@ -439,9 +424,12 @@ class BacktestManager:
                         ) edges
                         ORDER BY hypertable_name, edge
                         """
+                        )
                     )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             chunk_bounds = {
                 (cast(str, row["hypertable_name"]), cast(str, row["edge"])): (
                     cast(datetime, row["range_start"]),
@@ -453,9 +441,7 @@ class BacktestManager:
                 if interval_seconds == 900:
                     hypertable_name = "klines_15m"
                     table_name = "market.klines_15m"
-                    filters = (
-                        "price_type = 'TRADE' AND interval_seconds = 900"
-                    )
+                    filters = "price_type = 'TRADE' AND interval_seconds = 900"
                 else:
                     hypertable_name = "klines"
                     table_name = "market.klines"
@@ -500,21 +486,42 @@ class BacktestManager:
                     "last_start": last_chunk[0],
                     "last_end": last_chunk[1],
                 }
-                bounds = (
-                    await connection.execute(text(bounds_sql), parameters)
-                ).mappings().one()
+                bounds = (await connection.execute(text(bounds_sql), parameters)).mappings().one()
                 symbol_rows: list[object] = cast(
                     list[object],
-                    (
-                        await connection.execute(text(symbols_sql), parameters)
-                    ).scalars().all(),
+                    (await connection.execute(text(symbols_sql), parameters)).scalars().all(),
                 )
                 intervals[str(interval_seconds)] = BacktestIntervalMetadata(
                     available_from=cast(datetime | None, bounds["available_from"]),
                     available_to=cast(datetime | None, bounds["available_to"]),
                     symbols=tuple(cast(str, symbol) for symbol in symbol_rows),
                 )
-        return BacktestMetadata(intervals=intervals)
+        return BacktestMetadata(
+            intervals=intervals,
+            factors=tuple(
+                BacktestFactorMetadata(
+                    name=definition.name,
+                    label=definition.label,
+                    group=definition.group,
+                    value_format=definition.value_format,
+                    default_weight=float(definition.default_weight),
+                    default_enabled=definition.default_enabled,
+                    parameters=tuple(
+                        BacktestFactorParameterMetadata(
+                            key=parameter.key,
+                            label=parameter.label,
+                            value_type=parameter.value_type,
+                            default=float(parameter.default),
+                            minimum=float(parameter.minimum),
+                            maximum=float(parameter.maximum),
+                            step=float(parameter.step),
+                        )
+                        for parameter in definition.parameters
+                    ),
+                )
+                for definition in FACTOR_DEFINITIONS
+            ),
+        )
 
     async def signal_klines(
         self,
@@ -587,16 +594,20 @@ class BacktestManager:
             """
         async with self.engine.connect() as connection:
             rows = (
-                await connection.execute(
-                    text(source_sql),
-                    {
-                        "symbol": symbol,
-                        "interval_seconds": interval_seconds,
-                        "range_start": range_start,
-                        "range_end": range_end,
-                    },
+                (
+                    await connection.execute(
+                        text(source_sql),
+                        {
+                            "symbol": symbol,
+                            "interval_seconds": interval_seconds,
+                            "range_start": range_start,
+                            "range_end": range_end,
+                        },
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
         return BacktestKlineResult(
             symbol=symbol,
             signal_time=signal_time,
@@ -615,36 +626,56 @@ class BacktestManager:
             lookback_days=span_days,
             average_days=parameters.average_days,
             bullish_sequence_bars=parameters.bullish_sequence_bars,
-            bullish_min_close_position_percent=(
-                parameters.bullish_min_close_position_percent
-            ),
-            bullish_last_close_position_percent=(
-                parameters.bullish_last_close_position_percent
-            ),
+            bullish_min_close_position_percent=(parameters.bullish_min_close_position_percent),
+            bullish_last_close_position_percent=(parameters.bullish_last_close_position_percent),
             bullish_last_max_upper_shadow_percent=(
                 parameters.bullish_last_max_upper_shadow_percent
             ),
             single_bar_price_rise_percent=parameters.single_bar_price_rise_percent,
-            volume_acceleration_average_bars=(
-                parameters.volume_acceleration_average_bars
+            single_bar_price_rise_saturation_percent=(
+                parameters.single_bar_price_rise_saturation_percent
             ),
-            volume_acceleration_average_multiple=(
-                parameters.volume_acceleration_average_multiple
+            volume_acceleration_average_bars=(parameters.volume_acceleration_average_bars),
+            volume_acceleration_average_multiple=(parameters.volume_acceleration_average_multiple),
+            volume_acceleration_average_saturation_multiple=(
+                parameters.volume_acceleration_average_saturation_multiple
             ),
             volume_acceleration_previous_multiple=(
                 parameters.volume_acceleration_previous_multiple
+            ),
+            volume_acceleration_previous_saturation_multiple=(
+                parameters.volume_acceleration_previous_saturation_multiple
             ),
             ema_near_cross_gap_percent=parameters.ema_near_cross_gap_percent,
             ema_gap_shrink_min_percent=parameters.ema_gap_shrink_min_percent,
             ema_cross_lookback_bars=parameters.ema_cross_lookback_bars,
             rapid_price_window_bars=parameters.rapid_price_window_bars,
             rapid_price_rise_percent=parameters.rapid_price_rise_percent,
+            rapid_price_rise_saturation_percent=(parameters.rapid_price_rise_saturation_percent),
             open_interest_window_bars=parameters.open_interest_window_bars,
             open_interest_rise_percent=parameters.open_interest_rise_percent,
+            open_interest_rise_saturation_percent=(
+                parameters.open_interest_rise_saturation_percent
+            ),
             volume_surge_multiple=parameters.volume_surge_multiple,
+            volume_surge_saturation_multiple=(parameters.volume_surge_saturation_multiple),
             amplitude_spike_multiple=parameters.amplitude_spike_multiple,
+            amplitude_spike_saturation_multiple=(parameters.amplitude_spike_saturation_multiple),
             amplitude_consecutive_bars=parameters.amplitude_consecutive_bars,
             average_amplitude_max_percent=parameters.average_amplitude_max_percent,
+            average_amplitude_excellent_percent=(parameters.average_amplitude_excellent_percent),
+            average_amplitude_bad_percent=parameters.average_amplitude_bad_percent,
+            trigger_single_bar_rise_percent=(parameters.trigger_single_bar_rise_percent),
+            trigger_rapid_price_rise_percent=(parameters.trigger_rapid_price_rise_percent),
+            trigger_volume_average_multiple=(parameters.trigger_volume_average_multiple),
+            trigger_close_position_percent=(parameters.trigger_close_position_percent),
+            signal_score_threshold=parameters.signal_score_threshold,
+            minimum_data_coverage_percent=(parameters.minimum_data_coverage_percent),
+            rearm_score_threshold=parameters.rearm_score_threshold,
+            cooldown_bars=parameters.cooldown_bars,
+            score_improvement_for_repeat=(parameters.score_improvement_for_repeat),
+            factor_weights=parameters.factor_weights,
+            factor_parameters=parameters.factor_parameters,
             required_factors=parameters.required_factors,
         )
         log_file: IO[str] | None = None
@@ -713,9 +744,7 @@ class BacktestManager:
 
     def _discard_old_jobs(self) -> None:
         removable = [
-            job_id
-            for job_id, job in self.jobs.items()
-            if job.status in ("COMPLETED", "FAILED")
+            job_id for job_id, job in self.jobs.items() if job.status in ("COMPLETED", "FAILED")
         ]
         while len(self.jobs) >= MAX_RETAINED_JOBS and removable:
             self.jobs.pop(removable.pop(0), None)
