@@ -432,6 +432,8 @@ interface PaperTraderPreferences {
   random_symbol: string;
   random_interval_seconds: number;
   random_session_kind: PaperRandomSessionKind;
+  random_range_start: string | null;
+  random_range_end: string | null;
   speed_seconds: number;
   notional: number;
   notional_unit: PaperNotionalUnit;
@@ -2966,6 +2968,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [randomSymbol, setRandomSymbol] = useState("BTCUSDT");
   const [randomIntervalSeconds, setRandomIntervalSeconds] = useState(300);
   const [randomSessionKind, setRandomSessionKind] = useState<PaperRandomSessionKind>("US");
+  const [randomRangeStart, setRandomRangeStart] = useState("");
+  const [randomRangeEnd, setRandomRangeEnd] = useState("");
   const [speedSeconds, setSpeedSeconds] = useState(5);
   const [notional, setNotional] = useState<NumericInput>(100);
   const [notionalUnit, setNotionalUnit] = useState<PaperNotionalUnit>("USDT");
@@ -3109,6 +3113,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         setRandomSymbol(preferences.random_symbol);
         setRandomIntervalSeconds(preferences.random_interval_seconds);
         setRandomSessionKind(preferences.random_session_kind);
+        setRandomRangeStart(preferences.random_range_start ?? "");
+        setRandomRangeEnd(preferences.random_range_end ?? "");
         setSpeedSeconds(preferences.speed_seconds);
         setNotional(preferences.notional);
         setNotionalUnit(preferences.notional_unit);
@@ -3159,6 +3165,8 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           random_symbol: randomSymbol,
           random_interval_seconds: randomIntervalSeconds,
           random_session_kind: randomSessionKind,
+          random_range_start: randomRangeStart || null,
+          random_range_end: randomRangeEnd || null,
           speed_seconds: speedSeconds,
           notional,
           notional_unit: notionalUnit,
@@ -3188,7 +3196,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [preferencesLoaded, symbol, intervalSeconds, rangeStart, rangeEnd, randomSymbol, randomIntervalSeconds, randomSessionKind, speedSeconds, notional, notionalUnit, leverage, openOrderType, closeOrderType, autoTwoRTakeProfit, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, replayPresets]);
+  }, [preferencesLoaded, symbol, intervalSeconds, rangeStart, rangeEnd, randomSymbol, randomIntervalSeconds, randomSessionKind, randomRangeStart, randomRangeEnd, speedSeconds, notional, notionalUnit, leverage, openOrderType, closeOrderType, autoTwoRTakeProfit, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, replayPresets]);
 
   useEffect(() => {
     setTakeProfit(snapshot?.position?.take_profit_price ?? "");
@@ -3281,9 +3289,23 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       setError(`${randomSymbol} 暂无可用的本地历史行情`);
       return;
     }
+    const availableFromMs = new Date(coverage.available_from).getTime();
+    const availableToMs = new Date(coverage.available_to).getTime();
+    const configuredFromMs = randomRangeStart
+      ? new Date(`${randomRangeStart}T00:00:00+08:00`).getTime()
+      : availableFromMs;
+    const configuredToMs = randomRangeEnd
+      ? new Date(`${randomRangeEnd}T00:00:00+08:00`).getTime() + 24 * 60 * 60 * 1000
+      : availableToMs;
+    const boundedFromMs = Math.max(availableFromMs, configuredFromMs);
+    const boundedToMs = Math.min(availableToMs, configuredToMs);
+    if (!Number.isFinite(boundedFromMs) || !Number.isFinite(boundedToMs) || boundedFromMs >= boundedToMs) {
+      setError(`${randomSymbol} 在所选数据集日期范围内没有可用行情`);
+      return;
+    }
     const selected = kind === "US"
-      ? randomTradingSession(coverage.available_from, coverage.available_to, 21, 30, 7, true, 24)
-      : randomTradingSession(coverage.available_from, coverage.available_to, 8, 0, 10, false, 24);
+      ? randomTradingSession(new Date(boundedFromMs).toISOString(), new Date(boundedToMs).toISOString(), 21, 30, 7, true, 24)
+      : randomTradingSession(new Date(boundedFromMs).toISOString(), new Date(boundedToMs).toISOString(), 8, 0, 10, false, 24);
     if (!selected) {
       setError(kind === "US"
         ? "本地行情范围内没有完整的工作日美盘早盘（UTC+8 21:30—次日 04:30）"
@@ -3905,19 +3927,21 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     </header>
     <section className="paper-session-shortcuts" aria-label="行情生成快捷入口">
       <span>行情生成</span>
-      <button className="paper-session-random" type="button" onClick={() => startRandomSession()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : `${randomSymbol} · ${randomIntervalSeconds === 3600 ? "1h" : `${randomIntervalSeconds / 60}min`} · ${randomSessionKind === "US" ? "随机美盘 21:30—04:30" : "随机亚盘 08:00—18:00"}`}</button>
+      <button className="paper-session-random" type="button" onClick={() => startRandomSession()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : `${randomSymbol} · ${randomIntervalSeconds === 3600 ? "1h" : `${randomIntervalSeconds / 60}min`} · ${randomRangeStart || "最早"}→${randomRangeEnd || "最新"} · ${randomSessionKind === "US" ? "随机美盘 21:30—04:30" : "随机亚盘 08:00—18:00"}`}</button>
       {replayPresets.map((preset) => <div className="paper-saved-preset" key={preset.id}><button type="button" onClick={() => startReplayPreset(preset)} disabled={restoringSession || loading || !!snapshot?.position}>{paperReplayPresetLabel(preset)}</button><button type="button" onClick={() => removeReplayPreset(preset.id)} disabled={restoringSession || loading || !!snapshot?.position} aria-label={`删除 ${paperReplayPresetLabel(preset)}`}>×</button></div>)}
     </section>
     {settingsOpen && <section className="panel paper-config">
       <div className="paper-config-section">
-        <div className="paper-config-heading"><strong>随机行情</strong><span>设置交易 Ticket、Level 和随机交易时段。</span></div>
+        <div className="paper-config-heading"><strong>随机行情</strong><span>设置交易 Ticket、Level、随机抽样的数据集日期范围和交易时段。</span></div>
         <div className="paper-random-config-grid">
           <label><span>交易 Ticket</span><select value={randomSymbol} onChange={(event) => setRandomSymbol(event.target.value)} disabled={!!snapshot?.position}><option>BTCUSDT</option><option>ETHUSDT</option></select></label>
           <label><span>K 线 Level</span><select value={randomIntervalSeconds} onChange={(event) => setRandomIntervalSeconds(Number(event.target.value))} disabled={!!snapshot?.position}><option value={300}>5min</option><option value={900}>15min</option><option value={3600}>1h</option></select></label>
-          <label><span>随机行情时间区间 UTC+8</span><select value={randomSessionKind} onChange={(event) => setRandomSessionKind(event.target.value as PaperRandomSessionKind)} disabled={!!snapshot?.position}><option value="US">美盘 · 21:30—次日 04:30</option><option value="ASIA">亚盘 · 08:00—18:00</option></select></label>
+          <label><span>数据集开始日期 UTC+8</span><input type="date" value={randomRangeStart} max={randomRangeEnd || undefined} onChange={(event) => setRandomRangeStart(event.target.value)} disabled={!!snapshot?.position} /></label>
+          <label><span>数据集结束日期 UTC+8</span><input type="date" value={randomRangeEnd} min={randomRangeStart || undefined} onChange={(event) => setRandomRangeEnd(event.target.value)} disabled={!!snapshot?.position} /></label>
+          <label><span>交易时段 UTC+8</span><select value={randomSessionKind} onChange={(event) => setRandomSessionKind(event.target.value as PaperRandomSessionKind)} disabled={!!snapshot?.position}><option value="US">美盘 · 21:30—次日 04:30</option><option value="ASIA">亚盘 · 08:00—18:00</option></select></label>
           <button className="primary-button" type="button" onClick={() => startRandomSession()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "生成随机行情"}</button>
         </div>
-        <p className="paper-random-hint">随机行情会先显示正式交易时段前 24 小时的 K 线作为预热；美盘仅抽取周一至周五。</p>
+        <p className="paper-random-hint">日期留空表示使用最早可用数据或最新数据；结束日期按当日 24:00 计算，只有完整交易时段会进入候选。随机行情会先显示交易时段前 24 小时 K 线作为预热；美盘仅抽取周一至周五。</p>
       </div>
       <div className="paper-config-section">
         <div className="paper-config-heading"><strong>自定义行情</strong><span>设置交易对、K 线级别和时间范围，可直接开始或保存为快捷按钮。</span></div>

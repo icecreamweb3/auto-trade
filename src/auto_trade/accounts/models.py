@@ -229,6 +229,8 @@ class PaperTraderPreferences(BaseModel):
     random_symbol: str = Field(default="BTCUSDT", min_length=1, max_length=32)
     random_interval_seconds: Literal[300, 900, 3600] = 300
     random_session_kind: Literal["US", "ASIA"] = "US"
+    random_range_start: date | None = None
+    random_range_end: date | None = None
     speed_seconds: Literal[1, 3, 5, 10, 15, 30] = 5
     notional: float = Field(default=100, gt=0)
     notional_unit: Literal["USDT", "BASE"] = "USDT"
@@ -250,6 +252,12 @@ class PaperTraderPreferences(BaseModel):
 
     @model_validator(mode="after")
     def validate_range(self) -> PaperTraderPreferences:
+        if (
+            self.random_range_start is not None
+            and self.random_range_end is not None
+            and self.random_range_start > self.random_range_end
+        ):
+            raise ValueError("随机行情数据集开始日期不能晚于结束日期")
         if (self.range_start is None) != (self.range_end is None):
             raise ValueError("行情开始和结束时间必须同时设置")
         if (

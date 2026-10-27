@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -83,6 +83,8 @@ def test_paper_trader_preferences_have_per_user_display_defaults() -> None:
     assert preferences.random_symbol == "BTCUSDT"
     assert preferences.random_interval_seconds == 300
     assert preferences.random_session_kind == "US"
+    assert preferences.random_range_start is None
+    assert preferences.random_range_end is None
 
 
 def test_paper_trader_preferences_normalize_symbol_and_validate_range() -> None:
@@ -91,14 +93,23 @@ def test_paper_trader_preferences_normalize_symbol_and_validate_range() -> None:
         random_symbol=" ethusdt ",
         random_interval_seconds=900,
         random_session_kind="ASIA",
+        random_range_start=date(2024, 1, 1),
+        random_range_end=date(2025, 1, 1),
     )
 
     assert preferences.symbol == "BTCUSDT"
     assert preferences.random_symbol == "ETHUSDT"
     assert preferences.random_interval_seconds == 900
     assert preferences.random_session_kind == "ASIA"
+    assert preferences.random_range_start == date(2024, 1, 1)
+    assert preferences.random_range_end == date(2025, 1, 1)
     with pytest.raises(ValidationError, match="必须同时设置"):
         PaperTraderPreferences(range_start=datetime.now(UTC))
+    with pytest.raises(ValidationError, match="开始日期不能晚于结束日期"):
+        PaperTraderPreferences(
+            random_range_start=date(2025, 1, 2),
+            random_range_end=date(2025, 1, 1),
+        )
 
 
 async def test_paper_trader_preferences_are_saved_for_the_current_user() -> None:
@@ -115,6 +126,8 @@ async def test_paper_trader_preferences_are_saved_for_the_current_user() -> None
         random_symbol="ETHUSDT",
         random_interval_seconds=3600,
         random_session_kind="ASIA",
+        random_range_start=date(2023, 12, 1),
+        random_range_end=date(2025, 1, 1),
     )
 
     saved = await repository.save_paper_trader_preferences(user_id, preferences)
@@ -129,6 +142,8 @@ async def test_paper_trader_preferences_are_saved_for_the_current_user() -> None
     assert payload["random_symbol"] == "ETHUSDT"
     assert payload["random_interval_seconds"] == 3600
     assert payload["random_session_kind"] == "ASIA"
+    assert payload["random_range_start"] == "2023-12-01"
+    assert payload["random_range_end"] == "2025-01-01"
 
 
 async def test_missing_paper_trader_preferences_return_defaults() -> None:
