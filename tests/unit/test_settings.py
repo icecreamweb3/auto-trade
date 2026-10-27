@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import SecretStr
 
 from auto_trade.config import Settings
@@ -36,7 +38,29 @@ def test_websocket_resilience_defaults() -> None:
     assert settings.gap_scan_historical_window_hours == 24
     assert settings.gap_scan_statement_timeout_seconds == 45
     assert settings.telegram_channel == "wizzalert"
+    assert settings.telegram_channel_names == ("wizzalert",)
     assert settings.telegram_strategy_trigger_enabled is False
+
+
+def test_telegram_multi_channel_and_backfill_start_configuration() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password=SecretStr("test-password"),
+        telegram_channels=["@wizzalert", "BWE_OI_Price_monitor", "wizzalert"],
+        telegram_channel_backfill_starts={
+            "bwe_oi_price_monitor": datetime.fromisoformat(
+                "2026-10-01T00:00:00+08:00"
+            )
+        },
+    )
+
+    assert settings.telegram_channel_names == (
+        "wizzalert",
+        "BWE_OI_Price_monitor",
+    )
+    assert settings.telegram_backfill_start("@BWE_OI_Price_monitor") == datetime.fromisoformat(
+        "2026-10-01T00:00:00+08:00"
+    )
 
 
 def test_file_logging_defaults_to_disabled() -> None:

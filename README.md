@@ -72,7 +72,17 @@ Telegram 订阅器通过代理连接 MTProto，首次启动会从频道最早可
 或 `decision.telegram.<channel>.realtime`。
 
 先在 `.env` 配置 `TELEGRAM_API_ID`、`TELEGRAM_API_HASH`、
-`TELEGRAM_PHONE`、`TELEGRAM_CHANNEL`。建议通过 `TELEGRAM_PROXY_URL`
+`TELEGRAM_PHONE`、`TELEGRAM_CHANNELS`。例如同时订阅两个频道，并限制新频道
+首次回补的起始时间：
+
+```dotenv
+TELEGRAM_CHANNELS=["wizzalert","BWE_OI_Price_monitor"]
+TELEGRAM_CHANNEL_BACKFILL_STARTS={"BWE_OI_Price_monitor":"2026-10-01T00:00:00+08:00"}
+```
+
+`TELEGRAM_CHANNEL_BACKFILL_STARTS` 仅在该频道尚无已保存消息时生效，时间必须
+携带时区；已有进度的频道仍从数据库中的最新消息继续同步。旧的
+`TELEGRAM_CHANNEL` 保留为未配置多频道列表时的兼容默认值。建议通过 `TELEGRAM_PROXY_URL`
 显式配置 `http://`、`socks4://` 或 `socks5://` 代理；未配置时依次读取
 `ALL_PROXY`、`HTTPS_PROXY`、`HTTP_PROXY`。订阅器不允许绕过代理直连。
 
@@ -94,6 +104,8 @@ docker compose logs -f telegram-subscriber
 
 `TELEGRAM_STRATEGY_TRIGGER_ENABLED` 默认是 `false`。当前阶段只采集、解析和
 发布信号；在频道规则完成样本回测和人工验收前，不会自动触发真实交易。
+`BWE_OI_Price_monitor` 的中英文重复消息会完整保留在原始载荷中，但消息页面
+仅展示中文告警与中文市值摘要。
 
 为 PaperTrader 独立补齐 BTCUSDT、ETHUSDT 自 `2020-04-01 00:00 UTC`
 起的 5 分钟 Trade OHLCV：

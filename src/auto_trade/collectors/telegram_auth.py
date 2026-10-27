@@ -88,13 +88,14 @@ async def authorize() -> None:
                 )
             else:
                 await _authorize_by_qr(client)
-        entity = await client.get_entity(settings.telegram_channel)
-        latest = await client.get_messages(entity, limit=1)
-        print(
-            "Telegram authorization succeeded "
-            f"channel=@{getattr(entity, 'username', settings.telegram_channel)} "
-            f"latest_message_id={latest[0].id if latest else 'none'}"
-        )
+        for channel in settings.telegram_channel_names:
+            entity = await client.get_entity(channel)
+            latest = await client.get_messages(entity, limit=1)
+            print(
+                "Telegram authorization succeeded "
+                f"channel=@{getattr(entity, 'username', channel)} "
+                f"latest_message_id={latest[0].id if latest else 'none'}"
+            )
     finally:
         await client.disconnect()
         protect_session_file(settings)

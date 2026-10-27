@@ -18,7 +18,8 @@ from auto_trade.collectors.telegram_repository import (
 )
 from auto_trade.collectors.telegram_signals import (
     ParsedTelegramSignal,
-    parse_wizzalert_message,
+    parse_telegram_message,
+    telegram_display_text,
 )
 from auto_trade.config import Settings, get_settings
 from auto_trade.infrastructure.database import create_database_engine
@@ -30,13 +31,15 @@ logger = logging.getLogger(__name__)
 
 def _message_record(
     channel_id: int,
+    channel_username: str,
     message: Message,
     collected_at: datetime,
 ) -> TelegramMessageRecord:
     reply_to_message_id = getattr(message, "reply_to_msg_id", None)
     media = getattr(message, "media", None)
     media_type = type(media).__name__ if media is not None else None
-    text_value = message.message or ""
+    raw_text = message.message or ""
+    text_value = telegram_display_text(channel_username, raw_text)
     raw_payload: dict[str, object] = {
         "channel_id": channel_id,
         "message_id": message.id,
@@ -48,7 +51,7 @@ def _message_record(
         ),
         "grouped_id": message.grouped_id,
         "reply_to_message_id": reply_to_message_id,
-        "message_text": text_value,
+        "message_text": raw_text,
         "media_type": media_type,
     }
     return TelegramMessageRecord(
@@ -107,16 +110,29 @@ class TelegramChannelProcessor:
         jetstream: JetStreamContext,
         settings: Settings,
         channel_id: int,
+        channel_username: str,
     ) -> None:
         self.repository = repository
         self.jetstream = jetstream
-        self.settings = settings
         self.channel_id = channel_id
+        self.channel_username = channel_username
+        self.strategy_trigger_enabled = (
+            settings.telegram_strategy_trigger_enabled
+            and channel_username.lower().lstrip("@") == "wizzalert"
+        )
 
     async def process(self, message: Message, delivery_mode: str) -> bool:
         collected_at = datetime.now(UTC)
-        record = _message_record(self.channel_id, message, collected_at)
-        signal = parse_wizzalert_message(record.message_text)
+        record = _message_record(
+            self.channel_id,
+            self.channel_username,
+            message,
+            collected_at,
+        )
+        signal = parse_telegram_message(
+            self.channel_username,
+            str(record.raw_payload["message_text"]),
+        )
         changed = await self.repository.store(record, signal)
         if not changed:
             return False
@@ -124,12 +140,12 @@ class TelegramChannelProcessor:
             record,
             signal,
             delivery_mode,
-            self.settings.telegram_strategy_trigger_enabled,
+            self.strategy_trigger_enabled,
         )
         suffix = "realtime" if delivery_mode != "BACKFILL" else "history"
         await self.jetstream.publish(
             "decision.telegram."
-            f"{self.settings.telegram_channel.lower().lstrip('@')}.{suffix}",
+            f"{self.channel_username.lower().lstrip('@')}.{suffix}",
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode(),
             headers={"Nats-Msg-Id": str(payload["event_id"])},
         )
@@ -144,7 +160,7 @@ class TelegramChannelProcessor:
             signal.signal_kind.value,
             signal.symbol,
             signal.score,
-            self.settings.telegram_strategy_trigger_enabled,
+            self.strategy_trigger_enabled,
         )
         return True
 
@@ -155,11 +171,16 @@ async def _backfill(
     processor: TelegramChannelProcessor,
     repository: TelegramMessageRepository,
     settings: Settings,
+    initial_start_at: datetime | None,
 ) -> int:
     latest_message_id = await repository.latest_message_id(processor.channel_id)
     processed = 0
     if latest_message_id is None:
-        iterator = client.iter_messages(entity, reverse=True)
+        iterator = client.iter_messages(
+            entity,
+            reverse=True,
+            offset_date=initial_start_at,
+        )
         async for message in iterator:
             processed += int(await processor.process(message, "BACKFILL"))
         await repository.mark_history_complete(processor.channel_id)
@@ -193,33 +214,53 @@ async def run(settings: Settings) -> None:
             raise RuntimeError(
                 "Telegram session is not authorized; run the telegram-auth service first"
             )
-        entity = await client.get_entity(settings.telegram_channel)
-        channel_id = int(entity.id)
-        username = str(getattr(entity, "username", None) or settings.telegram_channel)
-        title = str(getattr(entity, "title", None) or username)
         repository = TelegramMessageRepository(engine)
-        await repository.register_channel(channel_id, username, title)
-        processor = TelegramChannelProcessor(
-            repository,
-            jetstream,
-            settings,
-            channel_id,
-        )
+        for configured_channel in settings.telegram_channel_names:
+            entity = await client.get_entity(configured_channel)
+            channel_id = int(entity.id)
+            username = str(
+                getattr(entity, "username", None) or configured_channel
+            ).lstrip("@")
+            title = str(getattr(entity, "title", None) or username)
+            await repository.register_channel(channel_id, username, title)
+            processor = TelegramChannelProcessor(
+                repository,
+                jetstream,
+                settings,
+                channel_id,
+                username,
+            )
 
-        async def handle_new(event: events.NewMessage.Event) -> None:
-            await processor.process(event.message, "REALTIME")
+            async def handle_new(
+                event: events.NewMessage.Event,
+                channel_processor: TelegramChannelProcessor = processor,
+            ) -> None:
+                await channel_processor.process(event.message, "REALTIME")
 
-        async def handle_edit(event: events.MessageEdited.Event) -> None:
-            await processor.process(event.message, "EDIT")
+            async def handle_edit(
+                event: events.MessageEdited.Event,
+                channel_processor: TelegramChannelProcessor = processor,
+            ) -> None:
+                await channel_processor.process(event.message, "EDIT")
 
-        client.add_event_handler(handle_new, events.NewMessage(chats=entity))
-        client.add_event_handler(handle_edit, events.MessageEdited(chats=entity))
-        backfilled = await _backfill(client, entity, processor, repository, settings)
-        logger.info(
-            "Telegram history synchronized channel=@%s changed_messages=%d",
-            username,
-            backfilled,
-        )
+            client.add_event_handler(handle_new, events.NewMessage(chats=entity))
+            client.add_event_handler(handle_edit, events.MessageEdited(chats=entity))
+            initial_start_at = settings.telegram_backfill_start(username)
+            backfilled = await _backfill(
+                client,
+                entity,
+                processor,
+                repository,
+                settings,
+                initial_start_at,
+            )
+            logger.info(
+                "Telegram history synchronized channel=@%s "
+                "start_at=%s changed_messages=%d",
+                username,
+                initial_start_at.isoformat() if initial_start_at else "all",
+                backfilled,
+            )
         await client.run_until_disconnected()
     finally:
         await client.disconnect()

@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import quote_plus
@@ -81,6 +82,10 @@ class Settings(BaseSettings):
     telegram_api_hash: SecretStr | None = None
     telegram_phone: SecretStr | None = None
     telegram_channel: str = Field(default="wizzalert", min_length=1, max_length=80)
+    telegram_channels: list[str] = Field(default_factory=list)
+    telegram_channel_backfill_starts: dict[str, datetime] = Field(
+        default_factory=dict
+    )
     telegram_session_path: str = "/data/telegram/wizzalert.session"
     telegram_proxy_url: SecretStr | None = None
     telegram_recent_rescan_messages: int = Field(default=200, ge=0, le=5000)
@@ -101,6 +106,35 @@ class Settings(BaseSettings):
             f"postgresql+asyncpg://{user}:{password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def telegram_channel_names(self) -> tuple[str, ...]:
+        configured = self.telegram_channels or [self.telegram_channel]
+        channels: list[str] = []
+        seen: set[str] = set()
+        for value in configured:
+            channel = value.strip().lstrip("@")
+            key = channel.lower()
+            if not channel or key in seen:
+                continue
+            if len(channel) > 80:
+                raise ValueError("Telegram channel names cannot exceed 80 characters")
+            channels.append(channel)
+            seen.add(key)
+        if not channels:
+            raise ValueError("At least one Telegram channel is required")
+        return tuple(channels)
+
+    def telegram_backfill_start(self, channel: str) -> datetime | None:
+        normalized = channel.lower().lstrip("@")
+        for configured, start_at in self.telegram_channel_backfill_starts.items():
+            if configured.lower().lstrip("@") == normalized:
+                if start_at.tzinfo is None or start_at.utcoffset() is None:
+                    raise ValueError(
+                        "Telegram backfill start times must include a timezone"
+                    )
+                return start_at
+        return None
 
 
 @lru_cache(maxsize=1)
