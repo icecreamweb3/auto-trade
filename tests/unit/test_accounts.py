@@ -80,12 +80,23 @@ def test_paper_trader_preferences_have_per_user_display_defaults() -> None:
     assert preferences.show_lower_opening_range is False
     assert preferences.speed_seconds == 5
     assert preferences.auto_two_r_take_profit is True
+    assert preferences.random_symbol == "BTCUSDT"
+    assert preferences.random_interval_seconds == 300
+    assert preferences.random_session_kind == "US"
 
 
 def test_paper_trader_preferences_normalize_symbol_and_validate_range() -> None:
-    preferences = PaperTraderPreferences(symbol=" btcusdt ")
+    preferences = PaperTraderPreferences(
+        symbol=" btcusdt ",
+        random_symbol=" ethusdt ",
+        random_interval_seconds=900,
+        random_session_kind="ASIA",
+    )
 
     assert preferences.symbol == "BTCUSDT"
+    assert preferences.random_symbol == "ETHUSDT"
+    assert preferences.random_interval_seconds == 900
+    assert preferences.random_session_kind == "ASIA"
     with pytest.raises(ValidationError, match="必须同时设置"):
         PaperTraderPreferences(range_start=datetime.now(UTC))
 
@@ -101,6 +112,9 @@ async def test_paper_trader_preferences_are_saved_for_the_current_user() -> None
     preferences = PaperTraderPreferences(
         show_opening_range=False,
         show_upper_opening_range=True,
+        random_symbol="ETHUSDT",
+        random_interval_seconds=3600,
+        random_session_kind="ASIA",
     )
 
     saved = await repository.save_paper_trader_preferences(user_id, preferences)
@@ -112,6 +126,9 @@ async def test_paper_trader_preferences_are_saved_for_the_current_user() -> None
     payload = json.loads(parameters["paper_trader"])
     assert payload["show_opening_range"] is False
     assert payload["show_upper_opening_range"] is True
+    assert payload["random_symbol"] == "ETHUSDT"
+    assert payload["random_interval_seconds"] == 3600
+    assert payload["random_session_kind"] == "ASIA"
 
 
 async def test_missing_paper_trader_preferences_return_defaults() -> None:

@@ -239,6 +239,7 @@ type PaperSide = "LONG" | "SHORT";
 type PaperNotionalUnit = "USDT" | "BASE";
 type PaperGameStatus = "READY" | "RUNNING" | "COMPLETED" | "LIQUIDATED";
 type PaperReplaySource = "CUSTOM" | "US" | "ASIA";
+type PaperRandomSessionKind = Exclude<PaperReplaySource, "CUSTOM">;
 
 interface PaperCandle {
   open_time: string;
@@ -428,6 +429,9 @@ interface PaperTraderPreferences {
   interval_seconds: number;
   range_start: string | null;
   range_end: string | null;
+  random_symbol: string;
+  random_interval_seconds: number;
+  random_session_kind: PaperRandomSessionKind;
   speed_seconds: number;
   notional: number;
   notional_unit: PaperNotionalUnit;
@@ -2959,6 +2963,9 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   const [intervalSeconds, setIntervalSeconds] = useState(300);
   const [rangeStart, setRangeStart] = useState("");
   const [rangeEnd, setRangeEnd] = useState("");
+  const [randomSymbol, setRandomSymbol] = useState("BTCUSDT");
+  const [randomIntervalSeconds, setRandomIntervalSeconds] = useState(300);
+  const [randomSessionKind, setRandomSessionKind] = useState<PaperRandomSessionKind>("US");
   const [speedSeconds, setSpeedSeconds] = useState(5);
   const [notional, setNotional] = useState<NumericInput>(100);
   const [notionalUnit, setNotionalUnit] = useState<PaperNotionalUnit>("USDT");
@@ -3099,6 +3106,9 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           if (preferences.range_start) setRangeStart(toUtc8Input(preferences.range_start));
           if (preferences.range_end) setRangeEnd(toUtc8Input(preferences.range_end));
         }
+        setRandomSymbol(preferences.random_symbol);
+        setRandomIntervalSeconds(preferences.random_interval_seconds);
+        setRandomSessionKind(preferences.random_session_kind);
         setSpeedSeconds(preferences.speed_seconds);
         setNotional(preferences.notional);
         setNotionalUnit(preferences.notional_unit);
@@ -3146,6 +3156,9 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
           interval_seconds: intervalSeconds,
           range_start: rangeStart ? utc8InputToIso(rangeStart) : null,
           range_end: rangeEnd ? utc8InputToIso(rangeEnd) : null,
+          random_symbol: randomSymbol,
+          random_interval_seconds: randomIntervalSeconds,
+          random_session_kind: randomSessionKind,
           speed_seconds: speedSeconds,
           notional,
           notional_unit: notionalUnit,
@@ -3175,7 +3188,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [preferencesLoaded, symbol, intervalSeconds, rangeStart, rangeEnd, speedSeconds, notional, notionalUnit, leverage, openOrderType, closeOrderType, autoTwoRTakeProfit, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, replayPresets]);
+  }, [preferencesLoaded, symbol, intervalSeconds, rangeStart, rangeEnd, randomSymbol, randomIntervalSeconds, randomSessionKind, speedSeconds, notional, notionalUnit, leverage, openOrderType, closeOrderType, autoTwoRTakeProfit, showOpeningRange, showUpperOpeningRange, showLowerOpeningRange, replayPresets]);
 
   useEffect(() => {
     setTakeProfit(snapshot?.position?.take_profit_price ?? "");
@@ -3261,11 +3274,11 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
     }
   }
 
-  function startRandomSession(kind: "US" | "ASIA") {
+  function startRandomSession(kind: PaperRandomSessionKind = randomSessionKind) {
     if (startingSessionRef.current || restoringSession) return;
-    const coverage = metadata?.ranges.find((item) => item.symbol === symbol);
+    const coverage = metadata?.ranges.find((item) => item.symbol === randomSymbol);
     if (!coverage?.available_from || !coverage.available_to) {
-      setError(`${symbol} 暂无可用的本地历史行情`);
+      setError(`${randomSymbol} 暂无可用的本地历史行情`);
       return;
     }
     const selected = kind === "US"
@@ -3277,19 +3290,25 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
         : "本地行情范围内没有完整的亚洲时段（UTC+8 08:00—18:00）");
       return;
     }
-    setRangeStart(selected.rangeStart);
-    setRangeEnd(selected.rangeEnd);
-    void startGame(selected.rangeStart, selected.rangeEnd, symbol, intervalSeconds, kind);
+    void startGame(
+      selected.rangeStart,
+      selected.rangeEnd,
+      randomSymbol,
+      randomIntervalSeconds,
+      kind
+    );
   }
 
   function restartCurrentRound() {
     if (!snapshot) return;
     const selectedStart = toUtc8Input(snapshot.range_start);
     const selectedEnd = toUtc8Input(snapshot.range_end);
-    setSymbol(snapshot.symbol);
-    setIntervalSeconds(snapshot.interval_seconds);
-    setRangeStart(selectedStart);
-    setRangeEnd(selectedEnd);
+    if (replaySource === "CUSTOM") {
+      setSymbol(snapshot.symbol);
+      setIntervalSeconds(snapshot.interval_seconds);
+      setRangeStart(selectedStart);
+      setRangeEnd(selectedEnd);
+    }
     void startGame(
       selectedStart,
       selectedEnd,
@@ -3300,7 +3319,7 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
   }
 
   function startRandomNextRound() {
-    startRandomSession(replaySource === "ASIA" ? "ASIA" : "US");
+    startRandomSession(replaySource === "CUSTOM" ? randomSessionKind : replaySource);
   }
 
   function selectReplaySymbol(nextSymbol: string) {
@@ -3881,28 +3900,38 @@ function PaperTraderWorkspace({ onBalanceChange }: { onBalanceChange: (balance: 
       <div><p className="brand-mark">PAPER TRADER</p><h1>交易模拟器</h1><p className="subtitle">使用自定义配置或随机交易时段生成历史行情，逐根回放 K 线，在个人模拟账户中练习仓位与杠杆。</p></div>
       <div className="paper-page-actions">
         <div className="paper-rule-badge"><span>撮合规则</span><strong>单持仓 · 全仓模式 · Maker 0 · Taker 0.04%</strong></div>
-        <div><button type="button" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>{settingsOpen ? "收起自定义" : "⚙ 自定义行情"}</button></div>
+        <div><button type="button" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>{settingsOpen ? "收起配置" : "⚙ 行情配置"}</button></div>
       </div>
     </header>
     <section className="paper-session-shortcuts" aria-label="行情生成快捷入口">
       <span>行情生成</span>
-      <button className="paper-session-random" type="button" onClick={() => startRandomSession("US")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机美盘 · 21:30—04:30"}</button>
-      <button className="paper-session-random" type="button" onClick={() => startRandomSession("ASIA")} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "随机亚盘 · 08:00—18:00"}</button>
+      <button className="paper-session-random" type="button" onClick={() => startRandomSession()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : `${randomSymbol} · ${randomIntervalSeconds === 3600 ? "1h" : `${randomIntervalSeconds / 60}min`} · ${randomSessionKind === "US" ? "随机美盘 21:30—04:30" : "随机亚盘 08:00—18:00"}`}</button>
       {replayPresets.map((preset) => <div className="paper-saved-preset" key={preset.id}><button type="button" onClick={() => startReplayPreset(preset)} disabled={restoringSession || loading || !!snapshot?.position}>{paperReplayPresetLabel(preset)}</button><button type="button" onClick={() => removeReplayPreset(preset.id)} disabled={restoringSession || loading || !!snapshot?.position} aria-label={`删除 ${paperReplayPresetLabel(preset)}`}>×</button></div>)}
     </section>
     {settingsOpen && <section className="panel paper-config">
-      <div className="paper-config-heading"><strong>自定义行情</strong><span>设置交易对、K 线级别和时间范围，可直接开始或保存为快捷按钮。</span></div>
-      <div className="paper-config-grid">
-        <label><span>交易对</span><select value={symbol} onChange={(event) => selectReplaySymbol(event.target.value)} disabled={!!snapshot?.position}><option>BTCUSDT</option><option>ETHUSDT</option></select></label>
-        <label><span>K 线级别</span><select value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} disabled={!!snapshot?.position}><option value={300}>5min</option><option value={900}>15min</option><option value={3600}>1h</option></select></label>
-        <label><span>开始时间 UTC+8</span><input type="datetime-local" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} disabled={!!snapshot?.position} /></label>
-        <label><span>结束时间 UTC+8</span><input type="datetime-local" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} disabled={!!snapshot?.position} /></label>
-        <div className="paper-start-actions">
-          <button type="button" onClick={saveReplayPreset} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>保存快捷配置</button>
-          <button className="primary-button" type="button" onClick={() => void startGame()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "生成行情"}</button>
+      <div className="paper-config-section">
+        <div className="paper-config-heading"><strong>随机行情</strong><span>设置交易 Ticket、Level 和随机交易时段。</span></div>
+        <div className="paper-random-config-grid">
+          <label><span>交易 Ticket</span><select value={randomSymbol} onChange={(event) => setRandomSymbol(event.target.value)} disabled={!!snapshot?.position}><option>BTCUSDT</option><option>ETHUSDT</option></select></label>
+          <label><span>K 线 Level</span><select value={randomIntervalSeconds} onChange={(event) => setRandomIntervalSeconds(Number(event.target.value))} disabled={!!snapshot?.position}><option value={300}>5min</option><option value={900}>15min</option><option value={3600}>1h</option></select></label>
+          <label><span>随机行情时间区间 UTC+8</span><select value={randomSessionKind} onChange={(event) => setRandomSessionKind(event.target.value as PaperRandomSessionKind)} disabled={!!snapshot?.position}><option value="US">美盘 · 21:30—次日 04:30</option><option value="ASIA">亚盘 · 08:00—18:00</option></select></label>
+          <button className="primary-button" type="button" onClick={() => startRandomSession()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "生成随机行情"}</button>
+        </div>
+        <p className="paper-random-hint">随机行情会先显示正式交易时段前 24 小时的 K 线作为预热；美盘仅抽取周一至周五。</p>
+      </div>
+      <div className="paper-config-section">
+        <div className="paper-config-heading"><strong>自定义行情</strong><span>设置交易对、K 线级别和时间范围，可直接开始或保存为快捷按钮。</span></div>
+        <div className="paper-config-grid">
+          <label><span>交易对</span><select value={symbol} onChange={(event) => selectReplaySymbol(event.target.value)} disabled={!!snapshot?.position}><option>BTCUSDT</option><option>ETHUSDT</option></select></label>
+          <label><span>K 线级别</span><select value={intervalSeconds} onChange={(event) => setIntervalSeconds(Number(event.target.value))} disabled={!!snapshot?.position}><option value={300}>5min</option><option value={900}>15min</option><option value={3600}>1h</option></select></label>
+          <label><span>开始时间 UTC+8</span><input type="datetime-local" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} disabled={!!snapshot?.position} /></label>
+          <label><span>结束时间 UTC+8</span><input type="datetime-local" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} disabled={!!snapshot?.position} /></label>
+          <div className="paper-start-actions">
+            <button type="button" onClick={saveReplayPreset} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>保存快捷配置</button>
+            <button className="primary-button" type="button" onClick={() => void startGame()} disabled={restoringSession || loading || !metadata || !!snapshot?.position}>{loading ? "正在载入…" : "生成行情"}</button>
+          </div>
         </div>
       </div>
-      <p className="paper-random-hint">随机行情会先显示正式交易时段前 24 小时的 K 线作为预热；美盘仅抽取周一至周五。</p>
     </section>}
     {error && <div className="alert alert-critical">{error}</div>}
     {snapshot?.message?.startsWith("价格触及止损价") && snapshot.trades[snapshot.trades.length - 1]?.exit_reason === "STOP_LOSS" && <div className="alert paper-stop-loss-notice">{snapshot.message}</div>}

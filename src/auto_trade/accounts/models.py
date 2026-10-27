@@ -226,6 +226,9 @@ class PaperTraderPreferences(BaseModel):
     interval_seconds: Literal[300, 900, 3600] = 300
     range_start: datetime | None = None
     range_end: datetime | None = None
+    random_symbol: str = Field(default="BTCUSDT", min_length=1, max_length=32)
+    random_interval_seconds: Literal[300, 900, 3600] = 300
+    random_session_kind: Literal["US", "ASIA"] = "US"
     speed_seconds: Literal[1, 3, 5, 10, 15, 30] = 5
     notional: float = Field(default=100, gt=0)
     notional_unit: Literal["USDT", "BASE"] = "USDT"
@@ -240,7 +243,7 @@ class PaperTraderPreferences(BaseModel):
         default=(), max_length=30
     )
 
-    @field_validator("symbol")
+    @field_validator("symbol", "random_symbol")
     @classmethod
     def normalize_symbol(cls, value: str) -> str:
         return value.strip().upper()
