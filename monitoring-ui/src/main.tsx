@@ -2923,18 +2923,20 @@ function paperErrorMessage(value: unknown, fallback: string): string {
 
 async function readPaperResponse<T>(response: Response, fallback: string): Promise<T> {
   const rawBody = await response.text();
-  let body: unknown = null;
+  let body: unknown;
+  let bodyParsed = false;
   if (rawBody) {
     try {
       body = JSON.parse(rawBody) as unknown;
+      bodyParsed = true;
     } catch {
-      body = null;
+      // The status-specific error below is more useful than a JSON parser error.
     }
   }
   if (!response.ok) {
     throw new Error(paperErrorMessage(body, `${fallback} (HTTP ${response.status})`));
   }
-  if (body === null) throw new Error(`${fallback}：服务返回格式异常`);
+  if (!bodyParsed) throw new Error(`${fallback}：服务返回格式异常`);
   return body as T;
 }
 
