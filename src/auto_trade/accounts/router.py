@@ -14,6 +14,7 @@ from auto_trade.accounts.models import (
     AdminUser,
     Credentials,
     CurrentUser,
+    DailyPerformance,
     LoginCredentials,
     PaperTraderPreferences,
     UserRole,
@@ -172,6 +173,16 @@ async def account_analytics(
     days: int = Query(default=30, ge=7, le=90),
 ) -> AccountAnalytics:
     return await _repository(request).analytics(user.user_id, days=days)
+
+
+@router.get("/api/admin/account/daily", response_model=tuple[DailyPerformance, ...])
+async def admin_account_daily(
+    request: Request,
+    _administrator: Administrator,
+    days: int = Query(default=30, ge=7, le=90),
+    user_id: UUID | None = Query(default=None),
+) -> tuple[DailyPerformance, ...]:
+    return await _repository(request).daily_performance(user_id, days=days)
 
 
 @router.get(

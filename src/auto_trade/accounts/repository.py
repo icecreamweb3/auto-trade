@@ -480,6 +480,67 @@ class AccountRepository:
             overall_ranking=await self._profit_ranking(today_only=False),
         )
 
+    async def daily_performance(
+        self, user_id: UUID | None, *, days: int = 30
+    ) -> tuple[DailyPerformance, ...]:
+        """Return the daily summary for one account or the admin's all-user view."""
+        async with self.engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        WITH dates AS (
+                            SELECT generate_series(
+                                (now() AT TIME ZONE 'Asia/Shanghai')::date
+                                    - (CAST(:days AS integer) - 1),
+                                (now() AT TIME ZONE 'Asia/Shanghai')::date,
+                                interval '1 day'
+                            )::date AS trade_date
+                        ), trade_totals AS (
+                            SELECT (created_at AT TIME ZONE 'Asia/Shanghai')::date AS trade_date,
+                                   count(*)::integer AS trade_count,
+                                   count(*) FILTER (WHERE realized_pnl > 0)::integer
+                                       AS winning_trade_count,
+                                   sum(gross_pnl) AS gross_pnl,
+                                   sum(fee) AS total_fees,
+                                   sum(realized_pnl) AS net_pnl
+                            FROM trade.paper_trades
+                            WHERE (:user_id IS NULL OR user_id = :user_id)
+                              AND created_at >= ((now() AT TIME ZONE 'Asia/Shanghai')::date
+                                  - (CAST(:days AS integer) - 1)) AT TIME ZONE 'Asia/Shanghai'
+                            GROUP BY 1
+                        ), round_totals AS (
+                            SELECT (started_at AT TIME ZONE 'Asia/Shanghai')::date AS trade_date,
+                                   count(*)::integer AS round_count
+                            FROM trade.paper_sessions
+                            WHERE (:user_id IS NULL OR user_id = :user_id)
+                              AND started_at >= ((now() AT TIME ZONE 'Asia/Shanghai')::date
+                                  - (CAST(:days AS integer) - 1)) AT TIME ZONE 'Asia/Shanghai'
+                            GROUP BY 1
+                        )
+                        SELECT d.trade_date,
+                               coalesce(r.round_count, 0)::integer AS round_count,
+                               coalesce(t.trade_count, 0)::integer AS trade_count,
+                               coalesce(t.winning_trade_count, 0)::integer
+                                   AS winning_trade_count,
+                               CASE WHEN coalesce(t.trade_count, 0) = 0 THEN 0
+                                    ELSE t.winning_trade_count::double precision
+                                         / t.trade_count * 100
+                               END AS win_rate,
+                               coalesce(t.gross_pnl, 0) AS gross_pnl,
+                               coalesce(t.total_fees, 0) AS total_fees,
+                               coalesce(t.net_pnl, 0) AS net_pnl
+                        FROM dates d
+                        LEFT JOIN trade_totals t USING (trade_date)
+                        LEFT JOIN round_totals r USING (trade_date)
+                        ORDER BY d.trade_date DESC
+                        """
+                    ),
+                    {"user_id": user_id, "days": days},
+                )
+            ).mappings().all()
+        return tuple(DailyPerformance.model_validate(row) for row in rows)
+
     async def _profit_ranking(
         self, *, today_only: bool
     ) -> tuple[ProfitRankingEntry, ...]:

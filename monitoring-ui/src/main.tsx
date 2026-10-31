@@ -4431,6 +4431,39 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
   const [tradeEndAt, setTradeEndAt] = useState("");
   const [tradeFilterLoading, setTradeFilterLoading] = useState(false);
   const [tradeFilterError, setTradeFilterError] = useState<string | null>(null);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [dailyViewUserId, setDailyViewUserId] = useState("SELF");
+  const [adminDaily, setAdminDaily] = useState<DailyPerformance[] | null>(null);
+  const [adminDailyLoading, setAdminDailyLoading] = useState(false);
+
+  useEffect(() => {
+    if (user.role !== "ADMIN") return;
+    void fetch("/api/admin/users", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as AdminUser[] | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "用户列表加载失败"));
+        setAdminUsers(body as AdminUser[]);
+      })
+      .catch(() => setAdminUsers([]));
+  }, [user.role]);
+
+  useEffect(() => {
+    if (user.role !== "ADMIN" || dailyViewUserId === "SELF") {
+      setAdminDaily(null);
+      return;
+    }
+    const params = new URLSearchParams({ days: String(days) });
+    if (dailyViewUserId !== "ALL") params.set("user_id", dailyViewUserId);
+    setAdminDailyLoading(true);
+    void fetch(`/api/admin/account/daily?${params}`, { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as DailyPerformance[] | { detail?: string };
+        if (!response.ok) throw new Error(paperErrorMessage(body, "每日统计加载失败"));
+        setAdminDaily(body as DailyPerformance[]);
+      })
+      .catch(() => setAdminDaily([]))
+      .finally(() => setAdminDailyLoading(false));
+  }, [days, dailyViewUserId, user.role]);
 
   useEffect(() => {
     setLoading(true);
@@ -4451,6 +4484,7 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
   const account = analytics?.account ?? user.account;
   const summary = analytics?.summary;
   const chartDays = useMemo(() => analytics?.daily ?? [], [analytics]);
+  const displayedDaily = user.role === "ADMIN" && dailyViewUserId !== "SELF" ? (adminDaily ?? []) : chartDays;
   const chartMaximum = Math.max(0.01, ...chartDays.map((item) => Math.abs(item.net_pnl)));
   const displayedTrades = tradeResults ?? analytics?.trades ?? [];
   const roundStatus = (status: RoundPerformance["status"]) => status === "READY" ? "待交易" : status === "RUNNING" ? "进行中" : status === "LIQUIDATED" ? "已强平" : "已结束";
@@ -4518,8 +4552,8 @@ function AccountWorkspace({ user, onAccountChange }: { user: CurrentUser; onAcco
         {analytics.rounds.length ? <div className="table-scroll"><table className="storage-table account-round-table"><thead><tr><th>轮次</th><th>状态</th><th>开始时间 UTC+8</th><th>模拟行情</th><th>周期</th><th>交易次数</th><th>胜率</th><th>毛盈亏</th><th>手续费</th><th>净收益</th><th>结束余额</th></tr></thead><tbody>{analytics.rounds.map((round) => <tr key={round.session_id}><td><strong>#{round.round_no}</strong></td><td><span className={`round-status status-${round.status.toLowerCase()}`}>{roundStatus(round.status)}</span></td><td>{new Date(round.started_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</td><td>{round.symbol}<small>{new Date(round.range_start).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" })} – {new Date(round.range_end).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" })}</small></td><td>{round.interval_seconds / 60}m</td><td>{round.trade_count}</td><td>{formatNumber(round.win_rate, 1)}%</td><td className={profitClass(round.gross_pnl)}>{round.gross_pnl >= 0 ? "+" : ""}{formatNumber(round.gross_pnl, 2)}</td><td>{formatNumber(round.total_fees, 4)}</td><td className={profitClass(round.net_pnl)}>{round.net_pnl >= 0 ? "+" : ""}{formatNumber(round.net_pnl, 2)}</td><td>{formatNumber(round.ending_balance, 2)}</td></tr>)}</tbody></table></div> : <div className="account-history-empty">尚未开始任何模拟交易轮次。</div>}
       </section>
       <section className="panel account-daily-panel">
-        <div className="panel-heading"><div><p className="eyebrow">DAILY SUMMARY</p><h3>每日交易统计</h3></div><span>最近 {days} 天</span></div>
-        <div className="table-scroll account-daily-scroll"><table className="storage-table account-daily-table"><thead><tr><th>日期 UTC+8</th><th>开始轮次</th><th>交易次数</th><th>盈利次数</th><th>胜率</th><th>毛盈亏</th><th>手续费</th><th>净收益</th></tr></thead><tbody>{analytics.daily.map((item) => <tr key={item.trade_date}><td>{item.trade_date}</td><td>{item.round_count}</td><td>{item.trade_count}</td><td>{item.winning_trade_count}</td><td>{formatNumber(item.win_rate, 1)}%</td><td className={profitClass(item.gross_pnl)}>{item.gross_pnl >= 0 ? "+" : ""}{formatNumber(item.gross_pnl, 2)}</td><td>{formatNumber(item.total_fees, 4)}</td><td className={profitClass(item.net_pnl)}>{item.net_pnl >= 0 ? "+" : ""}{formatNumber(item.net_pnl, 2)}</td></tr>)}</tbody></table></div>
+        <div className="panel-heading"><div><p className="eyebrow">DAILY SUMMARY</p><h3>每日交易统计</h3></div><div className="account-daily-controls"><span>最近 {days} 天</span>{user.role === "ADMIN" && <label><span className="sr-only">统计视角</span><select value={dailyViewUserId} onChange={(event) => setDailyViewUserId(event.target.value)} aria-label="每日统计视角"><option value="SELF">我的视角</option><option value="ALL">全部用户</option>{adminUsers.map((item) => <option key={item.user_id} value={item.user_id}>{item.username ?? item.email}</option>)}</select></label>}</div></div>
+        {adminDailyLoading ? <div className="loading">正在切换统计视角…</div> : <div className="table-scroll account-daily-scroll"><table className="storage-table account-daily-table"><thead><tr><th>日期 UTC+8</th><th>开始轮次</th><th>交易次数</th><th>盈利次数</th><th>胜率</th><th>毛盈亏</th><th>手续费</th><th>净收益</th></tr></thead><tbody>{displayedDaily.map((item) => <tr key={item.trade_date}><td>{item.trade_date}</td><td>{item.round_count}</td><td>{item.trade_count}</td><td>{item.winning_trade_count}</td><td>{formatNumber(item.win_rate, 1)}%</td><td className={profitClass(item.gross_pnl)}>{item.gross_pnl >= 0 ? "+" : ""}{formatNumber(item.gross_pnl, 2)}</td><td>{formatNumber(item.total_fees, 4)}</td><td className={profitClass(item.net_pnl)}>{item.net_pnl >= 0 ? "+" : ""}{formatNumber(item.net_pnl, 2)}</td></tr>)}</tbody></table></div>}
       </section>
       <section className="panel account-history-panel">
         <div className="panel-heading"><div><p className="eyebrow">TRADE DETAILS</p><h3>持仓交易明细</h3></div><strong>{displayedTrades.length} 笔</strong></div>
