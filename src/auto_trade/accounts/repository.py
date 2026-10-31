@@ -484,11 +484,15 @@ class AccountRepository:
         self, user_id: UUID | None, *, days: int = 30
     ) -> tuple[DailyPerformance, ...]:
         """Return the daily summary for one account or the admin's all-user view."""
+        user_filter = "TRUE" if user_id is None else "user_id = :user_id"
+        parameters: dict[str, Any] = {"days": days}
+        if user_id is not None:
+            parameters["user_id"] = user_id
         async with self.engine.connect() as connection:
             rows = (
                 await connection.execute(
                     text(
-                        """
+                        f"""
                         WITH dates AS (
                             SELECT generate_series(
                                 (now() AT TIME ZONE 'Asia/Shanghai')::date
@@ -505,7 +509,7 @@ class AccountRepository:
                                    sum(fee) AS total_fees,
                                    sum(realized_pnl) AS net_pnl
                             FROM trade.paper_trades
-                            WHERE (:user_id IS NULL OR user_id = :user_id)
+                            WHERE {user_filter}
                               AND created_at >= ((now() AT TIME ZONE 'Asia/Shanghai')::date
                                   - (CAST(:days AS integer) - 1)) AT TIME ZONE 'Asia/Shanghai'
                             GROUP BY 1
@@ -513,7 +517,7 @@ class AccountRepository:
                             SELECT (started_at AT TIME ZONE 'Asia/Shanghai')::date AS trade_date,
                                    count(*)::integer AS round_count
                             FROM trade.paper_sessions
-                            WHERE (:user_id IS NULL OR user_id = :user_id)
+                            WHERE {user_filter}
                               AND started_at >= ((now() AT TIME ZONE 'Asia/Shanghai')::date
                                   - (CAST(:days AS integer) - 1)) AT TIME ZONE 'Asia/Shanghai'
                             GROUP BY 1
@@ -536,7 +540,7 @@ class AccountRepository:
                         ORDER BY d.trade_date DESC
                         """
                     ),
-                    {"user_id": user_id, "days": days},
+                    parameters,
                 )
             ).mappings().all()
         return tuple(DailyPerformance.model_validate(row) for row in rows)
