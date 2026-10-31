@@ -1326,6 +1326,15 @@ TEST 执行前必须递归展开模型 A、模型 B 和组合版本的全部祖�
 - 可恢复检查点、检查点格式版本、哈希和创建时间。
 - 检查点可以是数据库二进制对象或受控对象存储 URI，但数据库记录是权威索引；恢复时必须校验哈希。
 
+#### `training_cross_fit_folds`
+
+每个 Cross-fit 外层折和其内层搜索必须单独落库，不得只把折信息拼入 go/no-go JSON：
+
+- 保存原始与有效训练起止、预测起止、预热、purge、embargo 区间和剔除数量；
+- 保存折内模型版本、折随机种子、搜索预算、内层试验数量和 `inner_validation_count`；后者必须为 0，折内不得使用 VALIDATION；
+- 通过 `outer_fold_id`/`inner_search_run_id` 关联暂定或正式 `CROSS_FIT_MODEL_A` 语料、优化器运行和 `training_go_no_go_evaluations`；
+- 状态、资格报告和失败原因追加写入，折不足时标记 `INSUFFICIENT_POWER`，不能隐式丢弃。
+
 ### 15.4 模型 A：入场事实与未来标签物理隔离
 
 #### `training_feature_snapshots`
@@ -1339,7 +1348,7 @@ TEST 执行前必须递归展开模型 A、模型 B 和组合版本的全部祖�
 - 不可变 `entry_event_id`、入场事件数据集版本、Ticker、方向、信号时间、下一根 K 线入场时间和价格。
 - 头寸名义价值、排名来源、触发原因、总分、覆盖率和风险标记。
 - `feature_snapshot_id`、生成事件的模型 A/交叉拟合版本、训练窗口和预测窗口。
-- 来源：`MODEL_A_SIGNAL`、`LOCKED_MODEL_A_VALIDATION_SIGNAL`、`CROSS_FIT_MODEL_A`、`FIXED_BASELINE_MODEL_A`、`ORACLE_ENTRY_BENCHMARK`、`ADVERSE_OR_RANGE_CONTROL` 或 `IN_SAMPLE_MODEL_A`。`LOCKED_MODEL_A_VALIDATION_SIGNAL` 仅能出现在 VALIDATION，`MODEL_A_SIGNAL` 仅能出现在正式 TEST/端到端运行。
+- 来源：`MODEL_A_SIGNAL`、`LOCKED_MODEL_A_VALIDATION_SIGNAL`、`CROSS_FIT_MODEL_A_CANDIDATE`、`CROSS_FIT_MODEL_A`、`FIXED_BASELINE_MODEL_A`、`ORACLE_ENTRY_BENCHMARK`、`ADVERSE_OR_RANGE_CONTROL` 或 `IN_SAMPLE_MODEL_A`。`CROSS_FIT_MODEL_A_CANDIDATE` 只允许存在于 Q-036 go/no-go 闸门运行及其不可晋级的临时事实中，不得进入模型 B 正式 TRAIN、VALIDATION 或 TEST；它不是正式模型版本。`LOCKED_MODEL_A_VALIDATION_SIGNAL` 仅能出现在 VALIDATION，`MODEL_A_SIGNAL` 仅能出现在正式 TEST/端到端运行。
 - 数据完整性和无效原因；不得包含信号发生后的行情和未来表现字段。
 
 `training_iteration_entry_events` 关联迭代和入场事件，保存该候选的因子权重、分项贡献和是否被选中，避免重复存储公共事实。
@@ -1430,7 +1439,7 @@ TRAIN/VALIDATION 使用 `strategy_training.training_portfolio_runs`；`END_TO_EN
 - 毛收益、费用、资金费、净收益和持仓时长。
 - 数据版本、费用/滑点版本、创建时间和内容哈希。
 
-`END_TO_END_TEST` 使用来源白名单而不是黑名单：只允许由该运行中锁定模型 A 按时间顺序实时产生的 `MODEL_A_SIGNAL`。任何其他来源，包括 `ORACLE_ENTRY_BENCHMARK`、`ADVERSE_OR_RANGE_CONTROL`、`IN_SAMPLE_MODEL_A`、`FIXED_BASELINE_MODEL_A` 和 `CROSS_FIT_MODEL_A`，均不得进入端到端测试。数据库检查约束与运行前校验必须同时执行。
+`END_TO_END_TEST` 使用来源白名单而不是黑名单：只允许由该运行中锁定模型 A 按时间顺序实时产生的 `MODEL_A_SIGNAL`。任何其他来源，包括 `ORACLE_ENTRY_BENCHMARK`、`ADVERSE_OR_RANGE_CONTROL`、`IN_SAMPLE_MODEL_A`、`FIXED_BASELINE_MODEL_A`、`CROSS_FIT_MODEL_A_CANDIDATE` 和 `CROSS_FIT_MODEL_A`，均不得进入端到端测试。数据库检查约束与运行前校验必须同时执行。
 
 ### 15.7 大模型建议、搜索空间审批与晋级审计
 
