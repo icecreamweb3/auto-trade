@@ -1,0 +1,70 @@
+name: auto-trade-integration
+
+services:
+  database:
+    image: ${TIMESCALEDB_IMAGE:-timescale/timescaledb:latest-pg16}
+    environment:
+      POSTGRES_DB: auto_trade_integration
+      POSTGRES_USER: integration_owner
+      POSTGRES_PASSWORD: integration_only_not_a_secret
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: UTC
+      PGTZ: UTC
+    command: ["postgres", "-c", "max_locks_per_transaction=4096"]
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U integration_owner -d auto_trade_integration"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  migrations:
+    image: ${TIMESCALEDB_IMAGE:-timescale/timescaledb:latest-pg16}
+    environment: &database-client-environment
+      PGHOST: database
+      PGPORT: 5432
+      PGDATABASE: auto_trade_integration
+      PGUSER: integration_owner
+      PGPASSWORD: integration_only_not_a_secret
+      PGTZ: UTC
+    volumes:
+      - ./database:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["/migrations/apply_migrations.sh"]
+    depends_on:
+      database:
+        condition: service_healthy
+
+  migrations-repeat:
+    image: ${TIMESCALEDB_IMAGE:-timescale/timescaledb:latest-pg16}
+    environment:
+      PGHOST: database
+      PGPORT: 5432
+      PGDATABASE: auto_trade_integration
+      PGUSER: integration_owner
+      PGPASSWORD: integration_only_not_a_secret
+      PGTZ: UTC
+    volumes:
+      - ./database:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["/migrations/apply_migrations.sh"]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+
+  integration-tests:
+    image: ${TIMESCALEDB_IMAGE:-timescale/timescaledb:latest-pg16}
+    environment: *database-client-environment
+    volumes:
+      - ./tests/integration:/tests:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        for test_file in /tests/*.sql; do
+          psql --set=ON_ERROR_STOP=1 --file="$${test_file}";
+        done
+    depends_on:
+      migrations-repeat:
+        condition: service_completed_successfully
