@@ -48,7 +48,11 @@
 
 数据库迁移只创建 `NOLOGIN` 权限角色。另行交付部署引导，为 worker、orchestrator、evaluator、optimizer、weak-holdout、TEST executor/auditor/backup 创建或轮换彼此独立的 LOGIN、secret、连接池和 `application_name`，并验证它们不是 superuser、没有 `BYPASSRLS`，也不持有 `tb2_trader` 或实盘 NATS 发布权限。共享当前 `POSTGRES_USER` 不得作为 A0 完成状态。
 
+部署引导脚本为 `database/bootstrap_training_roles.sh`。它必须在迁移成功后由部署系统执行，密码通过 `TRAINING_*_PASSWORD` secret 环境注入；脚本不打印或持久化 secret，缺少任一服务账户 secret 即失败。该脚本只创建 LOGIN 服务账户并授予对应 NOLOGIN 组角色，不替代迁移，也不直接启动训练任务。
+
 验收：普通/通用角色无弱留出及 TEST `USAGE`；越界分区、非法转换、READY 修改均在数据库层失败；迁移可在空库完整应用并可重复跳过。
+
+当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；尚未对实际部署数据库执行。A0 仍不能标记为完成，直到 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置在目标环境验收。
 
 ### M2：A0 数据集构建与审计
 

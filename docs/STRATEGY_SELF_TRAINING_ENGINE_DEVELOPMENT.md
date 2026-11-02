@@ -234,7 +234,7 @@ FIXED_BASELINE_MODEL_A（B 阶段原型）
 4. 模型 A、模型 B、组合及隔离 TEST 表；
 5. 受控过程、视图、触发器、索引、权限和回滚检查。
 
-迁移文件只创建 `NOLOGIN` 数据库角色、schema、授权模板和审计结构，不写入登录密码或 secret。部署引导脚本另行创建/轮换登录角色、注入 secret，并验证应用服务账户到数据库角色的实际成员关系、互斥关系和撤销结果；secret 不进入迁移文件、版本库或日志。`apply_migrations.sh` 只负责按序执行迁移，不承担 secret 注入。
+迁移文件只创建 `NOLOGIN` 数据库角色、schema、授权模板和审计结构，不写入登录密码或 secret。部署引导脚本 `database/bootstrap_training_roles.sh` 另行创建/轮换以下独立 LOGIN 服务账户，并分别授予对应的单一 NOLOGIN 组角色：`rw`、`orchestrator`、`optimizer`、`evaluator`、`model_b`、`weak_holdout`、`test_executor`、`test_auditor`、`test_backup` 和 `llm_gateway`。脚本只从部署 secret 环境读取 `TRAINING_*_PASSWORD`，不把值写入 SQL、文件或日志；缺少任一 secret 立即失败。脚本还验证账户不是 superuser、不能 `BYPASSRLS`、不能继承 `tb2_trader`/`tb2_collector`，并在部署检查中确认有效成员关系。`apply_migrations.sh` 只负责按序执行迁移，不承担 secret 注入。该脚本必须在迁移成功后、业务服务启动前由部署系统执行。
 
 大表按 `dataset_version_id`、分区和 UTC 时间设计范围分区；事实表禁止无边界全表扫描。至少建立以下索引：
 
