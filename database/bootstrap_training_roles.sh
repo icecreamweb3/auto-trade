@@ -27,32 +27,27 @@ while IFS='|' read -r group_role login_role password_var; do
     TRAINING_ROLE_PASSWORD="$password" psql_admin \
         -v group_role="$group_role" -v login_role="$login_role" <<'SQL'
 \getenv role_password TRAINING_ROLE_PASSWORD
-DO $do$
-DECLARE
-  training_group record;
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'login_role') THEN
-    EXECUTE format(
-      'CREATE ROLE %I LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
-      :'login_role', :'role_password'
-    );
-  ELSE
-    EXECUTE format(
-      'ALTER ROLE %I LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
-      :'login_role', :'role_password'
-    );
-  END IF;
-  FOR training_group IN
-    SELECT rolname
-    FROM pg_roles
-    WHERE rolname LIKE 'tb2_training\_%'
-      AND NOT rolcanlogin
-  LOOP
-    EXECUTE format('REVOKE %I FROM %I', training_group.rolname, :'login_role');
-  END LOOP;
-  EXECUTE format('GRANT %I TO %I', :'group_role', :'login_role');
-END
-$do$;
+SELECT format(
+    'CREATE ROLE %I LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    :'login_role', :'role_password'
+)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'login_role')
+\gexec
+
+SELECT format(
+    'ALTER ROLE %I LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    :'login_role', :'role_password'
+)
+\gexec
+
+SELECT format('REVOKE %I FROM %I', rolname, :'login_role')
+FROM pg_roles
+WHERE rolname LIKE 'tb2_training\\_%'
+  AND NOT rolcanlogin
+\gexec
+
+SELECT format('GRANT %I TO %I', :'group_role', :'login_role')
+\gexec
 SQL
 done <<'ROLE_SPECS'
 tb2_training_rw|tb2_training_rw_app|TRAINING_RW_PASSWORD
@@ -73,7 +68,8 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_roles
-        WHERE rolname LIKE 'tb2_training\_%\_app' ESCAPE '\\'
+        WHERE left(rolname, 13) = 'tb2_training_'
+          AND right(rolname, 4) = '_app'
           AND (rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb)
     ) THEN
         RAISE EXCEPTION 'training account has forbidden role attributes';
@@ -88,7 +84,8 @@ BEGIN
         FROM pg_auth_members m
         JOIN pg_roles member_role ON member_role.oid = m.member
         JOIN pg_roles granted_role ON granted_role.oid = m.roleid
-        WHERE member_role.rolname LIKE 'tb2_training\_%\_app' ESCAPE '\\'
+        WHERE left(member_role.rolname, 13) = 'tb2_training_'
+          AND right(member_role.rolname, 4) = '_app'
           AND granted_role.rolname IN ('tb2_trader', 'tb2_collector')
     ) THEN
         RAISE EXCEPTION 'training account has live or collector role membership';
