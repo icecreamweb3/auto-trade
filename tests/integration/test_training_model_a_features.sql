@@ -522,6 +522,10 @@ BEGIN
         'tb2_training_model_b',
         'strategy_training.model_b_market_asof(character,timestamptz,integer)',
         'EXECUTE'
+    ) OR NOT has_function_privilege(
+        'tb2_training_model_b',
+        'strategy_training.training_model_b_replay_context(uuid,uuid,character)',
+        'EXECUTE'
     ) THEN
         RAISE EXCEPTION 'model-B isolation privilege matrix is incorrect';
     END IF;
@@ -538,7 +542,84 @@ SELECT * FROM strategy_training.create_training_exit_episode(
 ) \gset
 
 RESET ROLE;
+
+SET LOCAL session_replication_role = replica;
+
+INSERT INTO strategy_training.training_resource_preflight_reports (
+    resource_preflight_id, dataset_version_id, resource_limit_config_version_id,
+    estimated_candidate_count, estimated_signal_count, estimated_decision_row_count,
+    estimated_storage_bytes, estimated_db_workers, estimated_pool_connections,
+    estimated_statement_seconds, estimated_work_mem_bytes, estimated_cpu,
+    estimated_memory_bytes, estimated_temp_bytes, available_temp_bytes,
+    status, blocking_reasons, evidence_json, evidence_hash
+) VALUES (
+    'd7000000-0000-0000-0000-000000000001',
+    'd3000000-0000-0000-0000-000000000001',
+    'd2000000-0000-0000-0000-000000000004',
+    1, 1, 10, 1000, 1, 1, 60, 1048576, 1, 1048576,
+    1000, 1048576, 'PASS', '[]', '{"fixture":"model-b-task"}',
+    encode(digest('{"fixture":"model-b-task"}'::jsonb::text, 'sha256'), 'hex')
+);
+
+SET LOCAL session_replication_role = origin;
+
+SET LOCAL ROLE tb2_training_orchestrator;
+
+SELECT strategy_training.enqueue_training_task(
+    'd4000000-0000-0000-0000-000000000002',
+    'd5000000-0000-0000-0000-000000000002', NULL, NULL,
+    'MODEL_B_REPLAY', 'MODEL_B', repeat('6', 64),
+    jsonb_build_object(
+        'task_type', 'MODEL_B_REPLAY',
+        'payload_version', 1,
+        'model_b_sample_ids', jsonb_build_array(:'created_model_b_sample_id')
+    ), 10
+) AS model_b_task_id \gset
+
+RESET ROLE;
 SET LOCAL ROLE tb2_training_model_b;
+
+SELECT claimed_task_id AS model_b_claimed_task_id,
+       claimed_lease_token AS model_b_lease_token
+FROM strategy_training.claim_training_model_b_task('model-b-integration', 300) \gset
+
+SELECT strategy_training.start_training_task(
+    :'model_b_claimed_task_id', :'model_b_lease_token', 'model-b-integration'
+);
+
+SELECT notional AS model_b_notional, episode_status AS model_b_episode_status
+FROM strategy_training.training_model_b_replay_context(
+    :'model_b_claimed_task_id', :'model_b_lease_token', :'created_model_b_sample_id'
+) \gset
+
+SELECT set_config('test.model_b_notional', :'model_b_notional', true);
+SELECT set_config('test.model_b_episode_status', :'model_b_episode_status', true);
+SELECT set_config('test.model_b_task_id', :'model_b_claimed_task_id', true);
+SELECT set_config('test.model_b_sample_id', :'created_model_b_sample_id', true);
+
+DO $$
+BEGIN
+    IF current_setting('test.model_b_notional')::numeric <> 1000
+       OR current_setting('test.model_b_episode_status') <> 'RUNNING' THEN
+        RAISE EXCEPTION 'model-B task context did not return frozen replay inputs';
+    END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    BEGIN
+        PERFORM * FROM strategy_training.training_model_b_replay_context(
+            current_setting('test.model_b_task_id')::uuid,
+            '00000000-0000-0000-0000-000000000001',
+            current_setting('test.model_b_sample_id')::char(64)
+        );
+        RAISE EXCEPTION 'model-B replay context accepted a forged lease token';
+    EXCEPTION WHEN serialization_failure THEN
+        NULL;
+    END;
+END
+$$;
 
 SELECT decision_feature_snapshot_id AS first_snapshot_id
 FROM strategy_training.model_b_market_asof(

@@ -52,7 +52,7 @@
 
 验收：普通/通用角色无弱留出及 TEST `USAGE`；越界分区、非法转换、READY 修改均在数据库层失败；迁移可在空库完整应用并可重复跳过。
 
-当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；已在测试环境验证角色、schema 权限和连接身份。`compose.training.yaml` 的 `training` profile 继续只做 fail-closed 身份/连接 smoke check；独立的 `training-runtime` profile 已接入数据库租约、心跳、取消和有限失败码，并启用 `DATASET_BUILD` v1 与 `MODEL_A_EVALUATION` v1。迁移 `038_training_task_payload_contract.sql` 强制任务行与版本化载荷类型一致；迁移 `039_training_model_a_evaluation_context.sql` 强制模型 A 标签读取属于当前有效 evaluator 租约和同一迭代；迁移 `040_training_task_executor_contract.sql` 固定各任务类型的隔离执行角色。其他任务类型尚无处理器，不得启动对应执行服务。A0 仍不能标记为完成，直到新迁移和 worker/evaluator 在目标环境完成部署验收，以及 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置全部通过。
+当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；已在测试环境验证角色、schema 权限和连接身份。`compose.training.yaml` 的 `training` profile 继续只做 fail-closed 身份/连接 smoke check；独立的 `training-runtime` profile 已接入数据库租约、心跳、取消和有限失败码，并启用 `DATASET_BUILD` v1、`MODEL_A_EVALUATION` v1 与 `MODEL_B_REPLAY` v1。迁移 `038_training_task_payload_contract.sql` 强制任务行与版本化载荷类型一致；迁移 `039_training_model_a_evaluation_context.sql` 强制模型 A 标签读取属于当前有效 evaluator 租约和同一迭代；迁移 `040_training_task_executor_contract.sql` 固定各任务类型的隔离执行角色；迁移 `041_training_model_b_replay_context.sql` 将模型 B 样本、冻结退出/费用/滑点/名义头寸配置绑定到当前有效 Model B 租约。`MODEL_B_REPLAY` 只写逐步退出决策并返回终止决策证据哈希，最终收益结果仍须由后续 Evaluator 处理器复算并落库。其他任务类型尚无处理器，不得启动对应执行服务。A0 仍不能标记为完成，直到新迁移和 worker/evaluator/model-b 在目标环境完成部署验收，以及 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置全部通过。
 
 ### M2：A0 数据集构建与审计
 
@@ -140,4 +140,4 @@
 - `020`：READY 配置、TRAIN/VALIDATION 数据集、成员/质量/暴露事实及复现清单；
 - `021`：TRAIN-only 实验/迭代、优化器检查点、冻结终选、共享 VALIDATION 逻辑身份和不可回收预算。
 
-当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；`019`—`040` 迁移进入一次性数据库重复迁移和集成测试。`DATASET_BUILD` 与 `MODEL_A_EVALUATION` 已接入真实租约循环；后者首版只计算时间安全的标签和机会真值，随机基线仍须由数据库可信候选框处理器生成，禁止通过任务载荷注入。其余 task handler、真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未执行，不能据此启动正式 TEST、影子运行或完整训练流水线。
+当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；`019`—`041` 迁移进入一次性数据库重复迁移和集成测试。`DATASET_BUILD`、`MODEL_A_EVALUATION` 与 `MODEL_B_REPLAY` 已接入真实租约循环；模型 A 首版只计算时间安全的标签和机会真值，随机基线仍须由数据库可信候选框处理器生成，禁止通过任务载荷注入；模型 B 首版只消费安全 as-of 输入并记录退出决策，尚未由 Evaluator 落地最终收益结果。其余 task handler、真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未执行，不能据此启动正式 TEST、影子运行或完整训练流水线。

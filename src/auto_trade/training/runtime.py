@@ -91,7 +91,11 @@ async def run_service(
         LOGGER.info("training service identity verified role=%s", role.name)
         if identity_only or role.executor_kind is None:
             return
-        if role.executor_kind not in {ExecutorKind.WORKER, ExecutorKind.EVALUATOR}:
+        if role.executor_kind not in {
+            ExecutorKind.WORKER,
+            ExecutorKind.EVALUATOR,
+            ExecutorKind.MODEL_B,
+        }:
             raise RuntimeError(
                 f"no executable handlers are registered for role={role.name}"
             )

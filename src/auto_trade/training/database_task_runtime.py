@@ -9,6 +9,7 @@ from auto_trade.training.governance_repository import DatabaseTaskWorkerStore
 from auto_trade.training.model_a_evaluation_task_handler import (
     ModelAEvaluationTaskHandler,
 )
+from auto_trade.training.model_b_replay_task_handler import ModelBReplayTaskHandler
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
 from auto_trade.training.task_handlers import TaskHandlerRegistry
 
@@ -21,6 +22,8 @@ def build_handler_registry(
         registry.register("DATASET_BUILD", DatasetBuildTaskHandler(connection))
     elif executor_kind is ExecutorKind.EVALUATOR:
         registry.register("MODEL_A_EVALUATION", ModelAEvaluationTaskHandler(connection))
+    elif executor_kind is ExecutorKind.MODEL_B:
+        registry.register("MODEL_B_REPLAY", ModelBReplayTaskHandler(connection))
     return registry
 
 

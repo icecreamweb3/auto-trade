@@ -10,6 +10,7 @@ from typing import Protocol
 
 from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
+from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
 from auto_trade.training.orchestrator import TaskLease, TaskState
 from auto_trade.training.task_handlers import TaskHandlerError
 
@@ -57,6 +58,8 @@ def failure_code(error: BaseException) -> str:
         return "DATASET_BUILD_REJECTED"
     if isinstance(error, ModelAPipelineError):
         return "MODEL_A_EVALUATION_REJECTED"
+    if isinstance(error, ModelBReplayError):
+        return "MODEL_B_REPLAY_REJECTED"
     return "HANDLER_FAILED"
 
 

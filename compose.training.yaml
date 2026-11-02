@@ -1,8 +1,8 @@
 name: auto-trade-local
 
 # The `training` profile remains an identity-only deployment smoke check.
-# The separately selected `training-runtime` profile runs the implemented
-# worker lease loop; it is never started implicitly with the runtime stack.
+# The separately selected `training-runtime` profile runs only implemented
+# database task lease loops; it is never started implicitly with the runtime stack.
 services:
   training-worker:
     profiles: ["training"]
@@ -131,6 +131,50 @@ services:
       POSTGRES_APPLICATION_NAME: training-evaluator
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "evaluator", "--expected-user", "tb2_training_evaluator_app"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-model-b:
+    profiles: ["training"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-model-b
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_model_b_app
+      POSTGRES_PASSWORD: ${TRAINING_MODEL_B_PASSWORD:?TRAINING_MODEL_B_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-model-b
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "model-b", "--expected-user", "tb2_training_model_b_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-model-b-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-model-b
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_model_b_app
+      POSTGRES_PASSWORD: ${TRAINING_MODEL_B_PASSWORD:?TRAINING_MODEL_B_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-model-b
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "model-b", "--expected-user", "tb2_training_model_b_app"]
     depends_on:
       database:
         condition: service_healthy
