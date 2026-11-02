@@ -17,7 +17,12 @@ def create_database_engine(settings: Settings) -> AsyncEngine:
         pool_pre_ping=True,
         pool_size=5,
         max_overflow=0,
-        connect_args={"server_settings": {"timezone": "UTC"}},
+        connect_args={
+            "server_settings": {
+                "timezone": "UTC",
+                "application_name": settings.database_application_name,
+            }
+        },
     )
 
 

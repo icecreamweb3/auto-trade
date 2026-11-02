@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     postgres_db: str = "auto_trade"
     postgres_user: str = "auto_trade_admin"
     postgres_password: SecretStr
+    postgres_application_name: str | None = Field(default=None, min_length=1, max_length=63)
 
     nats_url: str = "nats://127.0.0.1:4222"
     binance_usdm_base_url: str = "https://fapi.binance.com"
@@ -106,6 +107,11 @@ class Settings(BaseSettings):
             f"postgresql+asyncpg://{user}:{password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def database_application_name(self) -> str:
+        """Stable per-service PostgreSQL application identity."""
+        return self.postgres_application_name or self.service_name
 
     @property
     def telegram_channel_names(self) -> tuple[str, ...]:

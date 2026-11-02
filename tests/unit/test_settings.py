@@ -16,6 +16,25 @@ def test_database_dsn_escapes_credentials() -> None:
     assert "a/b:c@d" not in settings.database_dsn
 
 
+def test_database_application_name_defaults_to_service_name() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password=SecretStr("test-password"),
+        service_name="training-evaluator",
+    )
+    assert settings.database_application_name == "training-evaluator"
+
+
+def test_database_application_name_can_be_overridden() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password=SecretStr("test-password"),
+        service_name="training-evaluator",
+        postgres_application_name="training-evaluator-v2",
+    )
+    assert settings.database_application_name == "training-evaluator-v2"
+
+
 def test_websocket_resilience_defaults() -> None:
     settings = Settings(
         _env_file=None,
