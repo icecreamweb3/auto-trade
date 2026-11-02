@@ -526,6 +526,10 @@ BEGIN
         'tb2_training_model_b',
         'strategy_training.training_model_b_replay_context(uuid,uuid,character)',
         'EXECUTE'
+    ) OR NOT has_function_privilege(
+        'tb2_training_evaluator',
+        'strategy_training.training_portfolio_evaluation_context(uuid,uuid)',
+        'EXECUTE'
     ) THEN
         RAISE EXCEPTION 'model-B isolation privilege matrix is incorrect';
     END IF;
@@ -661,7 +665,62 @@ SELECT strategy_training.record_training_exit_decision(
 );
 
 RESET ROLE;
+SET LOCAL ROLE tb2_training_orchestrator;
+
+SELECT strategy_training.enqueue_training_task(
+    'd4000000-0000-0000-0000-000000000002',
+    'd5000000-0000-0000-0000-000000000002', NULL, NULL,
+    'PORTFOLIO_EVALUATION', 'EVALUATOR', repeat('5', 64),
+    jsonb_build_object(
+        'task_type', 'PORTFOLIO_EVALUATION',
+        'payload_version', 1
+    ), 10
+) AS portfolio_task_id \gset
+
+RESET ROLE;
 SET LOCAL ROLE tb2_training_evaluator;
+
+SELECT claimed_task_id AS portfolio_claimed_task_id,
+       claimed_lease_token AS portfolio_lease_token
+FROM strategy_training.claim_training_evaluator_task(
+    'portfolio-evaluator-integration', 300
+) \gset
+
+SELECT strategy_training.start_training_task(
+    :'portfolio_claimed_task_id', :'portfolio_lease_token',
+    'portfolio-evaluator-integration'
+);
+
+SELECT portfolio_rule_version_id AS evaluated_portfolio_rule_version_id
+FROM strategy_training.training_portfolio_evaluation_context(
+    :'portfolio_claimed_task_id', :'portfolio_lease_token'
+) \gset
+
+SELECT set_config(
+    'test.evaluated_portfolio_rule_version_id',
+    :'evaluated_portfolio_rule_version_id', true
+);
+SELECT set_config(
+    'test.portfolio_task_id', :'portfolio_claimed_task_id', true
+);
+
+DO $$
+BEGIN
+    IF current_setting('test.evaluated_portfolio_rule_version_id')::uuid
+       <> 'd2000000-0000-0000-0000-000000000012'::uuid THEN
+        RAISE EXCEPTION 'portfolio evaluator did not receive frozen rules';
+    END IF;
+    BEGIN
+        PERFORM * FROM strategy_training.training_portfolio_evaluation_context(
+            current_setting('test.portfolio_task_id')::uuid,
+            '00000000-0000-0000-0000-000000000001'
+        );
+        RAISE EXCEPTION 'portfolio evaluation accepted a forged lease token';
+    EXCEPTION WHEN serialization_failure THEN
+        NULL;
+    END;
+END
+$$;
 
 SELECT strategy_training.record_training_exit_outcome(
     :'created_exit_episode_id', '2026-06-10 01:15:00+00', 109.99,

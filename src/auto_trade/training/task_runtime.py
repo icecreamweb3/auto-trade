@@ -12,6 +12,9 @@ from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
 from auto_trade.training.orchestrator import TaskLease, TaskState
+from auto_trade.training.portfolio_evaluation_task_handler import (
+    PortfolioEvaluationError,
+)
 from auto_trade.training.task_handlers import TaskHandlerError
 
 LOGGER = logging.getLogger(__name__)
@@ -60,6 +63,8 @@ def failure_code(error: BaseException) -> str:
         return "MODEL_A_EVALUATION_REJECTED"
     if isinstance(error, ModelBReplayError):
         return "MODEL_B_REPLAY_REJECTED"
+    if isinstance(error, PortfolioEvaluationError):
+        return "PORTFOLIO_EVALUATION_REJECTED"
     return "HANDLER_FAILED"
 
 

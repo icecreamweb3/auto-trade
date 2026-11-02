@@ -10,6 +10,9 @@ from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
+from auto_trade.training.portfolio_evaluation_task_handler import (
+    PortfolioEvaluationError,
+)
 from auto_trade.training.task_handlers import TaskHandlerError
 from auto_trade.training.task_runtime import TaskExecutor, failure_code
 
@@ -133,6 +136,10 @@ def test_failure_codes_do_not_include_exception_text() -> None:
     assert (
         failure_code(ModelBReplayError("future outcome detail"))
         == "MODEL_B_REPLAY_REJECTED"
+    )
+    assert (
+        failure_code(PortfolioEvaluationError("stored decision detail"))
+        == "PORTFOLIO_EVALUATION_REJECTED"
     )
 
 
