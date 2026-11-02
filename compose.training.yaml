@@ -94,4 +94,6 @@ services:
 
 networks:
   backend:
-    name: auto-trade-local_backend
+    # Reuse the network declared by compose.yaml; do not create/remove a
+    # second network while runtime services are still attached.
+    name: auto-trade-backend
