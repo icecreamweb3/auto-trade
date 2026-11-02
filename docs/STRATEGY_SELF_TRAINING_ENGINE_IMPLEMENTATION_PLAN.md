@@ -52,7 +52,7 @@
 
 验收：普通/通用角色无弱留出及 TEST `USAGE`；越界分区、非法转换、READY 修改均在数据库层失败；迁移可在空库完整应用并可重复跳过。
 
-当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；尚未对实际部署数据库执行。A0 仍不能标记为完成，直到 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置在目标环境验收。
+当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；已在测试环境验证角色、schema 权限和连接身份。新增 `compose.training.yaml` 与 `auto_trade.training.runtime` 仅做 fail-closed 身份/连接 smoke check，不领取任务；真正的领域 task handler 完成前不得作为正式训练服务运行。A0 仍不能标记为完成，直到 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置在目标环境验收。
 
 ### M2：A0 数据集构建与审计
 

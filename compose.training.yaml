@@ -1,0 +1,97 @@
+name: auto-trade-local
+
+# Identity-only training profile. It verifies the real service entrypoint and
+# database account without claiming tasks. Domain task handlers are enabled in
+# a later slice; this profile must not be treated as a training run.
+services:
+  training-worker:
+    profiles: ["training"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-worker
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_rw_app
+      POSTGRES_PASSWORD: ${TRAINING_RW_PASSWORD:?TRAINING_RW_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-worker
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "worker", "--expected-user", "tb2_training_rw_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-orchestrator:
+    profiles: ["training"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-orchestrator
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_orchestrator_app
+      POSTGRES_PASSWORD: ${TRAINING_ORCHESTRATOR_PASSWORD:?TRAINING_ORCHESTRATOR_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-orchestrator
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "orchestrator", "--expected-user", "tb2_training_orchestrator_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-optimizer:
+    profiles: ["training"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-optimizer
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_optimizer_app
+      POSTGRES_PASSWORD: ${TRAINING_OPTIMIZER_PASSWORD:?TRAINING_OPTIMIZER_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-optimizer
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "optimizer", "--expected-user", "tb2_training_optimizer_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-evaluator:
+    profiles: ["training"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-evaluator
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_evaluator_app
+      POSTGRES_PASSWORD: ${TRAINING_EVALUATOR_PASSWORD:?TRAINING_EVALUATOR_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-evaluator
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "evaluator", "--expected-user", "tb2_training_evaluator_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+networks:
+  backend:
+    name: auto-trade-local_backend
