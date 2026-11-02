@@ -34,6 +34,7 @@ from auto_trade.monitoring.nats_probe import NatsProbe
 from auto_trade.monitoring.repository import MonitoringRepository
 from auto_trade.monitoring.service import MonitoringService
 from auto_trade.paper_trading.router import router as paper_trader_router
+from auto_trade.training.workspace import router as training_workspace_router
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ app.include_router(accounts_router)
 app.include_router(backtest_router)
 app.include_router(paper_trader_router)
 app.include_router(messages_router)
+app.include_router(training_workspace_router)
 
 
 @app.get("/health/live")

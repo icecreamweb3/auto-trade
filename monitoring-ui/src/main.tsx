@@ -4747,7 +4747,50 @@ function MessageManagementWorkspace() {
   </main>;
 }
 
-type WorkspaceView = "rankings" | "backtest" | "messages" | "paper" | "monitoring" | "account" | "admin";
+type WorkspaceView = "rankings" | "backtest" | "messages" | "paper" | "monitoring" | "account" | "admin" | "training";
+
+interface TrainingWorkspacePayload {
+  generated_at: string;
+  mode: string;
+  counts: Record<string, number>;
+  experiments: Array<{ experiment_id: string; experiment_type: string; status: string; created_at: string }>;
+  failures: Array<{ iteration_id: string; status: string; failure_code: string | null; ended_at: string | null }>;
+  test_metrics_available: boolean;
+}
+
+function TrainingWorkspace() {
+  const [payload, setPayload] = useState<TrainingWorkspacePayload | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/training/workspace", { cache: "no-store" });
+      const body = await response.json() as TrainingWorkspacePayload | { detail?: string };
+      if (!response.ok) throw new Error((body as { detail?: string }).detail ?? "训练工作区读取失败");
+      setPayload(body as TrainingWorkspacePayload);
+      setError(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "训练工作区读取失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void refresh(); }, []);
+  return <main className="monitoring-page">
+    <header className="topbar"><div><p className="brand-mark">TRAINING WORKSPACE</p><h1>策略训练工作区</h1><p className="subtitle">实验、版本、预算、失败和审计状态；TEST 指标永不在此展示</p></div><button type="button" onClick={() => void refresh()} disabled={loading}>{loading ? "刷新中…" : "刷新"}</button></header>
+    {error && <div className="alert alert-critical">{error}</div>}
+    {payload && <>
+      <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">SUMMARY</p><h2>训练状态</h2></div><span>{payload.mode}</span></div><div className="stats-grid">
+        {[["datasets", "数据集"], ["experiments", "实验"], ["active_tasks", "运行任务"], ["validation_reserved", "验证预算"], ["failures", "失败迭代"]].map(([key, label]) => <div className="stat-card" key={key}><span>{label}</span><strong>{key === "failures" ? payload.failures.length : payload.counts[key] ?? 0}</strong></div>)}
+      </div></section>
+      <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">EXPERIMENTS</p><h2>实验与失败</h2></div><span>{payload.experiments.length}</span></div>{payload.experiments.length === 0 ? <div className="message-empty">暂无实验</div> : <div className="message-list">{payload.experiments.map((experiment) => <div className="message-row" key={experiment.experiment_id}><strong>{experiment.experiment_type}</strong><span>{experiment.status}</span><small>{experiment.experiment_id.slice(0, 8)}</small></div>)}</div>}{payload.failures.length > 0 && <div className="alert alert-critical" style={{ marginTop: 16 }}>存在 {payload.failures.length} 个失败或取消迭代，请查看审计记录。</div>}</section>
+      <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">ISOLATION</p><h2>隔离状态</h2></div></div><p>TEST 指标：{payload.test_metrics_available ? "可见" : "不可见"}。本工作区只显示后端汇总状态，不提供自由 SQL 或 TEST 结果。</p></section>
+    </>}
+  </main>;
+}
 
 function App() {
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -4795,11 +4838,12 @@ function App() {
         <button className={view === "paper" ? "active" : ""} onClick={() => setView("paper")}>交易模拟器</button>
         <button className={view === "account" ? "active" : ""} onClick={() => setView("account")}>收益分析</button>
         {user.role !== "NORMAL" && <button className={view === "monitoring" ? "active" : ""} onClick={() => setView("monitoring")}>采集监控</button>}
+        {user.role !== "NORMAL" && <button className={view === "training" ? "active" : ""} onClick={() => setView("training")}>训练工作区</button>}
         {user.role === "ADMIN" && <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>用户管理</button>}
       </nav>
       <div className="workspace-user"><button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}><span>{user.email}</span><strong>{formatNumber(user.account.balance, 2)} USDT</strong></button><button type="button" onClick={() => void logout()}>退出</button></div>
     </div>
-    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "messages" ? <MessageManagementWorkspace /> : view === "paper" ? <PaperTraderWorkspace onBalanceChange={updateBalance} /> : view === "account" ? <AccountWorkspace user={user} onAccountChange={updateAccount} /> : view === "admin" ? <UserManagementWorkspace /> : <MonitoringDashboard />}
+    {view === "rankings" ? <RankingExplorer /> : view === "backtest" ? <BacktestWorkspace /> : view === "messages" ? <MessageManagementWorkspace /> : view === "paper" ? <PaperTraderWorkspace onBalanceChange={updateBalance} /> : view === "account" ? <AccountWorkspace user={user} onAccountChange={updateAccount} /> : view === "admin" ? <UserManagementWorkspace /> : view === "training" ? <TrainingWorkspace /> : <MonitoringDashboard />}
   </>;
 }
 

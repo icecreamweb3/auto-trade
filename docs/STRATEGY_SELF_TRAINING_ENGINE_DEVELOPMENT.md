@@ -1,8 +1,9 @@
 # 策略自训练引擎开发文档
 
-**版本：** 0.1  
-**依据：** `STRATEGY_SELF_TRAINING_ENGINE.md`（Draft 0.2，最近修订 2026-10-31）  
-**依据内容哈希：** `sha256=699bc01ff0d47f9c44c65e72ce24bdd0743d605c57da23264eed41259b4f2d0e`（文档更新后须重新计算）  
+**版本：** 0.2
+**依据：** `STRATEGY_SELF_TRAINING_ENGINE.md`（Draft 0.2，最近修订 2026-10-31）
+**依据内容哈希：** `sha256=699bc01ff0d47f9c44c65e72ce24bdd0743d605c57da23264eed41259b4f2d0e`（文档更新后须重新计算）
+**本开发文档最近修订：** 2026-11-02
 **文档状态：** 开发设计；结构已确认，具体数值以配置版本和待确认问题为准  
 **范围：** 模型 A 机会发现、模型 B 退出训练、组合仿真、实验治理、隔离验证/测试和审计；不自动发布实盘
 
@@ -225,7 +226,7 @@ FIXED_BASELINE_MODEL_A（B 阶段原型）
 
 ### 4.8 索引、分区与迁移顺序
 
-首版迁移不得修改 `market`、`trade` 业务表的语义；只创建训练 schema、角色、受控过程和必要的只读引用。当前仓库最新迁移为 `018_telegram_channel_messages.sql`，本功能迁移从 `019_` 起按顺序分配；提交前必须扫描迁移目录确认没有并行占用，并在迁移说明中记录编号。按以下顺序执行：
+首版迁移不得修改 `market`、`trade` 业务表的语义；只创建训练 schema、角色、受控过程和必要的只读引用。业务基线迁移截至 `018_telegram_channel_messages.sql`；训练实现已占用 `019_`–`036_`，后续训练迁移从 `037_` 起按顺序分配。提交前必须扫描迁移目录确认没有并行占用，并在迁移说明中记录编号。按以下顺序执行：
 
 1. schema、枚举/状态、角色和审计基础表；
 2. 配置、数据集、成员清单和质量报告；
@@ -261,6 +262,10 @@ training/
 ├── simulator/                # 固定退出、模型 B、组合仿真
 ├── scoring.py                # 分项评分、硬门槛、bootstrap
 ├── cross_fit.py              # 折结构、purge、embargo、逐折重搜
+├── validation_scope.py       # VALIDATION 共享预算原子占用
+├── weak_holdout.py           # DECLARED 弱留出不可晋级契约
+├── promotion.py              # TEST 证明哈希与 SHADOW_ONLY 晋级契约
+├── workspace.py              # 训练工作区与 OPERATIONAL_ONLY 后端视图
 ├── optimizer.py              # TPE/随机搜索适配器
 ├── orchestrator.py           # 状态机、预算、早停、晋级
 ├── llm_advisor.py            # 白名单摘要、结构化输出、审计

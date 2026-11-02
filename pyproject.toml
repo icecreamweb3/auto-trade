@@ -25,6 +25,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+training-export = [
+  "pyarrow>=18",
+]
+training-optimizer = [
+  "optuna>=4,<5",
+]
 dev = [
   "mypy>=1.14,<2",
   "pytest>=8.3,<10",
