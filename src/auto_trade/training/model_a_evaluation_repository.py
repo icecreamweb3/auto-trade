@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import cast
@@ -10,12 +11,33 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from auto_trade.training.contracts import Direction, Partition, PartitionKind
 from auto_trade.training.model_a_pipeline import (
     BaselineStratum,
     EntryOutcome,
     OutcomeBar,
     RandomBaselineSelection,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class EntryEvaluationContext:
+    entry_event_id: str
+    partition: Partition
+    entry_time: datetime
+    entry_price: Decimal
+    direction: Direction
+    label_window_end_at: datetime
+    interval_seconds: int
+    holding_rule_version_id: UUID
+    opportunity_definition_version_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingEntryEvidence:
+    path_fingerprint: str
+    is_complete: bool
+    opportunity_recorded: bool
 
 
 def _json_text(value: object) -> str:
@@ -34,6 +56,72 @@ class DatabaseModelAEvaluationStore:
 
     def __init__(self, connection: AsyncConnection) -> None:
         self._connection = connection
+
+    async def load_context(
+        self, task_id: UUID, lease_token: UUID, entry_event_id: str
+    ) -> EntryEvaluationContext:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT partition, partition_start_at, partition_end_at,
+                       entry_time, entry_price, direction,
+                       label_window_end_at, interval_seconds,
+                       holding_rule_version_id,
+                       opportunity_definition_version_id
+                FROM strategy_training.training_model_a_evaluation_context(
+                    :task_id, :lease_token, :entry_event_id
+                )
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "entry_event_id": entry_event_id,
+            },
+        )
+        row = result.mappings().one()
+        return EntryEvaluationContext(
+            entry_event_id=entry_event_id,
+            partition=Partition(
+                PartitionKind(str(row["partition"])),
+                cast(datetime, row["partition_start_at"]),
+                cast(datetime, row["partition_end_at"]),
+            ),
+            entry_time=cast(datetime, row["entry_time"]),
+            entry_price=Decimal(str(row["entry_price"])),
+            direction=Direction(str(row["direction"])),
+            label_window_end_at=cast(datetime, row["label_window_end_at"]),
+            interval_seconds=int(row["interval_seconds"]),
+            holding_rule_version_id=cast(UUID, row["holding_rule_version_id"]),
+            opportunity_definition_version_id=cast(
+                UUID, row["opportunity_definition_version_id"]
+            ),
+        )
+
+    async def load_existing_evidence(
+        self, entry_event_id: str
+    ) -> ExistingEntryEvidence | None:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT outcome.path_fingerprint, outcome.is_complete,
+                       opportunity.entry_event_id IS NOT NULL AS opportunity_recorded
+                FROM strategy_training.training_entry_outcomes outcome
+                LEFT JOIN strategy_training.training_opportunity_events opportunity
+                  ON opportunity.entry_event_id = outcome.entry_event_id
+                WHERE outcome.entry_event_id = :entry_event_id
+                """
+            ),
+            {"entry_event_id": entry_event_id},
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        return ExistingEntryEvidence(
+            str(row["path_fingerprint"]),
+            bool(row["is_complete"]),
+            bool(row["opportunity_recorded"]),
+        )
 
     async def load_outcome_bars(self, entry_event_id: str) -> tuple[OutcomeBar, ...]:
         result = await self._connection.execute(

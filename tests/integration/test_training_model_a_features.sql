@@ -380,7 +380,51 @@ BEGIN
 END
 $$;
 
+INSERT INTO strategy_training.training_tasks (
+    task_id, experiment_id, iteration_id, task_type, executor_kind,
+    idempotency_key, task_payload, state, attempt_count,
+    lease_token, leased_by, lease_expires_at, started_at
+) VALUES (
+    'd9000000-0000-0000-0000-000000000001',
+    'd4000000-0000-0000-0000-000000000001',
+    'd5000000-0000-0000-0000-000000000001',
+    'MODEL_A_EVALUATION', 'EVALUATOR', repeat('d', 64),
+    jsonb_build_object(
+        'task_type', 'MODEL_A_EVALUATION',
+        'payload_version', 1,
+        'entry_event_ids', jsonb_build_array(:'entry_event_id')
+    ),
+    'RUNNING', 1, 'd9000000-0000-0000-0000-000000000002',
+    'model-a-evaluator-fixture', clock_timestamp() + interval '5 minutes',
+    clock_timestamp()
+);
+
 SET LOCAL ROLE tb2_training_evaluator;
+
+DO $$
+DECLARE
+    context_count integer;
+BEGIN
+    SELECT count(*) INTO context_count
+    FROM strategy_training.training_model_a_evaluation_context(
+        'd9000000-0000-0000-0000-000000000001',
+        'd9000000-0000-0000-0000-000000000002',
+        'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
+    );
+    IF context_count <> 1 THEN
+        RAISE EXCEPTION 'leased MODEL_A evaluation context was not returned';
+    END IF;
+    BEGIN
+        PERFORM strategy_training.training_model_a_evaluation_context(
+            'd9000000-0000-0000-0000-000000000001',
+            'd9000000-0000-0000-0000-000000000099',
+            'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
+        );
+        RAISE EXCEPTION 'forged evaluator lease was accepted';
+    EXCEPTION WHEN serialization_failure THEN NULL;
+    END;
+END
+$$;
 
 DO $$
 DECLARE

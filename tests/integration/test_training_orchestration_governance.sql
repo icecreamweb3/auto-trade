@@ -147,16 +147,48 @@ SELECT strategy_training.transition_training_iteration(
 
 SELECT strategy_training.enqueue_training_task(
     :'experiment_id', :'iteration_id', NULL, NULL, 'OPTIMIZER_TRIAL', 'OPTIMIZER',
-    repeat('b', 64), '{"trial_number":1}', 10
+    repeat('b', 64), '{"task_type":"OPTIMIZER_TRIAL","payload_version":1,"trial_number":1}', 10
 ) AS task_id \gset
 SELECT strategy_training.enqueue_training_task(
     :'experiment_id', :'iteration_id', NULL, NULL, 'OPTIMIZER_TRIAL', 'OPTIMIZER',
-    repeat('b', 64), '{"trial_number":1}', 10
+    repeat('b', 64), '{"task_type":"OPTIMIZER_TRIAL","payload_version":1,"trial_number":1}', 10
 ) AS same_task_id \gset
 SELECT strategy_training.enqueue_training_task(
-    :'experiment_id', :'iteration_id', NULL, NULL, 'MODEL_A_EVALUATION', 'WORKER',
-    repeat('0', 64), '{"candidate":1}', 20
+    :'experiment_id', :'iteration_id', NULL, NULL, 'DATASET_BUILD', 'WORKER',
+    repeat('0', 64), '{"task_type":"DATASET_BUILD","payload_version":1,"dataset":"fixture"}', 20
 ) AS cancelled_task_id \gset
+
+RESET ROLE;
+DO $$
+BEGIN
+    BEGIN
+        UPDATE strategy_training.training_tasks
+        SET task_payload = jsonb_set(task_payload, '{task_type}', '"DATASET_BUILD"')
+        WHERE idempotency_key = repeat('b', 64);
+        RAISE EXCEPTION 'mismatched task payload type was accepted';
+    EXCEPTION WHEN check_violation THEN
+        NULL;
+    END;
+    BEGIN
+        UPDATE strategy_training.training_tasks
+        SET task_payload = jsonb_set(task_payload, '{payload_version}', '0')
+        WHERE idempotency_key = repeat('b', 64);
+        RAISE EXCEPTION 'non-positive task payload version was accepted';
+    EXCEPTION WHEN check_violation THEN
+        NULL;
+    END;
+    BEGIN
+        UPDATE strategy_training.training_tasks
+        SET executor_kind = 'WORKER'
+        WHERE idempotency_key = repeat('b', 64);
+        RAISE EXCEPTION 'task type was assigned to the wrong executor';
+    EXCEPTION WHEN check_violation THEN
+        NULL;
+    END;
+END
+$$;
+SET LOCAL ROLE tb2_training_orchestrator;
+
 SELECT strategy_training.request_training_task_cancellation(
     :'cancelled_task_id', 'operator cancelled queued task'
 );
