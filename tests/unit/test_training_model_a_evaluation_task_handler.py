@@ -11,12 +11,18 @@ from auto_trade.training.contracts import Direction, Partition, PartitionKind
 from auto_trade.training.model_a_evaluation_repository import (
     EntryEvaluationContext,
     ExistingEntryEvidence,
+    RandomBaselineEvaluationContext,
 )
 from auto_trade.training.model_a_evaluation_task_handler import (
     ModelAEvaluationTaskHandler,
     parse_model_a_evaluation_payload,
 )
-from auto_trade.training.model_a_pipeline import ModelAPipelineError, OutcomeBar
+from auto_trade.training.model_a_pipeline import (
+    BaselineCandidate,
+    BaselineStratum,
+    ModelAPipelineError,
+    OutcomeBar,
+)
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
 
 ENTRY_ID = "a" * 64
@@ -57,6 +63,20 @@ def context() -> EntryEvaluationContext:
     )
 
 
+def baseline_context() -> RandomBaselineEvaluationContext:
+    target = BaselineStratum(1, "pool-v1", "UTC-01", "VOL-2", "LIQ-3", "BTC-UP")
+    return RandomBaselineEvaluationContext(
+        uuid4(), 1, 1, 0, 42, target, ()
+    )
+
+
+def baseline_candidates() -> tuple[BaselineCandidate, ...]:
+    baseline = baseline_context()
+    return (
+        BaselineCandidate("candidate-1", context().entry_time, baseline.target),
+    )
+
+
 def test_payload_requires_sorted_unique_sha256_ids() -> None:
     assert parse_model_a_evaluation_payload(payload()).entry_event_ids == (ENTRY_ID,)
     with pytest.raises(ModelAPipelineError, match="unique and sorted"):
@@ -89,6 +109,9 @@ async def test_fresh_complete_outcome_records_label_and_opportunity(monkeypatch)
     )
     store.record_outcome = AsyncMock()
     store.record_opportunity = AsyncMock()
+    store.load_random_baseline_context = AsyncMock(return_value=baseline_context())
+    store.load_random_baseline_candidates = AsyncMock(return_value=baseline_candidates())
+    store.record_random_baseline = AsyncMock()
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
@@ -100,6 +123,7 @@ async def test_fresh_complete_outcome_records_label_and_opportunity(monkeypatch)
     store.load_context.assert_awaited_once()
     store.record_outcome.assert_awaited_once()
     store.record_opportunity.assert_awaited_once()
+    store.record_random_baseline.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -107,11 +131,14 @@ async def test_retry_reuses_existing_evidence_without_rewriting(monkeypatch) -> 
     store = MagicMock()
     store.load_context = AsyncMock(return_value=context())
     store.load_existing_evidence = AsyncMock(
-        return_value=ExistingEntryEvidence("c" * 64, True, True)
+        return_value=ExistingEntryEvidence("c" * 64, True, True, True)
     )
     store.load_outcome_bars = AsyncMock()
     store.record_outcome = AsyncMock()
     store.record_opportunity = AsyncMock()
+    store.load_random_baseline_context = AsyncMock()
+    store.load_random_baseline_candidates = AsyncMock()
+    store.record_random_baseline = AsyncMock()
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
@@ -123,6 +150,7 @@ async def test_retry_reuses_existing_evidence_without_rewriting(monkeypatch) -> 
     store.load_outcome_bars.assert_not_awaited()
     store.record_outcome.assert_not_awaited()
     store.record_opportunity.assert_not_awaited()
+    store.record_random_baseline.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -133,6 +161,9 @@ async def test_incomplete_outcome_never_creates_opportunity_truth(monkeypatch) -
     store.load_outcome_bars = AsyncMock(return_value=())
     store.record_outcome = AsyncMock()
     store.record_opportunity = AsyncMock()
+    store.load_random_baseline_context = AsyncMock()
+    store.load_random_baseline_candidates = AsyncMock()
+    store.record_random_baseline = AsyncMock()
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
@@ -142,6 +173,7 @@ async def test_incomplete_outcome_never_creates_opportunity_truth(monkeypatch) -
 
     store.record_outcome.assert_awaited_once()
     store.record_opportunity.assert_not_awaited()
+    store.record_random_baseline.assert_not_awaited()
 
 
 @pytest.mark.asyncio

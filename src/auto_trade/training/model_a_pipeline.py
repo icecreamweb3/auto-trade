@@ -450,15 +450,13 @@ def select_matched_random_baseline(
     if len(eligible) < minimum_frame_size:
         raise ModelAPipelineError("matched random baseline frame is below configured minimum")
     ordered_frame = tuple(sorted(eligible, key=lambda candidate: candidate.candidate_id))
-    frame_hash = _sha256(
-        [
-            {
-                "candidate_id": candidate.candidate_id,
-                "observed_at": candidate.observed_at.isoformat(),
-            }
+    frame_hash = hashlib.sha256(
+        "\n".join(
+            f"{candidate.candidate_id}|"
+            f"{candidate.observed_at.strftime('%Y-%m-%dT%H:%M:%S.%fZ')}"
             for candidate in ordered_frame
-        ]
-    )
+        ).encode()
+    ).hexdigest()
     ranked = sorted(
         ordered_frame,
         key=lambda candidate: (

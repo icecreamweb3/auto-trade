@@ -81,7 +81,7 @@ FROM (VALUES
      '{"minimum_mfe_percent":5,"maximum_mae_percent":2,"minimum_return_percent":3}'::jsonb),
     ('d2000000-0000-0000-0000-000000000008'::uuid,
      'RANDOM_BASELINE'::varchar, '26.0.8'::varchar,
-     '{"sample_count":2,"minimum_frame_size":3,"exclusion_window_seconds":300,"matching_fields":["instrument_id","pool_identity","time_bucket","volatility_bucket","liquidity_bucket","btc_regime"]}'::jsonb),
+     '{"sample_count":2,"minimum_frame_size":3,"exclusion_window_seconds":300,"random_seed":42,"matching_fields":["instrument_id","pool_identity","time_bucket","volatility_bucket","liquidity_bucket","btc_regime"]}'::jsonb),
     ('d2000000-0000-0000-0000-000000000009'::uuid,
      'EXIT_RULES'::varchar, '26.0.9'::varchar,
      '{"stop_loss_percent":2,"take_profit_percent":3,"trailing_activation_percent":0,"trailing_distance_percent":0,"max_holding_seconds":600,"intrabar_conflict_policy":"WORST_CASE"}'::jsonb),
@@ -426,6 +426,137 @@ BEGIN
 END
 $$;
 
+RESET ROLE;
+
+DO $$
+BEGIN
+    IF has_table_privilege(
+        'tb2_training_rw',
+        'strategy_training.training_random_baseline_candidates',
+        'INSERT'
+    ) OR NOT has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.record_training_random_baseline_candidate(character,uuid,uuid,bigint,timestamptz,text,uuid,uuid,numeric,numeric,text,text,text,timestamptz,timestamptz,timestamptz,jsonb)',
+        'EXECUTE'
+    ) OR has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.training_random_baseline_candidate_frame(uuid,uuid,character)',
+        'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION 'random-baseline candidate frame privilege matrix is incorrect';
+    END IF;
+END
+$$;
+
+SET LOCAL ROLE tb2_training_rw;
+
+SELECT strategy_training.record_training_random_baseline_signal_stratum(
+    :'entry_event_id', 'd2000000-0000-0000-0000-000000000008',
+    'VOL-2', 'LIQ-3', 'BTC-UP',
+    '2026-06-09 01:00:00+00', '2026-06-09 01:00:00+00',
+    '2026-06-09 01:00:00+00',
+    '{"source":"pre-signal-strata","version":1}'::jsonb
+);
+
+DO $$
+DECLARE
+    candidate_time timestamptz;
+    candidate_id char(64);
+BEGIN
+    FOREACH candidate_time IN ARRAY ARRAY[
+        '2026-06-10 01:05:00+00'::timestamptz,
+        '2026-06-10 01:15:00+00'::timestamptz,
+        '2026-06-10 01:20:00+00'::timestamptz,
+        '2026-06-10 01:25:00+00'::timestamptz,
+        '2026-06-10 01:30:00+00'::timestamptz
+    ] LOOP
+        candidate_id := strategy_training.compute_training_random_baseline_candidate_id(
+            'd3000000-0000-0000-0000-000000000001',
+            'd5000000-0000-0000-0000-000000000001',
+            2600001, candidate_time, 'LONG'
+        );
+        PERFORM strategy_training.record_training_random_baseline_candidate(
+            candidate_id,
+            'd3000000-0000-0000-0000-000000000001',
+            'd5000000-0000-0000-0000-000000000001',
+            2600001, candidate_time, 'LONG',
+            'd6000000-0000-0000-0000-000000000001',
+            'd2000000-0000-0000-0000-000000000008',
+            60, 75, 'VOL-2', 'LIQ-3', 'BTC-UP',
+            candidate_time - interval '1 hour',
+            candidate_time - interval '1 hour',
+            candidate_time - interval '1 hour',
+            jsonb_build_object(
+                'candidate_triggered', true,
+                'observed_at', candidate_time,
+                'source', 'low-cost-scan-v1'
+            )
+        );
+    END LOOP;
+
+    BEGIN
+        PERFORM strategy_training.record_training_random_baseline_candidate(
+            repeat('0', 64),
+            'd3000000-0000-0000-0000-000000000001',
+            'd5000000-0000-0000-0000-000000000001',
+            2600001, '2026-06-10 01:35:00+00', 'LONG',
+            'd6000000-0000-0000-0000-000000000001',
+            'd2000000-0000-0000-0000-000000000008',
+            60, 75, 'VOL-2', 'LIQ-3', 'BTC-UP',
+            '2026-06-10 00:35:00+00', '2026-06-10 00:35:00+00',
+            '2026-06-10 00:35:00+00',
+            '{"candidate_triggered":true,"source":"forged-id"}'::jsonb
+        );
+        RAISE EXCEPTION 'forged random-baseline candidate identity was accepted';
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+END
+$$;
+
+RESET ROLE;
+SET LOCAL ROLE tb2_training_evaluator;
+
+DO $$
+DECLARE
+    context_record record;
+    frame_count integer;
+BEGIN
+    SELECT * INTO STRICT context_record
+    FROM strategy_training.training_random_baseline_evaluation_context(
+        'd9000000-0000-0000-0000-000000000001',
+        'd9000000-0000-0000-0000-000000000002',
+        'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
+    );
+    IF context_record.sample_count <> 2
+       OR context_record.minimum_frame_size <> 3
+       OR context_record.random_seed <> 42
+       OR cardinality(context_record.signal_times) <> 1
+       OR context_record.pool_identity <> 'd2000000-0000-0000-0000-000000000001'
+       OR context_record.time_bucket <> 'UTC-01' THEN
+        RAISE EXCEPTION 'leased random-baseline context is incomplete';
+    END IF;
+    SELECT count(*) INTO frame_count
+    FROM strategy_training.training_random_baseline_candidate_frame(
+        'd9000000-0000-0000-0000-000000000001',
+        'd9000000-0000-0000-0000-000000000002',
+        'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
+    );
+    IF frame_count <> 5 THEN
+        RAISE EXCEPTION 'trusted random-baseline frame expected 5 candidates, received %',
+            frame_count;
+    END IF;
+    BEGIN
+        PERFORM strategy_training.training_random_baseline_candidate_frame(
+            'd9000000-0000-0000-0000-000000000001',
+            'd9000000-0000-0000-0000-000000000099',
+            'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
+        );
+        RAISE EXCEPTION 'forged lease read a random-baseline frame';
+    EXCEPTION WHEN serialization_failure THEN NULL;
+    END;
+END
+$$;
+
 DO $$
 DECLARE
     fixture_entry_id char(64);
@@ -464,26 +595,67 @@ SELECT strategy_training.record_training_opportunity_event(
 DO $$
 DECLARE
     fixture_entry_id char(64);
+    selected_ids jsonb;
+    frame_size integer;
+    overlap_count integer;
+    frame_hash char(64);
 BEGIN
     SELECT entry_event_id INTO STRICT fixture_entry_id
     FROM strategy_training.training_entry_events WHERE symbol = 'MODELUSDT';
     BEGIN
         PERFORM strategy_training.record_training_random_baseline(
             fixture_entry_id, 'd2000000-0000-0000-0000-000000000008',
-            '{"instrument_id":2600001,"pool_identity":"pool-v1","time_bucket":"UTC-01","volatility_bucket":"VOL-2","liquidity_bucket":"LIQ-3","btc_regime":"BTC-UP"}',
-            '["candidate-a","candidate-b"]', 4, 0.9, 42, repeat('a', 64), 1
+            '{"instrument_id":2600001,"pool_identity":"d2000000-0000-0000-0000-000000000001","time_bucket":"UTC-01","volatility_bucket":"VOL-2","liquidity_bucket":"LIQ-3","btc_regime":"BTC-UP"}',
+            '["candidate-a","candidate-b"]', 4, 0.5, 42, repeat('a', 64), 1
         );
-        RAISE EXCEPTION 'forged baseline probability was accepted';
+        RAISE EXCEPTION 'forged baseline candidate IDs were accepted';
     EXCEPTION WHEN check_violation THEN NULL;
     END;
+
+    WITH eligible AS (
+        SELECT candidate.*
+        FROM strategy_training.training_random_baseline_candidates candidate
+        WHERE candidate.generating_iteration_id =
+              'd5000000-0000-0000-0000-000000000001'
+          AND candidate.instrument_id = 2600001
+          AND NOT EXISTS (
+              SELECT 1 FROM strategy_training.training_entry_events signal
+              WHERE signal.generating_iteration_id = candidate.generating_iteration_id
+                AND signal.instrument_id = candidate.instrument_id
+                AND signal.status = 'COMPLETE'
+                AND abs(extract(epoch FROM (
+                    candidate.observed_at - signal.signal_time
+                ))) <= 300
+          )
+    ), ranked AS (
+        SELECT eligible.*,
+               encode(digest(format('%s:%s:%s', 42, fixture_entry_id, candidate_id),
+                             'sha256'), 'hex') AS sampling_rank
+        FROM eligible
+    )
+    SELECT count(*),
+           5 - count(*),
+           encode(digest(string_agg(
+               candidate_id::text || '|' ||
+               to_char(observed_at AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+               E'\n' ORDER BY candidate_id
+           ), 'sha256'), 'hex'),
+           (SELECT jsonb_agg(to_jsonb(candidate_id::text)
+                             ORDER BY sampling_rank, candidate_id)
+            FROM (SELECT * FROM ranked
+                  ORDER BY sampling_rank, candidate_id LIMIT 2) selected)
+    INTO frame_size, overlap_count, frame_hash, selected_ids
+    FROM eligible;
+
+    PERFORM strategy_training.record_training_random_baseline(
+        fixture_entry_id, 'd2000000-0000-0000-0000-000000000008',
+        '{"instrument_id":2600001,"pool_identity":"d2000000-0000-0000-0000-000000000001","time_bucket":"UTC-01","volatility_bucket":"VOL-2","liquidity_bucket":"LIQ-3","btc_regime":"BTC-UP"}',
+        selected_ids, frame_size, 2::numeric / frame_size,
+        42, frame_hash, overlap_count
+    );
 END
 $$;
-
-SELECT strategy_training.record_training_random_baseline(
-    :'entry_event_id', 'd2000000-0000-0000-0000-000000000008',
-    '{"instrument_id":2600001,"pool_identity":"pool-v1","time_bucket":"UTC-01","volatility_bucket":"VOL-2","liquidity_bucket":"LIQ-3","btc_regime":"BTC-UP"}',
-    '["candidate-a","candidate-b"]', 4, 0.5, 42, repeat('a', 64), 1
-);
 
 RESET ROLE;
 

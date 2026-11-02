@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from auto_trade.training.contracts import Direction, Partition, PartitionKind
 from auto_trade.training.model_a_pipeline import (
+    BaselineCandidate,
     BaselineStratum,
     EntryOutcome,
     OutcomeBar,
@@ -38,6 +39,18 @@ class ExistingEntryEvidence:
     path_fingerprint: str
     is_complete: bool
     opportunity_recorded: bool
+    random_baseline_recorded: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RandomBaselineEvaluationContext:
+    config_version_id: UUID
+    sample_count: int
+    minimum_frame_size: int
+    exclusion_window_seconds: int
+    random_seed: int
+    target: BaselineStratum
+    signal_times: tuple[datetime, ...]
 
 
 def _json_text(value: object) -> str:
@@ -105,10 +118,13 @@ class DatabaseModelAEvaluationStore:
             text(
                 """
                 SELECT outcome.path_fingerprint, outcome.is_complete,
-                       opportunity.entry_event_id IS NOT NULL AS opportunity_recorded
+                       opportunity.entry_event_id IS NOT NULL AS opportunity_recorded,
+                       baseline.random_baseline_id IS NOT NULL AS random_baseline_recorded
                 FROM strategy_training.training_entry_outcomes outcome
                 LEFT JOIN strategy_training.training_opportunity_events opportunity
                   ON opportunity.entry_event_id = outcome.entry_event_id
+                LEFT JOIN strategy_training.training_random_entry_baselines baseline
+                  ON baseline.matched_entry_event_id = outcome.entry_event_id
                 WHERE outcome.entry_event_id = :entry_event_id
                 """
             ),
@@ -121,6 +137,86 @@ class DatabaseModelAEvaluationStore:
             str(row["path_fingerprint"]),
             bool(row["is_complete"]),
             bool(row["opportunity_recorded"]),
+            bool(row["random_baseline_recorded"]),
+        )
+
+    async def load_random_baseline_context(
+        self, task_id: UUID, lease_token: UUID, entry_event_id: str
+    ) -> RandomBaselineEvaluationContext:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT random_baseline_config_version_id,
+                       sample_count, minimum_frame_size,
+                       exclusion_window_seconds, random_seed,
+                       instrument_id, pool_identity, time_bucket,
+                       volatility_bucket, liquidity_bucket, btc_regime,
+                       signal_times
+                FROM strategy_training.training_random_baseline_evaluation_context(
+                    :task_id, :lease_token, :entry_event_id
+                )
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "entry_event_id": entry_event_id,
+            },
+        )
+        row = result.mappings().one()
+        return RandomBaselineEvaluationContext(
+            config_version_id=cast(UUID, row["random_baseline_config_version_id"]),
+            sample_count=int(row["sample_count"]),
+            minimum_frame_size=int(row["minimum_frame_size"]),
+            exclusion_window_seconds=int(row["exclusion_window_seconds"]),
+            random_seed=int(row["random_seed"]),
+            target=BaselineStratum(
+                instrument_id=int(row["instrument_id"]),
+                pool_identity=str(row["pool_identity"]),
+                time_bucket=str(row["time_bucket"]),
+                volatility_bucket=str(row["volatility_bucket"]),
+                liquidity_bucket=str(row["liquidity_bucket"]),
+                btc_regime=str(row["btc_regime"]),
+            ),
+            signal_times=tuple(cast(list[datetime], row["signal_times"])),
+        )
+
+    async def load_random_baseline_candidates(
+        self, task_id: UUID, lease_token: UUID, entry_event_id: str
+    ) -> tuple[BaselineCandidate, ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT candidate_id, observed_at, instrument_id,
+                       pool_identity, time_bucket, volatility_bucket,
+                       liquidity_bucket, btc_regime
+                FROM strategy_training.training_random_baseline_candidate_frame(
+                    :task_id, :lease_token, :entry_event_id
+                )
+                ORDER BY candidate_id
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "entry_event_id": entry_event_id,
+            },
+        )
+        return tuple(
+            BaselineCandidate(
+                candidate_id=str(row["candidate_id"]),
+                observed_at=cast(datetime, row["observed_at"]),
+                stratum=BaselineStratum(
+                    instrument_id=int(str(row["instrument_id"])),
+                    pool_identity=str(row["pool_identity"]),
+                    time_bucket=str(row["time_bucket"]),
+                    volatility_bucket=str(row["volatility_bucket"]),
+                    liquidity_bucket=str(row["liquidity_bucket"]),
+                    btc_regime=str(row["btc_regime"]),
+                ),
+            )
+            for raw_row in result.mappings().all()
+            for row in (cast(Mapping[str, object], raw_row),)
         )
 
     async def load_outcome_bars(self, entry_event_id: str) -> tuple[OutcomeBar, ...]:

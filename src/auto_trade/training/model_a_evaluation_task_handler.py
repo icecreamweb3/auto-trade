@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -13,7 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from auto_trade.training.model_a_evaluation_repository import (
     DatabaseModelAEvaluationStore,
 )
-from auto_trade.training.model_a_pipeline import ModelAPipelineError, calculate_entry_outcome
+from auto_trade.training.model_a_pipeline import (
+    ModelAPipelineError,
+    calculate_entry_outcome,
+    select_matched_random_baseline,
+)
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
 
 
@@ -98,21 +103,51 @@ class ModelAEvaluationTaskHandler:
                 is_complete = outcome.is_complete
                 path_fingerprint = outcome.path_fingerprint
                 opportunity_recorded = False
+                random_baseline_recorded = False
             else:
                 is_complete = existing.is_complete
                 path_fingerprint = existing.path_fingerprint
                 opportunity_recorded = existing.opportunity_recorded
+                random_baseline_recorded = existing.random_baseline_recorded
             if is_complete and not opportunity_recorded:
                 await self._store.record_opportunity(
                     entry_event_id,
                     context.opportunity_definition_version_id,
                 )
                 opportunity_recorded = True
+            if is_complete and not random_baseline_recorded:
+                baseline_context = await self._store.load_random_baseline_context(
+                    lease.task_id, lease.lease_token, entry_event_id
+                )
+                candidates = await self._store.load_random_baseline_candidates(
+                    lease.task_id, lease.lease_token, entry_event_id
+                )
+                selection = select_matched_random_baseline(
+                    matched_entry_event_id=entry_event_id,
+                    target=baseline_context.target,
+                    candidates=candidates,
+                    signal_times_by_instrument={
+                        baseline_context.target.instrument_id: baseline_context.signal_times
+                    },
+                    exclusion_window=timedelta(
+                        seconds=baseline_context.exclusion_window_seconds
+                    ),
+                    sample_count=baseline_context.sample_count,
+                    minimum_frame_size=baseline_context.minimum_frame_size,
+                    random_seed=baseline_context.random_seed,
+                )
+                await self._store.record_random_baseline(
+                    selection,
+                    baseline_context.config_version_id,
+                    baseline_context.target,
+                )
+                random_baseline_recorded = True
             evidence.append(
                 {
                     "entry_event_id": entry_event_id,
                     "is_complete": is_complete,
                     "opportunity_recorded": opportunity_recorded,
+                    "random_baseline_recorded": random_baseline_recorded,
                     "path_fingerprint": path_fingerprint,
                 }
             )
