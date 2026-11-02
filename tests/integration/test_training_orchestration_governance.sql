@@ -66,7 +66,9 @@ FROM (VALUES
     ('e2000000-0000-0000-0000-000000000005'::uuid, 'SCORING_MODEL_A'::varchar,
      '31.0.5'::varchar, '{"components":["mfe"]}'::jsonb),
     ('e2000000-0000-0000-0000-000000000006'::uuid, 'RETENTION_POLICY'::varchar,
-     '31.0.6'::varchar, '{"detail_days":30,"archive_format":"PARQUET","compression":"ZSTD"}'::jsonb)
+     '31.0.6'::varchar, '{"detail_days":30,"archive_format":"PARQUET","compression":"ZSTD"}'::jsonb),
+    ('e2000000-0000-0000-0000-000000000007'::uuid, 'SEARCH_SPACE'::varchar,
+     '31.0.7'::varchar, '{"parameters":{"threshold":[0,1]}}'::jsonb)
 ) AS configs(config_version_id, config_type, semver, config_json);
 
 INSERT INTO strategy_training.training_dataset_versions (
@@ -123,6 +125,9 @@ SELECT strategy_training.bind_training_experiment_config(
 SELECT strategy_training.bind_training_experiment_config(
     :'experiment_id', 'RETENTION_POLICY', 'e2000000-0000-0000-0000-000000000006'
 );
+SELECT strategy_training.bind_training_experiment_config(
+    :'experiment_id', 'SEARCH_SPACE', 'e2000000-0000-0000-0000-000000000007'
+);
 SELECT strategy_training.create_training_l2_retention_plan(
     :'experiment_id', 'e2000000-0000-0000-0000-000000000006',
     '{"rule":"first_n_before_results"}', 100
@@ -131,6 +136,15 @@ SELECT strategy_training.create_training_l2_retention_plan(
 SELECT strategy_training.transition_training_experiment(
     :'experiment_id', 'DRAFT', 'RUNNING', NULL, 'orchestrator-test',
     'start governed experiment', 'e5000000-0000-0000-0000-000000000001'
+);
+SELECT strategy_training.create_training_optimizer_run(
+    :'experiment_id', 'TPE', 'e2000000-0000-0000-0000-000000000007',
+    2, 42, 'optimizer-adapter-fixture'
+) AS optimizer_run_id \gset
+SELECT strategy_training.transition_training_optimizer_run(
+    :'optimizer_run_id', 'CREATED', 'RUNNING', NULL, NULL,
+    'orchestrator-test', 'start optimizer',
+    'e5000000-0000-0000-0000-000000000009'
 );
 SELECT strategy_training.create_training_iteration(
     :'experiment_id', 1, NULL, 'OPTUNA_TPE', 42,
@@ -146,11 +160,11 @@ SELECT strategy_training.transition_training_iteration(
 );
 
 SELECT strategy_training.enqueue_training_task(
-    :'experiment_id', :'iteration_id', NULL, NULL, 'OPTIMIZER_TRIAL', 'OPTIMIZER',
+    :'experiment_id', :'iteration_id', :'optimizer_run_id', NULL, 'OPTIMIZER_TRIAL', 'OPTIMIZER',
     repeat('b', 64), '{"task_type":"OPTIMIZER_TRIAL","payload_version":1,"trial_number":1}', 10
 ) AS task_id \gset
 SELECT strategy_training.enqueue_training_task(
-    :'experiment_id', :'iteration_id', NULL, NULL, 'OPTIMIZER_TRIAL', 'OPTIMIZER',
+    :'experiment_id', :'iteration_id', :'optimizer_run_id', NULL, 'OPTIMIZER_TRIAL', 'OPTIMIZER',
     repeat('b', 64), '{"task_type":"OPTIMIZER_TRIAL","payload_version":1,"trial_number":1}', 10
 ) AS same_task_id \gset
 SELECT strategy_training.enqueue_training_task(
@@ -248,13 +262,149 @@ SELECT strategy_training.record_training_iteration_l1(
     repeat('f', 64), 'MATCH', NULL
 );
 SELECT strategy_training.record_training_archive_manifest(
-    :'retention_plan_id', :'iteration_id', 'SIGNALS', repeat('3', 64), 10,
+    :'retention_plan_id', :'iteration_id', 'SIGNALS',
+    encode(digest('experiment/iteration/signals.parquet', 'sha256'), 'hex'), 10,
     '2026-01-01 00:00:00+00', '2026-01-02 00:00:00+00', 1000, repeat('4', 64)
 ) AS archive_manifest_id \gset
-SELECT strategy_training.verify_training_archive_restore(
-    :'archive_manifest_id', 10, '2026-01-01 00:00:00+00',
-    '2026-01-02 00:00:00+00', 1000, repeat('4', 64)
+
+RESET ROLE;
+SET LOCAL ROLE tb2_training_orchestrator;
+SELECT strategy_training.enqueue_training_task(
+    :'experiment_id', :'iteration_id', NULL, NULL,
+    'ARCHIVE_VERIFY', 'EVALUATOR',
+    encode(digest('archive-verify-task', 'sha256'), 'hex'),
+    jsonb_build_object(
+        'task_type', 'ARCHIVE_VERIFY', 'payload_version', 1,
+        'archive_manifest_id', :'archive_manifest_id',
+        'storage_key', 'experiment/iteration/signals.parquet'
+    ), 5
+) AS archive_task_id \gset
+
+RESET ROLE;
+SET LOCAL ROLE tb2_training_evaluator;
+SELECT * FROM strategy_training.claim_training_evaluator_task(
+    'archive-verifier', 60
+) \gset archive_
+SELECT strategy_training.start_training_task(
+    :'archive_claimed_task_id', :'archive_claimed_lease_token', 'archive-verifier'
+);
+SELECT set_config('test.archive_task_id', :'archive_claimed_task_id', true);
+SELECT set_config('test.archive_lease_token', :'archive_claimed_lease_token', true);
+SELECT set_config('test.archive_manifest_id', :'archive_manifest_id', true);
+
+DO $$
+DECLARE context_record record;
+BEGIN
+    SELECT * INTO STRICT context_record
+    FROM strategy_training.training_archive_verify_context(
+        current_setting('test.archive_task_id')::uuid,
+        current_setting('test.archive_lease_token')::uuid
+    );
+    IF context_record.archive_manifest_id
+           <> current_setting('test.archive_manifest_id')::uuid
+       OR context_record.row_count <> 10
+       OR context_record.content_sha256 <> repeat('4', 64) THEN
+        RAISE EXCEPTION 'archive task context differs from its frozen manifest';
+    END IF;
+    BEGIN
+        PERFORM strategy_training.verify_training_archive_restore(
+            current_setting('test.archive_manifest_id')::uuid,
+            10, '2026-01-01 00:00:00+00',
+            '2026-01-02 00:00:00+00', 1000, repeat('4', 64)
+        );
+        RAISE EXCEPTION 'evaluator bypassed the leased archive verification procedure';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+    BEGIN
+        PERFORM strategy_training.training_archive_verify_context(
+            current_setting('test.archive_task_id')::uuid,
+            'e9000000-0000-0000-0000-000000000099'
+        );
+        RAISE EXCEPTION 'forged archive lease read the manifest';
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
+    END;
+END
+$$;
+
+SELECT strategy_training.record_training_archive_verify_result(
+    :'archive_claimed_task_id', :'archive_claimed_lease_token', 10,
+    '2026-01-01 00:00:00+00', '2026-01-02 00:00:00+00',
+    1000, repeat('4', 64)
 ) AS archive_matches \gset
+SELECT strategy_training.complete_training_task(
+    :'archive_claimed_task_id', :'archive_claimed_lease_token', 'archive-verifier',
+    'SUCCEEDED', repeat('4', 64), NULL
+);
+
+RESET ROLE;
+SET LOCAL ROLE tb2_training_orchestrator;
+SELECT strategy_training.enqueue_training_task(
+    :'experiment_id', :'iteration_id', :'optimizer_run_id', NULL,
+    'OPTIMIZER_TRIAL', 'OPTIMIZER', repeat('8', 64),
+    '{"task_type":"OPTIMIZER_TRIAL","payload_version":1,"trial_number":0}', 5
+) AS optimizer_result_task_id \gset
+
+RESET ROLE;
+SET LOCAL ROLE tb2_training_optimizer;
+SELECT * FROM strategy_training.claim_training_optimizer_task(
+    'optimizer-result', 60
+) \gset optimizer_result_
+SELECT strategy_training.start_training_task(
+    :'optimizer_result_claimed_task_id',
+    :'optimizer_result_claimed_lease_token', 'optimizer-result'
+);
+SELECT set_config(
+    'test.optimizer_result_task_id', :'optimizer_result_claimed_task_id', true
+);
+SELECT set_config(
+    'test.optimizer_result_lease_token', :'optimizer_result_claimed_lease_token', true
+);
+
+DO $$
+DECLARE
+    context_record record;
+BEGIN
+    SELECT * INTO STRICT context_record
+    FROM strategy_training.training_optimizer_trial_context(
+        current_setting('test.optimizer_result_task_id')::uuid,
+        current_setting('test.optimizer_result_lease_token')::uuid
+    );
+    IF context_record.trial_number <> 0
+       OR context_record.train_objective <> 12.5
+       OR context_record.train_evidence_hash <> repeat('f', 64)
+       OR context_record.candidate_parameters <> '{"threshold":0.5}'::jsonb THEN
+        RAISE EXCEPTION 'optimizer trial context did not expose its TRAIN-only facts';
+    END IF;
+    BEGIN
+        PERFORM strategy_training.record_training_optimizer_trial_result(
+            current_setting('test.optimizer_result_task_id')::uuid,
+            current_setting('test.optimizer_result_lease_token')::uuid,
+            'COMPLETE', 99, '[]', repeat('f', 64), repeat('9', 64)
+        );
+        RAISE EXCEPTION 'forged optimizer objective was accepted';
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+    BEGIN
+        PERFORM strategy_training.training_optimizer_trial_context(
+            current_setting('test.optimizer_result_task_id')::uuid,
+            'e9000000-0000-0000-0000-000000000099'
+        );
+        RAISE EXCEPTION 'forged optimizer lease read the trial context';
+    EXCEPTION WHEN serialization_failure THEN NULL;
+    END;
+END
+$$;
+
+SELECT strategy_training.record_training_optimizer_trial_result(
+    :'optimizer_result_claimed_task_id',
+    :'optimizer_result_claimed_lease_token',
+    'COMPLETE', 12.5, '[]', repeat('f', 64), repeat('9', 64)
+);
+SELECT strategy_training.complete_training_task(
+    :'optimizer_result_claimed_task_id',
+    :'optimizer_result_claimed_lease_token', 'optimizer-result',
+    'SUCCEEDED', repeat('9', 64), NULL
+);
 
 RESET ROLE;
 SET LOCAL ROLE tb2_training_orchestrator;
@@ -376,13 +526,34 @@ BEGIN
                         AND state = 'LOCKED')
        OR NOT EXISTS (SELECT 1 FROM strategy_training_test.test_sets
                       WHERE test_set_id = current_setting('test.test_set_id')::uuid
-                        AND state = 'CONSUMED') THEN
+                        AND state = 'CONSUMED')
+       OR NOT EXISTS (
+            SELECT 1
+            FROM strategy_training.training_optimizer_trial_results
+            WHERE task_id = current_setting('test.optimizer_result_task_id')::uuid
+              AND trial_state = 'COMPLETE'
+              AND train_objective = 12.5
+              AND train_evidence_hash = repeat('f', 64)
+       ) THEN
         RAISE EXCEPTION 'orchestration/governance lifecycle assertions failed';
     END IF;
     IF has_table_privilege(
         'tb2_training_optimizer', 'strategy_training.training_iteration_evidence_l0', 'SELECT'
+    ) OR has_table_privilege(
+        'tb2_training_optimizer',
+        'strategy_training.training_optimizer_trial_results', 'SELECT'
     ) OR NOT has_table_privilege(
         'tb2_training_optimizer', 'strategy_training.optimizer_train_objectives', 'SELECT'
+    ) OR NOT has_function_privilege(
+        'tb2_training_optimizer',
+        'strategy_training.training_optimizer_trial_context(uuid,uuid)', 'EXECUTE'
+    ) OR has_function_privilege(
+        'tb2_training_evaluator',
+        'strategy_training.verify_training_archive_restore(uuid,bigint,timestamptz,timestamptz,bigint,character)',
+        'EXECUTE'
+    ) OR NOT has_function_privilege(
+        'tb2_training_evaluator',
+        'strategy_training.training_archive_verify_context(uuid,uuid)', 'EXECUTE'
     ) OR has_schema_privilege('tb2_training_optimizer', 'strategy_training_test', 'USAGE')
        OR has_table_privilege(
             'tb2_training_test_executor', 'strategy_training_test.test_sets', 'SELECT'

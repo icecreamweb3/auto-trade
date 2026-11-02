@@ -10,6 +10,7 @@ from auto_trade.training.optimizer import (
     TrialState,
     validate_candidate,
 )
+from auto_trade.training.search_space import parse_versioned_search_space
 
 
 @dataclass
@@ -100,3 +101,23 @@ def test_train_evaluation_failure_is_told_fail() -> None:
     )
     assert outcome.rejection_codes == ("TRAIN_EVALUATION_FAILED",)
     assert sink.calls == [(5, None, TrialState.FAIL)]
+
+
+def test_versioned_search_space_parser_supports_explicit_rules() -> None:
+    space = parse_versioned_search_space(
+        "1.0.0",
+        {
+            "parameters": {
+                "direction": {"kind": "categorical", "choices": ["LONG", "SHORT"]},
+                "lookback": {
+                    "kind": "numeric",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "integer": True,
+                },
+                "threshold": [0, 1],
+            }
+        },
+    )
+    assert tuple(space.parameters) == ("direction", "lookback", "threshold")
+    assert len(space.content_hash) == 64

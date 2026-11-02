@@ -8,9 +8,11 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
+from auto_trade.training.archive_verify_task_handler import ArchiveVerifyError
 from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
+from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialError
 from auto_trade.training.orchestrator import TaskLease, TaskState
 from auto_trade.training.portfolio_evaluation_task_handler import (
     PortfolioEvaluationError,
@@ -57,6 +59,8 @@ def failure_code(error: BaseException) -> str:
         return "UNSUPPORTED_TASK_TYPE"
     if isinstance(error, InvalidTaskResult):
         return "INVALID_RESULT_HASH"
+    if isinstance(error, ArchiveVerifyError):
+        return "ARCHIVE_VERIFY_REJECTED"
     if isinstance(error, DatasetBuildError):
         return "DATASET_BUILD_REJECTED"
     if isinstance(error, ModelAPipelineError):
@@ -65,6 +69,8 @@ def failure_code(error: BaseException) -> str:
         return "MODEL_B_REPLAY_REJECTED"
     if isinstance(error, PortfolioEvaluationError):
         return "PORTFOLIO_EVALUATION_REJECTED"
+    if isinstance(error, OptimizerTrialError):
+        return "OPTIMIZER_TRIAL_REJECTED"
     return "HANDLER_FAILED"
 
 

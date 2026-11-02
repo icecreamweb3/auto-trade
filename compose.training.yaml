@@ -92,6 +92,28 @@ services:
         condition: service_healthy
     networks: [backend]
 
+  training-optimizer-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-optimizer
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_optimizer_app
+      POSTGRES_PASSWORD: ${TRAINING_OPTIMIZER_PASSWORD:?TRAINING_OPTIMIZER_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-optimizer
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "optimizer", "--expected-user", "tb2_training_optimizer_app"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
   training-evaluator:
     profiles: ["training"]
     build:
@@ -118,8 +140,8 @@ services:
     profiles: ["training-runtime"]
     build:
       context: .
-      target: base
-    image: auto-trade:local
+      target: training-evaluator
+    image: auto-trade-training-evaluator:local
     restart: unless-stopped
     env_file: .env
     environment:
@@ -129,7 +151,10 @@ services:
       POSTGRES_USER: tb2_training_evaluator_app
       POSTGRES_PASSWORD: ${TRAINING_EVALUATOR_PASSWORD:?TRAINING_EVALUATOR_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-evaluator
+      TRAINING_ARCHIVE_ROOT: /var/lib/auto-trade/training-archives
       NATS_URL: ""
+    volumes:
+      - ${TRAINING_ARCHIVE_HOST_PATH:-./data/training-archives}:/var/lib/auto-trade/training-archives:ro
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "evaluator", "--expected-user", "tb2_training_evaluator_app"]
     depends_on:
       database:

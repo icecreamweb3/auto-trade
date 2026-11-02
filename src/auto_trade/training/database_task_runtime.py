@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from auto_trade.training.archive_verify_task_handler import ArchiveVerifyTaskHandler
 from auto_trade.training.dataset_task_handler import DatasetBuildTaskHandler
 from auto_trade.training.governance_repository import DatabaseTaskWorkerStore
 from auto_trade.training.model_a_evaluation_task_handler import (
     ModelAEvaluationTaskHandler,
 )
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayTaskHandler
+from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialTaskHandler
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
 from auto_trade.training.portfolio_evaluation_task_handler import (
     PortfolioEvaluationTaskHandler,
@@ -24,12 +26,15 @@ def build_handler_registry(
     if executor_kind is ExecutorKind.WORKER:
         registry.register("DATASET_BUILD", DatasetBuildTaskHandler(connection))
     elif executor_kind is ExecutorKind.EVALUATOR:
+        registry.register("ARCHIVE_VERIFY", ArchiveVerifyTaskHandler(connection))
         registry.register("MODEL_A_EVALUATION", ModelAEvaluationTaskHandler(connection))
         registry.register(
             "PORTFOLIO_EVALUATION", PortfolioEvaluationTaskHandler(connection)
         )
     elif executor_kind is ExecutorKind.MODEL_B:
         registry.register("MODEL_B_REPLAY", ModelBReplayTaskHandler(connection))
+    elif executor_kind is ExecutorKind.OPTIMIZER:
+        registry.register("OPTIMIZER_TRIAL", OptimizerTrialTaskHandler(connection))
     return registry
 
 

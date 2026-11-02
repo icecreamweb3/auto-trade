@@ -93,6 +93,7 @@ async def run_service(
             return
         if role.executor_kind not in {
             ExecutorKind.WORKER,
+            ExecutorKind.OPTIMIZER,
             ExecutorKind.EVALUATOR,
             ExecutorKind.MODEL_B,
         }:

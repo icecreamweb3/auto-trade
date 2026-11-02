@@ -6,9 +6,11 @@ from uuid import uuid4
 
 import pytest
 
+from auto_trade.training.archive_verify_task_handler import ArchiveVerifyError
 from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
+from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialError
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
 from auto_trade.training.portfolio_evaluation_task_handler import (
     PortfolioEvaluationError,
@@ -127,6 +129,7 @@ async def test_heartbeat_cancellation_rolls_back_handler() -> None:
 
 
 def test_failure_codes_do_not_include_exception_text() -> None:
+    assert failure_code(ArchiveVerifyError("secret path")) == "ARCHIVE_VERIFY_REJECTED"
     assert failure_code(TaskHandlerError("payload secret")) == "UNSUPPORTED_TASK_TYPE"
     assert failure_code(RuntimeError("payload secret")) == "HANDLER_FAILED"
     assert (
@@ -140,6 +143,10 @@ def test_failure_codes_do_not_include_exception_text() -> None:
     assert (
         failure_code(PortfolioEvaluationError("stored decision detail"))
         == "PORTFOLIO_EVALUATION_REJECTED"
+    )
+    assert (
+        failure_code(OptimizerTrialError("objective detail"))
+        == "OPTIMIZER_TRIAL_REJECTED"
     )
 
 
