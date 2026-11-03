@@ -29,3 +29,15 @@ RUN --mount=type=cache,target=/root/.cache/pip python -m pip install '.[dev]'
 USER app
 
 CMD ["pytest"]
+
+FROM base AS training-evaluator
+
+USER root
+RUN --mount=type=cache,target=/root/.cache/pip python -m pip install '.[training-export]'
+USER app
+
+FROM base AS training-optimizer
+
+USER root
+RUN --mount=type=cache,target=/root/.cache/pip python -m pip install '.[training-optimizer]'
+USER app

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import cast
 from uuid import UUID
@@ -10,11 +10,15 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from auto_trade.training.contracts import Partition, PartitionKind
 from auto_trade.training.dataset_builder import (
     DatasetBuildError,
+    DatasetBuildSpec,
     DependencyQualityReport,
     HistoricalPoolFact,
+    ReadyConfigBinding,
     ResourceEstimate,
+    ResourceLimits,
     ResourcePreflight,
     SourceShard,
 )
@@ -37,6 +41,91 @@ class DatabaseDatasetAuditStore:
 
     def __init__(self, connection: AsyncConnection) -> None:
         self._connection = connection
+
+    async def load_audit_context(
+        self, dataset_version_id: UUID
+    ) -> tuple[
+        DatasetBuildSpec,
+        tuple[ReadyConfigBinding, ...],
+        UUID,
+        UUID,
+        ResourceLimits,
+    ]:
+        dataset_result = await self._connection.execute(
+            text(
+                """
+                SELECT partition, partition_start_at, partition_end_at,
+                       interval_seconds, warmup_start_at, eligible_start_at,
+                       eligible_end_at, label_window_end_at, source_as_of_at,
+                       visibility_cutoff_at, label_horizon_duration,
+                       max_holding_duration, purge_duration, embargo_duration,
+                       data_quality_rule_version_id, status
+                FROM strategy_training.training_dataset_versions
+                WHERE dataset_version_id = :dataset_version_id
+                """
+            ),
+            {"dataset_version_id": dataset_version_id},
+        )
+        row = dataset_result.mappings().one_or_none()
+        if row is None:
+            raise DatasetBuildError("dataset version does not exist")
+        if row["status"] != "BUILDING":
+            raise DatasetBuildError("DATASET_BUILD requires a BUILDING dataset")
+
+        binding_result = await self._connection.execute(
+            text(
+                """
+                SELECT binding.config_type, binding.config_version_id,
+                       config.status, config.config_json
+                FROM strategy_training.training_dataset_config_bindings binding
+                JOIN strategy_training.training_config_versions config
+                  ON config.config_version_id = binding.config_version_id
+                WHERE binding.dataset_version_id = :dataset_version_id
+                ORDER BY binding.config_type
+                """
+            ),
+            {"dataset_version_id": dataset_version_id},
+        )
+        binding_rows = binding_result.mappings().all()
+        bindings = tuple(
+            ReadyConfigBinding(
+                str(binding["config_type"]),
+                cast(UUID, binding["config_version_id"]),
+                str(binding["status"]),
+            )
+            for binding in binding_rows
+        )
+        resource_rows = [
+            binding for binding in binding_rows if binding["config_type"] == "RESOURCE_LIMITS"
+        ]
+        if len(resource_rows) != 1:
+            raise DatasetBuildError("dataset requires exactly one RESOURCE_LIMITS binding")
+        resource_row = resource_rows[0]
+        spec = DatasetBuildSpec(
+            partition=Partition(
+                PartitionKind(str(row["partition"])),
+                cast(datetime, row["partition_start_at"]),
+                cast(datetime, row["partition_end_at"]),
+            ),
+            interval_seconds=int(row["interval_seconds"]),
+            warmup_start_at=cast(datetime, row["warmup_start_at"]),
+            eligible_start_at=cast(datetime, row["eligible_start_at"]),
+            eligible_end_at=cast(datetime, row["eligible_end_at"]),
+            label_window_end_at=cast(datetime, row["label_window_end_at"]),
+            source_as_of_at=cast(datetime, row["source_as_of_at"]),
+            visibility_cutoff_at=cast(datetime, row["visibility_cutoff_at"]),
+            label_horizon=cast(timedelta, row["label_horizon_duration"]),
+            max_holding_horizon=cast(timedelta, row["max_holding_duration"]),
+            purge_duration=cast(timedelta, row["purge_duration"]),
+            embargo_duration=cast(timedelta, row["embargo_duration"]),
+        )
+        return (
+            spec,
+            bindings,
+            cast(UUID, resource_row["config_version_id"]),
+            cast(UUID, row["data_quality_rule_version_id"]),
+            ResourceLimits.from_config(cast(Mapping[str, object], resource_row["config_json"])),
+        )
 
     async def historical_pool(
         self, dataset_version_id: UUID, evaluation_at: datetime

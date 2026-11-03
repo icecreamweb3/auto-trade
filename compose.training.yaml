@@ -1,8 +1,8 @@
 name: auto-trade-local
 
-# Identity-only training profile. It verifies the real service entrypoint and
-# database account without claiming tasks. Domain task handlers are enabled in
-# a later slice; this profile must not be treated as a training run.
+# The `training` profile remains an identity-only deployment smoke check.
+# The separately selected `training-runtime` profile runs only implemented
+# database task lease loops; it is never started implicitly with the runtime stack.
 services:
   training-worker:
     profiles: ["training"]
@@ -21,6 +21,28 @@ services:
       POSTGRES_APPLICATION_NAME: training-worker
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "worker", "--expected-user", "tb2_training_rw_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-worker-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-worker
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_rw_app
+      POSTGRES_PASSWORD: ${TRAINING_RW_PASSWORD:?TRAINING_RW_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-worker
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "worker", "--expected-user", "tb2_training_rw_app"]
     depends_on:
       database:
         condition: service_healthy
@@ -48,6 +70,28 @@ services:
         condition: service_healthy
     networks: [backend]
 
+  training-orchestrator-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-orchestrator
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_orchestrator_app
+      POSTGRES_PASSWORD: ${TRAINING_ORCHESTRATOR_PASSWORD:?TRAINING_ORCHESTRATOR_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-orchestrator
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "orchestrator", "--expected-user", "tb2_training_orchestrator_app"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
   training-optimizer:
     profiles: ["training"]
     build:
@@ -70,6 +114,28 @@ services:
         condition: service_healthy
     networks: [backend]
 
+  training-optimizer-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: training-optimizer
+    image: auto-trade-training-optimizer:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-optimizer
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_optimizer_app
+      POSTGRES_PASSWORD: ${TRAINING_OPTIMIZER_PASSWORD:?TRAINING_OPTIMIZER_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-optimizer
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "optimizer", "--expected-user", "tb2_training_optimizer_app"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
   training-evaluator:
     profiles: ["training"]
     build:
@@ -87,6 +153,75 @@ services:
       POSTGRES_APPLICATION_NAME: training-evaluator
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "evaluator", "--expected-user", "tb2_training_evaluator_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-evaluator-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: training-evaluator
+    image: auto-trade-training-evaluator:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-evaluator
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_evaluator_app
+      POSTGRES_PASSWORD: ${TRAINING_EVALUATOR_PASSWORD:?TRAINING_EVALUATOR_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-evaluator
+      TRAINING_ARCHIVE_ROOT: /var/lib/auto-trade/training-archives
+      NATS_URL: ""
+    volumes:
+      - ${TRAINING_ARCHIVE_HOST_PATH:-./data/training-archives}:/var/lib/auto-trade/training-archives:ro
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "evaluator", "--expected-user", "tb2_training_evaluator_app"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-model-b:
+    profiles: ["training"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: "no"
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-model-b
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_model_b_app
+      POSTGRES_PASSWORD: ${TRAINING_MODEL_B_PASSWORD:?TRAINING_MODEL_B_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-model-b
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "model-b", "--expected-user", "tb2_training_model_b_app", "--once"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
+  training-model-b-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-model-b
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_model_b_app
+      POSTGRES_PASSWORD: ${TRAINING_MODEL_B_PASSWORD:?TRAINING_MODEL_B_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-model-b
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "model-b", "--expected-user", "tb2_training_model_b_app"]
     depends_on:
       database:
         condition: service_healthy

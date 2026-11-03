@@ -18,6 +18,15 @@ _CLAIM_FUNCTIONS = {
     ExecutorKind.MODEL_B: "claim_training_model_b_task",
 }
 
+_TASK_EXECUTORS = {
+    "DATASET_BUILD": ExecutorKind.WORKER,
+    "MODEL_A_EVALUATION": ExecutorKind.EVALUATOR,
+    "MODEL_B_REPLAY": ExecutorKind.MODEL_B,
+    "PORTFOLIO_EVALUATION": ExecutorKind.EVALUATOR,
+    "OPTIMIZER_TRIAL": ExecutorKind.OPTIMIZER,
+    "ARCHIVE_VERIFY": ExecutorKind.EVALUATOR,
+}
+
 
 class DatabaseOrchestratorStore:
     """State-only orchestration access; it never reads metrics or TEST payloads."""
@@ -38,6 +47,25 @@ class DatabaseOrchestratorStore:
         payload: Mapping[str, object],
         priority: int = 100,
     ) -> UUID:
+        expected_executor = _TASK_EXECUTORS.get(task_type)
+        if expected_executor is None:
+            raise ValueError(f"unsupported task_type: {task_type}")
+        if executor_kind is not expected_executor:
+            raise ValueError(
+                f"task_type {task_type} requires executor {expected_executor.value}"
+            )
+        payload_version = payload.get("payload_version")
+        if (
+            isinstance(payload_version, bool)
+            or not isinstance(payload_version, int)
+            or payload_version <= 0
+        ):
+            raise ValueError("task payload requires a positive integer payload_version")
+        supplied_task_type = payload.get("task_type")
+        if supplied_task_type is not None and supplied_task_type != task_type:
+            raise ValueError("task payload task_type does not match task_type")
+        canonical_payload = dict(payload)
+        canonical_payload["task_type"] = task_type
         result = await self._connection.execute(
             text(
                 """
@@ -56,7 +84,9 @@ class DatabaseOrchestratorStore:
                 "task_type": task_type,
                 "executor_kind": executor_kind.value,
                 "idempotency_key": idempotency_key,
-                "payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                "payload": json.dumps(
+                    canonical_payload, sort_keys=True, separators=(",", ":")
+                ),
                 "priority": priority,
             },
         )
@@ -72,6 +102,20 @@ class DatabaseOrchestratorStore:
         await self._connection.execute(
             text("SELECT strategy_training.resume_training_task(:id)"),
             {"id": task_id},
+        )
+
+    async def advance_optimizer_runs(self) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT optimizer_run_id, action
+                FROM strategy_training.advance_training_optimizer_runs()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["optimizer_run_id"]), str(row["action"]))
+            for row in result.mappings().all()
         )
 
 

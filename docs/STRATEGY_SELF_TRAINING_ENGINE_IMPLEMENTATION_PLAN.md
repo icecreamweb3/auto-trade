@@ -52,7 +52,7 @@
 
 验收：普通/通用角色无弱留出及 TEST `USAGE`；越界分区、非法转换、READY 修改均在数据库层失败；迁移可在空库完整应用并可重复跳过。
 
-当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；已在测试环境验证角色、schema 权限和连接身份。新增 `compose.training.yaml` 与 `auto_trade.training.runtime` 仅做 fail-closed 身份/连接 smoke check，不领取任务；真正的领域 task handler 完成前不得作为正式训练服务运行。A0 仍不能标记为完成，直到 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置在目标环境验收。
+当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；已在测试环境验证角色、schema 权限和连接身份。`compose.training.yaml` 的 `training` profile 继续只做 fail-closed 身份/连接 smoke check；独立的 `training-runtime` profile 已接入数据库租约、心跳、取消和有限失败码，并启用 `DATASET_BUILD` v1、`MODEL_A_EVALUATION` v1、`MODEL_B_REPLAY` v1、`PORTFOLIO_EVALUATION` v1、`OPTIMIZER_TRIAL` v1 与 `ARCHIVE_VERIFY` v1。迁移 `038`—`045` 分别落实任务载荷、隔离执行身份、模型 A/B/组合评估上下文、随机基线、TRAIN-only TELL 和归档恢复验证；迁移 `046_training_optimizer_ask.sql` 只通过当前 Optimizer ASK 租约提供冻结搜索空间和顺序 TRAIN 历史，并追加保存 Optuna proposal；迁移 `047_training_optimizer_orchestration.sql` 将 proposal 与候选 iteration 一对一关联，由编排器幂等推进 `ASK_ENQUEUED → ITERATION_CREATED → WAITING_ENTRY_BATCH → EVALUATION_ENQUEUED → WAITING_TRAIN_L0 → TELL_ENQUEUED`。Optimizer 使用独立含 Optuna 依赖的镜像，真实 `study.ask()` 只消费冻结 SEARCH_SPACE 和既有 TRAIN TELL；编排器只得到 run ID 和动作码，不读取目标值。当前代码不会伪造尚未实现的候选扫描或 Q-033 DiscoveryScore：新候选会安全停在 `WAITING_ENTRY_BATCH`，评估完成但尚无权威 L0 时停在 `WAITING_TRAIN_L0`。因此局部编排闭环已实现，但在真实候选扫描与 TRAIN L0 聚合写入器交付前仍不得启动完整训练流水线。A0 仍不能标记为完成，直到 `046`/`047` 和 optimizer/orchestrator runtime 在目标环境完成部署验收，以及 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置全部通过。
 
 ### M2：A0 数据集构建与审计
 
@@ -133,11 +133,11 @@
 
 ## 4. 当前实施状态
 
-截至 2026-10-31，已完成并在一次性 TimescaleDB 集成环境验收：
+截至 2026-11-02，已完成并在一次性 TimescaleDB 集成环境验收：
 
 - M0：领域契约、UTC 时间边界、确定性标识、状态机与单元测试；
 - `019`：三个隔离 schema、NOLOGIN 最小权限角色、应用训练身份和追加式角色审计；
 - `020`：READY 配置、TRAIN/VALIDATION 数据集、成员/质量/暴露事实及复现清单；
 - `021`：TRAIN-only 实验/迭代、优化器检查点、冻结终选、共享 VALIDATION 逻辑身份和不可回收预算。
 
-当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；`019`—`037` 迁移及 M0–M9 测试仍在临时环境验证。真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未执行，不能据此启动正式 TEST 或影子运行。
+当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；`019`—`047` 迁移已通过一次性数据库重复迁移和集成测试。`DATASET_BUILD`、`MODEL_A_EVALUATION`、`MODEL_B_REPLAY`、`PORTFOLIO_EVALUATION`、`OPTIMIZER_TRIAL` 与 `ARCHIVE_VERIFY` 已接入真实租约循环；Optimizer 已实现可重放的真实 Optuna ASK、proposal 落库、候选迭代创建、TRAIN-only TELL 及逐 trial 自动推进。自动推进明确等待可信入场事件批次和权威 TRAIN L0，不会将空结果或临时评分伪装为完成。候选扫描、Q-033 DiscoveryScore 聚合、真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未完成，不能据此启动正式 TEST、影子运行或完整训练流水线。
