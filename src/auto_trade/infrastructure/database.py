@@ -15,8 +15,8 @@ def create_database_engine(settings: Settings) -> AsyncEngine:
     return create_async_engine(
         settings.database_dsn,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=0,
+        pool_size=settings.postgres_pool_size,
+        max_overflow=settings.postgres_max_overflow,
         connect_args={
             "server_settings": {
                 "timezone": "UTC",

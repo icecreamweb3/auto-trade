@@ -35,6 +35,18 @@ def test_database_application_name_can_be_overridden() -> None:
     assert settings.database_application_name == "training-evaluator-v2"
 
 
+def test_database_pool_limits_can_be_reduced_for_training_services() -> None:
+    settings = Settings(
+        _env_file=None,
+        postgres_password=SecretStr("test-password"),
+        postgres_pool_size=1,
+        postgres_max_overflow=0,
+    )
+
+    assert settings.postgres_pool_size == 1
+    assert settings.postgres_max_overflow == 0
+
+
 def test_websocket_resilience_defaults() -> None:
     settings = Settings(
         _env_file=None,

@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     postgres_user: str = "auto_trade_admin"
     postgres_password: SecretStr
     postgres_application_name: str | None = Field(default=None, min_length=1, max_length=63)
+    postgres_pool_size: int = Field(default=5, ge=1, le=20)
+    postgres_max_overflow: int = Field(default=0, ge=0, le=20)
 
     nats_url: str = "nats://127.0.0.1:4222"
     binance_usdm_base_url: str = "https://fapi.binance.com"

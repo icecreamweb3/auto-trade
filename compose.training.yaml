@@ -19,6 +19,8 @@ services:
       POSTGRES_USER: tb2_training_rw_app
       POSTGRES_PASSWORD: ${TRAINING_RW_PASSWORD:?TRAINING_RW_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-worker
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "worker", "--expected-user", "tb2_training_rw_app", "--once"]
     depends_on:
@@ -41,6 +43,8 @@ services:
       POSTGRES_USER: tb2_training_rw_app
       POSTGRES_PASSWORD: ${TRAINING_RW_PASSWORD:?TRAINING_RW_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-worker
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "worker", "--expected-user", "tb2_training_rw_app"]
     depends_on:
@@ -63,6 +67,8 @@ services:
       POSTGRES_USER: tb2_training_orchestrator_app
       POSTGRES_PASSWORD: ${TRAINING_ORCHESTRATOR_PASSWORD:?TRAINING_ORCHESTRATOR_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-orchestrator
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "orchestrator", "--expected-user", "tb2_training_orchestrator_app", "--once"]
     depends_on:
@@ -85,6 +91,8 @@ services:
       POSTGRES_USER: tb2_training_orchestrator_app
       POSTGRES_PASSWORD: ${TRAINING_ORCHESTRATOR_PASSWORD:?TRAINING_ORCHESTRATOR_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-orchestrator
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "orchestrator", "--expected-user", "tb2_training_orchestrator_app"]
     depends_on:
@@ -107,6 +115,8 @@ services:
       POSTGRES_USER: tb2_training_optimizer_app
       POSTGRES_PASSWORD: ${TRAINING_OPTIMIZER_PASSWORD:?TRAINING_OPTIMIZER_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-optimizer
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "optimizer", "--expected-user", "tb2_training_optimizer_app", "--once"]
     depends_on:
@@ -129,6 +139,8 @@ services:
       POSTGRES_USER: tb2_training_optimizer_app
       POSTGRES_PASSWORD: ${TRAINING_OPTIMIZER_PASSWORD:?TRAINING_OPTIMIZER_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-optimizer
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "optimizer", "--expected-user", "tb2_training_optimizer_app"]
     depends_on:
@@ -173,6 +185,8 @@ services:
       POSTGRES_USER: tb2_training_evaluator_app
       POSTGRES_PASSWORD: ${TRAINING_EVALUATOR_PASSWORD:?TRAINING_EVALUATOR_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-evaluator
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       TRAINING_ARCHIVE_ROOT: /var/lib/auto-trade/training-archives
       NATS_URL: ""
     volumes:
@@ -198,6 +212,8 @@ services:
       POSTGRES_USER: tb2_training_model_b_app
       POSTGRES_PASSWORD: ${TRAINING_MODEL_B_PASSWORD:?TRAINING_MODEL_B_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-model-b
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "model-b", "--expected-user", "tb2_training_model_b_app", "--once"]
     depends_on:
@@ -220,6 +236,8 @@ services:
       POSTGRES_USER: tb2_training_model_b_app
       POSTGRES_PASSWORD: ${TRAINING_MODEL_B_PASSWORD:?TRAINING_MODEL_B_PASSWORD is required}
       POSTGRES_APPLICATION_NAME: training-model-b
+      POSTGRES_POOL_SIZE: 1
+      POSTGRES_MAX_OVERFLOW: 0
       NATS_URL: ""
     command: ["python", "-m", "auto_trade.training.runtime", "--role", "model-b", "--expected-user", "tb2_training_model_b_app"]
     depends_on:
