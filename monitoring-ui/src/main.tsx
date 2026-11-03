@@ -4758,10 +4758,221 @@ interface TrainingWorkspacePayload {
   test_metrics_available: boolean;
 }
 
+interface TrainingConfigVersion {
+  config_version_id: string;
+  config_type: string;
+  label: string;
+  semver: string;
+  schema_version: number;
+  config_json: Record<string, unknown>;
+  content_hash: string;
+  parent_version_id: string | null;
+  status: "DRAFT" | "READY" | "RETIRED";
+  created_by: string;
+  ready_by: string | null;
+  retired_by: string | null;
+  created_at: string;
+  ready_at: string | null;
+  retired_at: string | null;
+  validation_errors: string[];
+}
+
+interface TrainingConfigInventory {
+  required_types: string[];
+  missing_ready_types: string[];
+  ready_complete: boolean;
+  can_edit: boolean;
+  can_approve: boolean;
+  versions: TrainingConfigVersion[];
+}
+
+function trainingConfigError(body: unknown, fallback: string) {
+  if (!body || typeof body !== "object" || !("detail" in body)) return fallback;
+  const detail = (body as { detail?: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const value = detail as { message?: unknown; errors?: unknown };
+    const suffix = Array.isArray(value.errors) ? `：${value.errors.join("；")}` : "";
+    return `${typeof value.message === "string" ? value.message : fallback}${suffix}`;
+  }
+  return fallback;
+}
+
+function TrainingConfigManager() {
+  const [inventory, setInventory] = useState<TrainingConfigInventory | null>(null);
+  const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [semver, setSemver] = useState("0.1.0");
+  const [schemaVersion, setSchemaVersion] = useState(1);
+  const [parentId, setParentId] = useState("");
+  const [jsonText, setJsonText] = useState("{}\n");
+  const [reason, setReason] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function refresh(preferredId?: string) {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/training/configs", { cache: "no-store" });
+      const body = await response.json() as TrainingConfigInventory | { detail?: unknown };
+      if (!response.ok) throw new Error(trainingConfigError(body, "READY 配置清单读取失败"));
+      const next = body as TrainingConfigInventory;
+      setInventory(next);
+      const type = selectedType ?? next.required_types[0] ?? null;
+      setSelectedType(type);
+      const candidates = next.versions.filter((item) => item.config_type === type);
+      const selected = candidates.find((item) => item.config_version_id === preferredId)
+        ?? candidates.find((item) => item.config_version_id === selectedId)
+        ?? candidates[0];
+      setSelectedId(selected?.config_version_id ?? null);
+      setError(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "READY 配置清单读取失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void refresh(); }, []);
+
+  const versions = inventory?.versions.filter((item) => item.config_type === selectedType) ?? [];
+  const selected = versions.find((item) => item.config_version_id === selectedId) ?? null;
+
+  function chooseType(configType: string) {
+    const next = inventory?.versions.filter((item) => item.config_type === configType) ?? [];
+    setSelectedType(configType);
+    setSelectedId(next[0]?.config_version_id ?? null);
+    setEditing(false);
+    setNotice(null);
+    setError(null);
+  }
+
+  function beginDraft(version?: TrainingConfigVersion) {
+    setEditing(true);
+    setSemver(version?.semver ?? "0.1.0");
+    setSchemaVersion(version?.schema_version ?? 1);
+    setParentId(version?.parent_version_id ?? "");
+    setJsonText(`${JSON.stringify(version?.config_json ?? {}, null, 2)}\n`);
+    setReason("");
+    setNotice(null);
+    setError(null);
+  }
+
+  async function saveDraft() {
+    if (!inventory?.can_edit || !selectedType) return;
+    let configJson: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(jsonText) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+      configJson = parsed as Record<string, unknown>;
+    } catch {
+      setError("配置内容必须是有效的 JSON 对象");
+      return;
+    }
+    setSaving(true);
+    try {
+      const updating = selected?.status === "DRAFT";
+      const response = await fetch(updating ? `/api/training/configs/${selected.config_version_id}` : "/api/training/configs", {
+        method: updating ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(updating ? { expected_content_hash: selected.content_hash } : { config_type: selectedType }),
+          semver,
+          schema_version: schemaVersion,
+          config_json: configJson,
+          parent_version_id: parentId || null,
+          reason: reason.trim()
+        })
+      });
+      const body = await response.json() as TrainingConfigVersion | { detail?: unknown };
+      if (!response.ok) throw new Error(trainingConfigError(body, "DRAFT 保存失败"));
+      const saved = body as TrainingConfigVersion;
+      setEditing(false);
+      setNotice(saved.validation_errors.length === 0 ? "DRAFT 已保存并通过当前服务端校验" : "DRAFT 已保存，但仍有校验问题");
+      await refresh(saved.config_version_id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "DRAFT 保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function transition(action: "ready" | "retire") {
+    if (!selected || !inventory?.can_approve) return;
+    if (!reason.trim()) {
+      setError("审批或退役原因不能为空");
+      return;
+    }
+    const wording = action === "ready" ? "批准为 READY" : "退役";
+    if (!window.confirm(`确认${wording} ${selected.config_type} ${selected.semver}？`)) return;
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/training/configs/${selected.config_version_id}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason.trim() })
+      });
+      const body = await response.json() as TrainingConfigVersion | { detail?: unknown };
+      if (!response.ok) throw new Error(trainingConfigError(body, `${wording}失败`));
+      setReason("");
+      setNotice(`${selected.config_type} ${selected.semver} 已${action === "ready" ? "批准为 READY" : "退役"}`);
+      await refresh(selected.config_version_id);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : `${wording}失败`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading && !inventory) return <div className="loading">正在读取 READY 配置清单…</div>;
+  return <>
+    {error && <div className="alert alert-critical">{error}</div>}
+    {notice && <div className="alert alert-success">{notice}</div>}
+    {inventory && <div className="training-config-layout">
+      <section className="panel training-config-inventory">
+        <div className="section-heading"><div><p className="eyebrow">READINESS</p><h2>首个模型 A smoke 配置</h2></div><span className={inventory.ready_complete ? "training-ready" : "training-blocked"}>{inventory.ready_complete ? "14/14 READY" : `${inventory.required_types.length - inventory.missing_ready_types.length}/${inventory.required_types.length} READY`}</span></div>
+        <p className="training-config-note">READY 版本不可编辑；数值变化必须新建 DRAFT，经服务端校验后由 TRAINING_ADMIN 审批。</p>
+        <div className="training-config-grid">{inventory.required_types.map((configType) => {
+          const typeVersions = inventory.versions.filter((item) => item.config_type === configType);
+          const ready = typeVersions.find((item) => item.status === "READY");
+          const draft = typeVersions.find((item) => item.status === "DRAFT");
+          return <button type="button" key={configType} className={`training-config-card ${selectedType === configType ? "selected" : ""}`} onClick={() => chooseType(configType)}>
+            <span>{ready ? "READY" : draft ? "DRAFT" : "MISSING"}</span>
+            <strong>{typeVersions[0]?.label ?? configType}</strong>
+            <small>{ready ? `v${ready.semver}` : draft ? `草稿 v${draft.semver}` : configType}</small>
+          </button>;
+        })}</div>
+      </section>
+      {selectedType && <section className="panel training-config-detail">
+        <div className="section-heading"><div><p className="eyebrow">CONFIG VERSION</p><h2>{versions[0]?.label ?? selectedType}</h2></div><div className="training-config-actions"><button type="button" onClick={() => void refresh()} disabled={loading || saving}>刷新</button>{inventory.can_edit && <button type="button" onClick={() => { setSelectedId(null); beginDraft(); }} disabled={saving}>新建 DRAFT</button>}</div></div>
+        {versions.length > 0 && <label className="training-config-field"><span>版本</span><select value={selectedId ?? ""} onChange={(event) => { setSelectedId(event.target.value); setEditing(false); setNotice(null); }}><option value="" disabled>请选择</option>{versions.map((version) => <option value={version.config_version_id} key={version.config_version_id}>{version.status} · {version.semver} · {version.created_by}</option>)}</select></label>}
+        {editing ? <div className="training-config-editor">
+          <div className="training-config-form-row"><label><span>SemVer</span><input value={semver} onChange={(event) => setSemver(event.target.value)} /></label><label><span>Schema 版本</span><input type="number" min={1} value={schemaVersion} onChange={(event) => setSchemaVersion(Number(event.target.value))} /></label></div>
+          <label className="training-config-field"><span>父版本（可选）</span><select value={parentId} onChange={(event) => setParentId(event.target.value)}><option value="">无</option>{versions.filter((item) => item.config_version_id !== selected?.config_version_id && item.status !== "DRAFT").map((version) => <option value={version.config_version_id} key={version.config_version_id}>{version.status} · {version.semver}</option>)}</select></label>
+          <label className="training-config-field"><span>配置 JSON</span><textarea value={jsonText} onChange={(event) => setJsonText(event.target.value)} spellCheck={false} /></label>
+          <label className="training-config-field"><span>变更原因</span><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="必填，将写入审计记录" /></label>
+          <div className="training-config-actions"><button type="button" onClick={() => setEditing(false)} disabled={saving}>取消</button><button type="button" className="primary" onClick={() => void saveDraft()} disabled={saving || !reason.trim()}>{saving ? "保存中…" : "保存 DRAFT"}</button></div>
+        </div> : selected ? <div className="training-config-version">
+          <div className="training-config-meta"><span className={`training-status status-${selected.status.toLowerCase()}`}>{selected.status}</span><span>v{selected.semver}</span><span>Schema {selected.schema_version}</span><span title={selected.content_hash}>SHA {selected.content_hash.slice(0, 12)}</span></div>
+          <pre>{JSON.stringify(selected.config_json, null, 2)}</pre>
+          {selected.validation_errors.length > 0 ? <div className="alert alert-critical"><strong>服务端校验未通过</strong><ul>{selected.validation_errors.map((item) => <li key={item}>{item}</li>)}</ul></div> : <div className="alert alert-success">当前结构校验通过；批准时仍会执行数据库最终契约。</div>}
+          <div className="training-config-audit"><span>创建：{selected.created_by} · {new Date(selected.created_at).toLocaleString("zh-CN", { hour12: false })}</span>{selected.ready_by && <span>READY：{selected.ready_by} · {new Date(selected.ready_at!).toLocaleString("zh-CN", { hour12: false })}</span>}{selected.retired_by && <span>退役：{selected.retired_by} · {new Date(selected.retired_at!).toLocaleString("zh-CN", { hour12: false })}</span>}</div>
+          {(selected.status === "DRAFT" && inventory.can_edit || inventory.can_approve && selected.status !== "RETIRED") && <label className="training-config-field"><span>操作原因</span><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="审批、退役或继续编辑时必填" /></label>}
+          <div className="training-config-actions">{selected.status === "DRAFT" && inventory.can_edit && <button type="button" onClick={() => beginDraft(selected)}>编辑 DRAFT</button>}{selected.status === "DRAFT" && inventory.can_approve && <button type="button" className="primary" onClick={() => void transition("ready")} disabled={saving || selected.validation_errors.length > 0}>批准 READY</button>}{selected.status === "READY" && inventory.can_approve && <button type="button" className="danger" onClick={() => void transition("retire")} disabled={saving}>退役版本</button>}</div>
+        </div> : <div className="message-empty">该类型尚无版本。{inventory.can_edit ? "请新建 DRAFT。" : "需要 TRAINING_RESEARCHER 授权才能创建。"}</div>}
+      </section>}
+    </div>}
+  </>;
+}
+
 function TrainingWorkspace() {
   const [payload, setPayload] = useState<TrainingWorkspacePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [section, setSection] = useState<"overview" | "configs">("overview");
 
   async function refresh() {
     setLoading(true);
@@ -4780,7 +4991,9 @@ function TrainingWorkspace() {
 
   useEffect(() => { void refresh(); }, []);
   return <main className="monitoring-page">
-    <header className="topbar"><div><p className="brand-mark">TRAINING WORKSPACE</p><h1>策略训练工作区</h1><p className="subtitle">实验、版本、预算、失败和审计状态；TEST 指标永不在此展示</p></div><button type="button" onClick={() => void refresh()} disabled={loading}>{loading ? "刷新中…" : "刷新"}</button></header>
+    <header className="topbar"><div><p className="brand-mark">TRAINING WORKSPACE</p><h1>策略训练工作区</h1><p className="subtitle">实验、版本、预算、失败和审计状态；TEST 指标永不在此展示</p></div>{section === "overview" && <button type="button" onClick={() => void refresh()} disabled={loading}>{loading ? "刷新中…" : "刷新"}</button>}</header>
+    <div className="training-section-tabs"><button type="button" className={section === "overview" ? "active" : ""} onClick={() => setSection("overview")}>运行概览</button><button type="button" className={section === "configs" ? "active" : ""} onClick={() => setSection("configs")}>READY 配置</button></div>
+    {section === "configs" ? <TrainingConfigManager /> : <>
     {error && <div className="alert alert-critical">{error}</div>}
     {payload && <>
       <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">SUMMARY</p><h2>训练状态</h2></div><span>{payload.mode}</span></div><div className="stats-grid">
@@ -4788,6 +5001,7 @@ function TrainingWorkspace() {
       </div></section>
       <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">EXPERIMENTS</p><h2>实验与失败</h2></div><span>{payload.experiments.length}</span></div>{payload.experiments.length === 0 ? <div className="message-empty">暂无实验</div> : <div className="message-list">{payload.experiments.map((experiment) => <div className="message-row" key={experiment.experiment_id}><strong>{experiment.experiment_type}</strong><span>{experiment.status}</span><small>{experiment.experiment_id.slice(0, 8)}</small></div>)}</div>}{payload.failures.length > 0 && <div className="alert alert-critical" style={{ marginTop: 16 }}>存在 {payload.failures.length} 个失败或取消迭代，请查看审计记录。</div>}</section>
       <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">ISOLATION</p><h2>隔离状态</h2></div></div><p>TEST 指标：{payload.test_metrics_available ? "可见" : "不可见"}。本工作区只显示后端汇总状态，不提供自由 SQL 或 TEST 结果。</p></section>
+    </>}
     </>}
   </main>;
 }
