@@ -25,3 +25,4 @@ artifacts/logs-*/
 Macmini_login
 Macmini_login.pub
 artifacts/*
+temp.sh
