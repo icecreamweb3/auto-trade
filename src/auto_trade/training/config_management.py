@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import pairwise
 from typing import Annotated, Any, Literal, TypeGuard
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -321,6 +323,71 @@ class ConfigInventory(BaseModel):
     versions: tuple[ConfigVersion, ...]
 
 
+def _build_ready_export(
+    versions: tuple[ConfigVersion, ...], *, exported_by: str, generated_at: datetime
+) -> dict[str, Any]:
+    def optional_timestamp(value: datetime | None) -> str | None:
+        return value.isoformat() if value else None
+
+    ready_by_type: dict[str, ConfigVersion] = {}
+    for version in versions:
+        if version.status == "READY":
+            ready_by_type.setdefault(version.config_type, version)
+    missing = tuple(
+        config_type
+        for config_type in INITIAL_MODEL_A_CONFIG_TYPES
+        if config_type not in ready_by_type
+    )
+    configs = [
+        {
+            "config_type": config_type,
+            "label": ready_by_type[config_type].label,
+            "config_version_id": str(ready_by_type[config_type].config_version_id),
+            "semver": ready_by_type[config_type].semver,
+            "schema_version": ready_by_type[config_type].schema_version,
+            "content_hash": ready_by_type[config_type].content_hash,
+            "parent_version_id": (
+                str(ready_by_type[config_type].parent_version_id)
+                if ready_by_type[config_type].parent_version_id
+                else None
+            ),
+            "config_json": ready_by_type[config_type].config_json,
+            "created_by": ready_by_type[config_type].created_by,
+            "created_at": ready_by_type[config_type].created_at.isoformat(),
+            "ready_by": ready_by_type[config_type].ready_by,
+            "ready_at": optional_timestamp(ready_by_type[config_type].ready_at),
+        }
+        for config_type in INITIAL_MODEL_A_CONFIG_TYPES
+        if config_type in ready_by_type
+    ]
+    manifest_payload = {
+        "scope": "INITIAL_MODEL_A_READY",
+        "required_types": list(INITIAL_MODEL_A_CONFIG_TYPES),
+        "configs": configs,
+    }
+    manifest_hash = hashlib.sha256(
+        json.dumps(
+            manifest_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "export_schema_version": 1,
+        "scope": "INITIAL_MODEL_A_READY",
+        "generated_at": generated_at.astimezone(UTC).isoformat(),
+        "exported_by": exported_by,
+        "ready_complete": not missing,
+        "required_types": list(INITIAL_MODEL_A_CONFIG_TYPES),
+        "missing_ready_types": list(missing),
+        "config_count": len(configs),
+        "manifest_hash_algorithm": "SHA-256",
+        "manifest_hash": manifest_hash,
+        "configs": configs,
+    }
+
+
 class ConfigDraftCreate(BaseModel):
     config_type: str
     semver: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$")
@@ -457,6 +524,38 @@ async def list_configs(request: Request, user: ConfigReader) -> ConfigInventory:
         can_edit="TRAINING_RESEARCHER" in roles,
         can_approve="TRAINING_ADMIN" in roles,
         versions=versions,
+    )
+
+
+@router.get("/export")
+async def export_ready_configs(request: Request, user: ConfigReader) -> JSONResponse:
+    try:
+        async with request.app.state.database_engine.connect() as connection:
+            rows = (
+                (
+                    await connection.execute(
+                        text(
+                            _CONFIG_SELECT
+                            + " WHERE config.status = 'READY' "
+                            + " ORDER BY config.config_type, config.created_at DESC"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=503, detail="READY 配置导出失败") from error
+    generated_at = datetime.now(UTC)
+    payload = _build_ready_export(
+        tuple(_row_to_version(row) for row in rows),
+        exported_by=user.email,
+        generated_at=generated_at,
+    )
+    filename = f"training-ready-configs-{generated_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

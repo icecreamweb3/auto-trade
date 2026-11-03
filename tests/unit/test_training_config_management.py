@@ -8,6 +8,8 @@ from fastapi import HTTPException
 from auto_trade.accounts.models import AccountSummary, CurrentUser, UserRole
 from auto_trade.training.config_management import (
     INITIAL_MODEL_A_CONFIG_TYPES,
+    ConfigVersion,
+    _build_ready_export,
     _row_to_version,
     require_config_reader,
     validate_config_payload,
@@ -156,3 +158,41 @@ def test_database_row_is_converted_without_duplicate_config_json_argument() -> N
     assert version.config_version_id == config_version_id
     assert version.config_json["label_horizon_seconds"] == 86400
     assert version.validation_errors == ()
+
+
+def test_ready_export_is_ordered_and_contains_integrity_manifest() -> None:
+    generated_at = datetime(2026, 11, 3, 6, 30, tzinfo=UTC)
+    versions = tuple(
+        ConfigVersion(
+            config_version_id=uuid4(),
+            config_type=config_type,
+            label=config_type,
+            semver="0.1.0",
+            schema_version=1,
+            config_json={"position": index},
+            content_hash=f"{index:064x}",
+            parent_version_id=None,
+            status="READY",
+            created_by="researcher@example.test",
+            ready_by="admin@example.test",
+            retired_by=None,
+            created_at=generated_at,
+            ready_at=generated_at,
+            retired_at=None,
+            validation_errors=(),
+        )
+        for index, config_type in reversed(tuple(enumerate(INITIAL_MODEL_A_CONFIG_TYPES, 1)))
+    )
+
+    exported = _build_ready_export(
+        versions, exported_by="admin@example.test", generated_at=generated_at
+    )
+
+    assert exported["ready_complete"] is True
+    assert exported["config_count"] == 14
+    assert exported["missing_ready_types"] == []
+    assert [config["config_type"] for config in exported["configs"]] == list(
+        INITIAL_MODEL_A_CONFIG_TYPES
+    )
+    assert len(exported["manifest_hash"]) == 64
+    assert exported["configs"][0]["ready_by"] == "admin@example.test"

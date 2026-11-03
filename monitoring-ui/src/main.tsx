@@ -4937,13 +4937,45 @@ function TrainingConfigManager() {
     }
   }
 
+  async function exportReadyConfigs() {
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/training/configs/export", { cache: "no-store" });
+      if (!response.ok) {
+        const body = await readTrainingConfigResponse(response);
+        throw new Error(trainingConfigError(body, "READY 配置导出失败"));
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1]
+        ?? `training-ready-configs-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      const readyCount = new Set(
+        inventory?.versions.filter((version) => version.status === "READY").map((version) => version.config_type) ?? []
+      ).size;
+      setNotice(`已导出 ${readyCount} 项 READY 配置快照`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "READY 配置导出失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   if (loading && !inventory) return <div className="loading">正在读取 READY 配置清单…</div>;
   return <>
     {error && <div className="alert alert-critical">{error}</div>}
     {notice && <div className="alert alert-success">{notice}</div>}
     {inventory && <div className="training-config-layout">
       <section className="panel training-config-inventory">
-        <div className="section-heading"><div><p className="eyebrow">READINESS</p><h2>首个模型 A smoke 配置</h2></div><span className={inventory.ready_complete ? "training-ready" : "training-blocked"}>{inventory.ready_complete ? "14/14 READY" : `${inventory.required_types.length - inventory.missing_ready_types.length}/${inventory.required_types.length} READY`}</span></div>
+        <div className="section-heading"><div><p className="eyebrow">READINESS</p><h2>首个模型 A smoke 配置</h2></div><div className="training-config-actions"><span className={inventory.ready_complete ? "training-ready" : "training-blocked"}>{inventory.ready_complete ? "14/14 READY" : `${inventory.required_types.length - inventory.missing_ready_types.length}/${inventory.required_types.length} READY`}</span><button type="button" onClick={() => void exportReadyConfigs()} disabled={saving || inventory.versions.every((version) => version.status !== "READY")}>{saving ? "处理中…" : "导出 READY"}</button></div></div>
         <p className="training-config-note">READY 版本不可编辑；数值变化必须新建 DRAFT，经服务端校验后由 TRAINING_ADMIN 审批。</p>
         <div className="training-config-grid">{inventory.required_types.map((configType) => {
           const typeVersions = inventory.versions.filter((item) => item.config_type === configType);

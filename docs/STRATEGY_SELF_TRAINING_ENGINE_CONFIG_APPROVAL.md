@@ -4,6 +4,8 @@
 **适用范围：** 首个 5m 模型 A TRAIN smoke  
 **禁止事项：** 本表中的建议值不是 READY 决策；不得复制集成测试夹具、以空值代替、由部署脚本自动批准，或在缺少审批时写入测试数据库。
 
+字段含义、单位、完整 JSON 示例和修改检查清单见 [`TRAINING_READY_CONFIG_REFERENCE.md`](./TRAINING_READY_CONFIG_REFERENCE.md)。
+
 ## 1. 审批与落库规则
 
 1. 每类配置使用独立 `semver`、规范化 JSON 和 SHA-256 `content_hash`；
