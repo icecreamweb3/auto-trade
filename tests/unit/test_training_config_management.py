@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from auto_trade.accounts.models import AccountSummary, CurrentUser, UserRole
 from auto_trade.training.config_management import (
     INITIAL_MODEL_A_CONFIG_TYPES,
+    _row_to_version,
     require_config_reader,
     validate_config_payload,
 )
@@ -125,3 +126,33 @@ def test_scoring_model_a_requires_exact_weights_and_minimum_counts() -> None:
 
     assert "weights 必须精确包含七个模型 A 权重" in errors
     assert "minimum_signal_count 必须是正整数" in errors
+
+
+def test_database_row_is_converted_without_duplicate_config_json_argument() -> None:
+    config_version_id = uuid4()
+    created_at = datetime.now(UTC)
+    version = _row_to_version(
+        {
+            "config_version_id": config_version_id,
+            "config_type": "HOLDING_HORIZON_RULES",
+            "semver": "0.1.0",
+            "schema_version": 1,
+            "config_json": {
+                "label_horizon_seconds": 86400,
+                "max_holding_seconds": 86400,
+            },
+            "content_hash": "a" * 64,
+            "parent_version_id": None,
+            "status": "DRAFT",
+            "created_by": "researcher@example.test",
+            "ready_by": None,
+            "retired_by": None,
+            "created_at": created_at,
+            "ready_at": None,
+            "retired_at": None,
+        }
+    )
+
+    assert version.config_version_id == config_version_id
+    assert version.config_json["label_horizon_seconds"] == 86400
+    assert version.validation_errors == ()

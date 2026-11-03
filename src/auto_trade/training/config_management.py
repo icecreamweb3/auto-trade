@@ -384,11 +384,12 @@ ConfigReader = Annotated[CurrentUser, Depends(require_config_reader)]
 
 
 def _row_to_version(row: Any) -> ConfigVersion:
-    payload = dict(row["config_json"])
+    values = dict(row)
+    payload = dict(values["config_json"])
+    values["config_json"] = payload
     return ConfigVersion(
-        **dict(row),
+        **values,
         label=CONFIG_LABELS.get(str(row["config_type"]), str(row["config_type"])),
-        config_json=payload,
         validation_errors=validate_config_payload(str(row["config_type"]), payload),
     )
 

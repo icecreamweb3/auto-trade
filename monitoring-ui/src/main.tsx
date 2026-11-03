@@ -4798,6 +4798,16 @@ function trainingConfigError(body: unknown, fallback: string) {
   return fallback;
 }
 
+async function readTrainingConfigResponse(response: Response): Promise<unknown> {
+  const responseText = await response.text();
+  if (!responseText) return {};
+  try {
+    return JSON.parse(responseText) as unknown;
+  } catch {
+    return { detail: responseText };
+  }
+}
+
 function TrainingConfigManager() {
   const [inventory, setInventory] = useState<TrainingConfigInventory | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -4817,7 +4827,7 @@ function TrainingConfigManager() {
     setLoading(true);
     try {
       const response = await fetch("/api/training/configs", { cache: "no-store" });
-      const body = await response.json() as TrainingConfigInventory | { detail?: unknown };
+      const body = await readTrainingConfigResponse(response) as TrainingConfigInventory | { detail?: unknown };
       if (!response.ok) throw new Error(trainingConfigError(body, "READY 配置清单读取失败"));
       const next = body as TrainingConfigInventory;
       setInventory(next);
@@ -4887,7 +4897,7 @@ function TrainingConfigManager() {
           reason: reason.trim()
         })
       });
-      const body = await response.json() as TrainingConfigVersion | { detail?: unknown };
+      const body = await readTrainingConfigResponse(response) as TrainingConfigVersion | { detail?: unknown };
       if (!response.ok) throw new Error(trainingConfigError(body, "DRAFT 保存失败"));
       const saved = body as TrainingConfigVersion;
       setEditing(false);
@@ -4915,7 +4925,7 @@ function TrainingConfigManager() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: reason.trim() })
       });
-      const body = await response.json() as TrainingConfigVersion | { detail?: unknown };
+      const body = await readTrainingConfigResponse(response) as TrainingConfigVersion | { detail?: unknown };
       if (!response.ok) throw new Error(trainingConfigError(body, `${wording}失败`));
       setReason("");
       setNotice(`${selected.config_type} ${selected.semver} 已${action === "ready" ? "批准为 READY" : "退役"}`);

@@ -7,9 +7,9 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM core.schema_migrations
-        WHERE version = '052_training_config_management' AND success
+        WHERE version = '053_training_config_approval_hash' AND success
     ) THEN
-        RAISE EXCEPTION 'migration 052 was not recorded successfully';
+        RAISE EXCEPTION 'migration 053 was not recorded successfully';
     END IF;
 END
 $$;
