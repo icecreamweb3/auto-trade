@@ -75,3 +75,21 @@ async def test_enqueue_adds_authoritative_task_type_to_payload() -> None:
     parameters = connection.execute.await_args.args[1]
     assert '"payload_version":1' in parameters["payload"]
     assert '"task_type":"DATASET_BUILD"' in parameters["payload"]
+
+
+@pytest.mark.asyncio
+async def test_advance_optimizer_runs_returns_only_ids_and_actions() -> None:
+    run_id = uuid4()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = [
+        {"optimizer_run_id": run_id, "action": "ASK_ENQUEUED"}
+    ]
+    connection = AsyncMock()
+    connection.execute.return_value = result
+
+    actions = await DatabaseOrchestratorStore(connection).advance_optimizer_runs()
+
+    assert actions == ((run_id, "ASK_ENQUEUED"),)
+    sql = str(connection.execute.await_args.args[0])
+    assert "advance_training_optimizer_runs" in sql
+    assert "objective" not in sql.lower()

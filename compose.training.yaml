@@ -70,6 +70,28 @@ services:
         condition: service_healthy
     networks: [backend]
 
+  training-orchestrator-runtime:
+    profiles: ["training-runtime"]
+    build:
+      context: .
+      target: base
+    image: auto-trade:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: training-orchestrator
+      POSTGRES_HOST: database
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: tb2_training_orchestrator_app
+      POSTGRES_PASSWORD: ${TRAINING_ORCHESTRATOR_PASSWORD:?TRAINING_ORCHESTRATOR_PASSWORD is required}
+      POSTGRES_APPLICATION_NAME: training-orchestrator
+      NATS_URL: ""
+    command: ["python", "-m", "auto_trade.training.runtime", "--role", "orchestrator", "--expected-user", "tb2_training_orchestrator_app"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks: [backend]
+
   training-optimizer:
     profiles: ["training"]
     build:
@@ -96,8 +118,8 @@ services:
     profiles: ["training-runtime"]
     build:
       context: .
-      target: base
-    image: auto-trade:local
+      target: training-optimizer
+    image: auto-trade-training-optimizer:local
     restart: unless-stopped
     env_file: .env
     environment:

@@ -7,16 +7,23 @@ from uuid import uuid4
 
 import pytest
 
-from auto_trade.training.optimizer_trial_repository import OptimizerTrialContext
+from auto_trade.training.optimizer import CandidateStatus, CandidateValidation
+from auto_trade.training.optimizer_trial_repository import (
+    OptimizerAskContext,
+    OptimizerTrialContext,
+)
 from auto_trade.training.optimizer_trial_task_handler import (
     OptimizerTrialError,
     OptimizerTrialTaskHandler,
     parse_optimizer_trial_payload,
 )
+from auto_trade.training.optuna_adapter import OptunaProposal
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
 
 
-def lease(kind: ExecutorKind = ExecutorKind.OPTIMIZER) -> TaskLease:
+def lease(
+    kind: ExecutorKind = ExecutorKind.OPTIMIZER, *, action: str = "TELL"
+) -> TaskLease:
     return TaskLease(
         uuid4(),
         kind,
@@ -24,7 +31,12 @@ def lease(kind: ExecutorKind = ExecutorKind.OPTIMIZER) -> TaskLease:
         1,
         datetime.now(UTC) + timedelta(minutes=5),
         0,
-        {"task_type": "OPTIMIZER_TRIAL", "payload_version": 1, "trial_number": 3},
+        {
+            "task_type": "OPTIMIZER_TRIAL",
+            "payload_version": 1,
+            "action": action,
+            "trial_number": 3,
+        },
     )
 
 
@@ -50,6 +62,8 @@ def context(
                 "threshold": [0, 1],
             }
         },
+        "SUCCEEDED",
+        None,
         objective,
         None if objective is None else "b" * 64,
     )
@@ -60,6 +74,58 @@ def test_payload_rejects_candidate_and_result_injection() -> None:
     value["candidate"] = {"threshold": 0.5}
     with pytest.raises(OptimizerTrialError, match="unexpected"):
         parse_optimizer_trial_payload(value)
+
+
+@pytest.mark.asyncio
+async def test_ask_uses_frozen_context_and_persists_proposal(monkeypatch) -> None:
+    store = MagicMock()
+    store.load_ask_context = AsyncMock(
+        return_value=OptimizerAskContext(
+            uuid4(),
+            3,
+            "TPE",
+            42,
+            uuid4(),
+            "44.0.1",
+            "d" * 64,
+            {
+                "parameters": {
+                    "lookback": {
+                        "kind": "numeric",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "integer": True,
+                    },
+                    "threshold": [0, 1],
+                }
+            },
+            (),
+        )
+    )
+    store.record_proposal = AsyncMock(return_value="c" * 64)
+    monkeypatch.setattr(
+        "auto_trade.training.optimizer_trial_task_handler.DatabaseOptimizerTrialStore",
+        lambda _connection: store,
+    )
+    ask = MagicMock(
+        return_value=OptunaProposal(
+            123,
+            {"lookback": 7, "threshold": 0.4},
+            CandidateValidation(CandidateStatus.VALID, ()),
+        )
+    )
+    monkeypatch.setattr(
+        "auto_trade.training.optimizer_trial_task_handler.ask_optuna_candidate", ask
+    )
+
+    result = await OptimizerTrialTaskHandler(MagicMock())(lease(action="ASK"))
+
+    assert result == "c" * 64
+    ask.assert_called_once()
+    call = store.record_proposal.await_args.kwargs
+    assert call["sampler_seed"] == 123
+    assert call["candidate_parameters"] == {"lookback": 7, "threshold": 0.4}
+    assert call["search_space_content_hash"] == "d" * 64
 
 
 @pytest.mark.asyncio

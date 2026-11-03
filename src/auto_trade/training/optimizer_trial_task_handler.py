@@ -1,4 +1,4 @@
-"""OPTIMIZER_TRIAL v1 TRAIN-only tell handler."""
+"""OPTIMIZER_TRIAL v1 governed Optuna ASK and TRAIN-only TELL handler."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from auto_trade.training.optimizer import CandidateStatus, TrialState, validate_candidate
 from auto_trade.training.optimizer_trial_repository import DatabaseOptimizerTrialStore
+from auto_trade.training.optuna_adapter import OptunaAdapterError, ask_optuna_candidate
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
 from auto_trade.training.search_space import parse_versioned_search_space
 
@@ -34,13 +35,14 @@ def _sha256(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class OptimizerTrialTaskPayload:
+    action: str
     trial_number: int
 
 
 def parse_optimizer_trial_payload(
     payload: Mapping[str, object],
 ) -> OptimizerTrialTaskPayload:
-    allowed = {"task_type", "payload_version", "trial_number"}
+    allowed = {"task_type", "payload_version", "action", "trial_number"}
     unexpected = sorted(set(payload) - allowed)
     if unexpected:
         raise OptimizerTrialError(
@@ -50,10 +52,13 @@ def parse_optimizer_trial_payload(
         "payload_version"
     ) != 1:
         raise OptimizerTrialError("OPTIMIZER_TRIAL requires payload_version 1")
+    action = payload.get("action")
+    if action not in {"ASK", "TELL"}:
+        raise OptimizerTrialError("OPTIMIZER_TRIAL action must be ASK or TELL")
     trial_number = payload.get("trial_number")
     if isinstance(trial_number, bool) or not isinstance(trial_number, int) or trial_number < 0:
         raise OptimizerTrialError("trial_number must be a non-negative integer")
-    return OptimizerTrialTaskPayload(trial_number)
+    return OptimizerTrialTaskPayload(str(action), trial_number)
 
 
 class OptimizerTrialTaskHandler:
@@ -64,6 +69,42 @@ class OptimizerTrialTaskHandler:
         if lease.executor_kind is not ExecutorKind.OPTIMIZER:
             raise OptimizerTrialError("OPTIMIZER_TRIAL requires OPTIMIZER executor")
         payload = parse_optimizer_trial_payload(lease.payload)
+        if payload.action == "ASK":
+            return await self._ask(lease, payload)
+        return await self._tell(lease, payload)
+
+    async def _ask(
+        self, lease: TaskLease, payload: OptimizerTrialTaskPayload
+    ) -> str:
+        context = await self._store.load_ask_context(lease.task_id, lease.lease_token)
+        if context.trial_number != payload.trial_number:
+            raise OptimizerTrialError("payload trial_number differs from ASK context")
+        try:
+            search_space = parse_versioned_search_space(
+                context.search_space_semver, context.search_space_config
+            )
+            proposal = ask_optuna_candidate(
+                optimizer_kind=context.optimizer_kind,
+                run_random_seed=context.run_random_seed,
+                trial_number=context.trial_number,
+                search_space=search_space,
+                prior_trials=context.prior_trials,
+            )
+        except (OptunaAdapterError, ValueError) as error:
+            raise OptimizerTrialError("Optuna ASK could not produce a candidate") from error
+        if proposal.validation.status is CandidateStatus.REJECTED:
+            raise OptimizerTrialError("Optuna ASK produced an invalid candidate")
+        return await self._store.record_proposal(
+            task_id=lease.task_id,
+            lease_token=lease.lease_token,
+            sampler_seed=proposal.sampler_seed,
+            search_space_content_hash=context.search_space_content_hash,
+            candidate_parameters=proposal.candidate_parameters,
+        )
+
+    async def _tell(
+        self, lease: TaskLease, payload: OptimizerTrialTaskPayload
+    ) -> str:
         context = await self._store.load_context(lease.task_id, lease.lease_token)
         if context.trial_number != payload.trial_number:
             raise OptimizerTrialError("payload trial_number differs from leased context")
@@ -84,9 +125,16 @@ class OptimizerTrialTaskHandler:
         else:
             objective = context.train_objective
             evidence_hash = context.train_evidence_hash
-            if objective is None or evidence_hash is None:
+            if context.iteration_state != "SUCCEEDED":
+                trial_state = TrialState.FAIL
+                objective = None
+                evidence_hash = None
+                rejection_codes = (
+                    context.iteration_rejection_code or "TRAIN_EVALUATION_FAILED",
+                )
+            elif objective is None or evidence_hash is None:
                 raise OptimizerTrialError("valid candidate has no completed TRAIN objective")
-            if not objective.is_finite():
+            elif not objective.is_finite():
                 trial_state = TrialState.FAIL
                 objective = None
                 evidence_hash = None

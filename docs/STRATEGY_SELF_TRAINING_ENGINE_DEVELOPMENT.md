@@ -58,7 +58,7 @@
 | `training-orchestrator` | 实验、任务、状态机、版本引用、暂停/恢复 | 仅状态和不可变 ID | 独立进程/服务账户，不读指标事实 |
 | `training-worker` | 数据集构建、特征、信号、标签、仿真任务 | `tb2_training_rw` 受控过程 | 独立连接池、资源配额；不得持有 `tb2_trader` 或实盘 NATS 发布权限 |
 | `training-evaluator` | 评分、硬门槛、聚类/块 bootstrap、资格报告 | TRAIN/VALIDATION 事实和安全映射 | 不持有优化器凭据，不访问 TEST |
-| `optimizer-adapter` | Optuna/TPE、随机搜索适配、`suggest/tell` | 仅 TRAIN 目标和硬门槛 | 独立进程、连接池、secret；优化器本身不连库 |
+| `optimizer-adapter` | Optuna/TPE、随机搜索适配、`ask/tell` | 仅通过租约绑定过程读取冻结搜索空间、TRAIN 历史/目标并写 proposal/TELL；无事实表 `SELECT` | 独立进程、连接池、secret，不接收编排器传入的候选或目标 |
 | `model-b-worker` | 安全 as-of 输入、退出决策重放 | `tb2_training_model_b` 安全视图/过程 | 不读来源、未来标签和结果表 |
 | `test-executor` | 锁定版本的一次性 TEST 消费 | `strategy_training_test` | 应用层 readiness + 服务账户执行；首读原子消费 |
 | `weak-holdout-executor` | 10 月弱留出诊断 | `strategy_training_weak_holdout` | 不得写候选选择/晋级 |
@@ -160,6 +160,9 @@ FIXED_BASELINE_MODEL_A（B 阶段原型）
 | `training_validation_scopes` | 共享逻辑身份哈希、UTC 起止、Ticker 池规则版本、顺序检验协议、全局预算、alpha 总额、A/B 子族分配、已占用次数/alpha | 预算跨实验共享；身份哈希不得包含内容指纹、代码或候选；原子 reserve 失败时不得读取 VALIDATION |
 | `training_optimizer_runs` | 优化器、搜索空间、预算、种子、worker、状态、开始/结束时间 | 记录 TPE/随机对照 |
 | `training_optimizer_checkpoints` | run ID、trial 序号、study 状态哈希、恢复点 | 支持暂停/恢复；不可覆盖历史 |
+| `training_optimizer_trial_proposals` | ASK task/run/trial、采样器与种子、冻结搜索空间版本/哈希、候选/提案哈希 | 追加式；一个 run/trial 只能有一个 proposal；Optimizer 无表级 `SELECT` |
+| `training_optimizer_trial_iterations` | proposal ID、iteration ID | proposal 与候选迭代一对一；仅编排器受控过程创建 |
+| `training_iteration_entry_batches` | iteration、排序事件 ID、扫描结果哈希、批次哈希、冻结时间 | 候选扫描完成后冻结；自动评估只消费该批次 |
 | `training_cross_fit_folds` | fold ID、实验/暂定语料、原始/有效训练起止、预测起止、warmup/purge/embargo 区间、剔除数量、折内模型版本、折种子、状态 | 外层折与内层搜索一对多关联；每折从零重搜；折内验证次数必须为 0 |
 | `training_go_no_go_evaluations` | Q-036 版本、暂定 Cross-fit、外层折、比较结果、功效、结论 | `PASS/FAIL/INSUFFICIENT_POWER`；功效不足不得解释为失败或通过 |
 | `training_iteration_entry_events` | 迭代 ID、候选事件 ID、选择/拒绝状态、分项贡献 | 关联候选迭代与公共入场事实，不复制事件；候选来源和模型版本必须一致 |

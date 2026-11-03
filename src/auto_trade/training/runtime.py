@@ -21,6 +21,7 @@ from auto_trade.config import get_settings
 from auto_trade.infrastructure.database import create_database_engine
 from auto_trade.training.database_task_runtime import DatabaseTaskRuntimeBackend
 from auto_trade.training.orchestrator import ExecutorKind
+from auto_trade.training.orchestrator_runtime import DatabaseOrchestratorRuntime
 from auto_trade.training.task_runtime import TaskExecutor
 
 LOGGER = logging.getLogger(__name__)
@@ -89,7 +90,20 @@ async def run_service(
     try:
         await verify_identity(engine, role, expected_user)
         LOGGER.info("training service identity verified role=%s", role.name)
-        if identity_only or role.executor_kind is None:
+        if identity_only:
+            return
+        if role.name == "orchestrator":
+            orchestrator = DatabaseOrchestratorRuntime(engine)
+            if execute_once:
+                actions = await orchestrator.tick()
+                LOGGER.info("training orchestrator tick completed actions=%s", actions)
+                return
+            while True:
+                actions = await orchestrator.tick()
+                LOGGER.info("training orchestrator tick actions=%s", actions)
+                await asyncio.sleep(poll_interval_seconds)
+            return
+        if role.executor_kind is None:
             return
         if role.executor_kind not in {
             ExecutorKind.WORKER,

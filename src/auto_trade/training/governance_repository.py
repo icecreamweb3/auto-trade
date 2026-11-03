@@ -104,6 +104,20 @@ class DatabaseOrchestratorStore:
             {"id": task_id},
         )
 
+    async def advance_optimizer_runs(self) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT optimizer_run_id, action
+                FROM strategy_training.advance_training_optimizer_runs()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["optimizer_run_id"]), str(row["action"]))
+            for row in result.mappings().all()
+        )
+
 
 class DatabaseTaskWorkerStore:
     """Lease-token capability interface shared by isolated execution services."""
