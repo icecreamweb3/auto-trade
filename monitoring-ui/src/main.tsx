@@ -4754,8 +4754,30 @@ interface TrainingWorkspacePayload {
   mode: string;
   counts: Record<string, number>;
   experiments: Array<{ experiment_id: string; experiment_type: string; status: string; created_at: string }>;
+  ready_profile: TrainingParameterProfile | null;
+  experiment_profiles: TrainingParameterProfile[];
+  iterations: Array<{ iteration_id: string; experiment_id: string; candidate_version: number; candidate_source: string; state: string; candidate_parameters: Record<string, unknown>; created_at: string }>;
   failures: Array<{ iteration_id: string; status: string; failure_code: string | null; ended_at: string | null }>;
   test_metrics_available: boolean;
+}
+
+interface TrainingParameterProfile {
+  source: string;
+  experiment_id: string | null;
+  factor_registry: { config_version_id: string; semver: string; content_hash: string };
+  search_space: { config_version_id: string; semver: string; content_hash: string };
+  factors: string[];
+  strategy_parameters: Record<string, unknown>;
+  search_parameters: Record<string, unknown>;
+}
+
+function TrainingParameterProfileView({ profile, title }: { profile: TrainingParameterProfile; title: string }) {
+  return <div className="training-parameter-profile">
+    <div className="training-profile-heading"><strong>{title}</strong><span>{profile.source === "CURRENT_READY" ? "预配置" : "实验冻结"}</span></div>
+    <div className="training-config-meta"><span>因子注册 v{profile.factor_registry.semver}</span><span title={profile.factor_registry.content_hash}>SHA {profile.factor_registry.content_hash.slice(0, 12)}</span><span>搜索空间 v{profile.search_space.semver}</span><span title={profile.search_space.content_hash}>SHA {profile.search_space.content_hash.slice(0, 12)}</span></div>
+    <h3>启用因子</h3><div className="training-factor-list">{profile.factors.map((factor) => <code key={factor}>{factor}</code>)}</div>
+    <div className="training-parameter-columns"><div><h3>固定策略参数</h3><pre>{JSON.stringify(profile.strategy_parameters, null, 2)}</pre></div><div><h3>Optuna 搜索范围</h3><pre>{JSON.stringify(profile.search_parameters, null, 2)}</pre></div></div>
+  </div>;
 }
 
 interface TrainingConfigVersion {
@@ -5042,6 +5064,11 @@ function TrainingWorkspace() {
         {[["datasets", "数据集"], ["experiments", "实验"], ["active_tasks", "运行任务"], ["validation_reserved", "验证预算"], ["failures", "失败迭代"]].map(([key, label]) => <div className="stat-card" key={key}><span>{label}</span><strong>{key === "failures" ? payload.failures.length : payload.counts[key] ?? 0}</strong></div>)}
       </div></section>
       <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">EXPERIMENTS</p><h2>实验与失败</h2></div><span>{payload.experiments.length}</span></div>{payload.experiments.length === 0 ? <div className="message-empty">暂无实验</div> : <div className="message-list">{payload.experiments.map((experiment) => <div className="message-row" key={experiment.experiment_id}><strong>{experiment.experiment_type}</strong><span>{experiment.status}</span><small>{experiment.experiment_id.slice(0, 8)}</small></div>)}</div>}{payload.failures.length > 0 && <div className="alert alert-critical" style={{ marginTop: 16 }}>存在 {payload.failures.length} 个失败或取消迭代，请查看审计记录。</div>}</section>
+      <section className="panel training-parameters-panel"><div className="section-heading"><div><p className="eyebrow">PARAMETERS</p><h2>训练参数与因子集</h2></div></div>
+        {payload.ready_profile ? <TrainingParameterProfileView profile={payload.ready_profile} title="当前 READY（仅用于新实验）" /> : <div className="message-empty">缺少 READY 的 FACTOR_REGISTRY 或 SEARCH_SPACE。</div>}
+        {payload.experiment_profiles.map((profile) => <TrainingParameterProfileView key={profile.experiment_id} profile={profile} title={`实验 ${profile.experiment_id?.slice(0, 8)} 实际绑定`} />)}
+        <div className="training-iteration-list"><h3>候选迭代参数</h3>{payload.iterations.length === 0 ? <div className="message-empty">尚未生成候选迭代。</div> : payload.iterations.map((iteration) => <details key={iteration.iteration_id}><summary><strong>#{iteration.candidate_version}</strong><span>{iteration.candidate_source}</span><span>{iteration.state}</span><small>实验 {iteration.experiment_id.slice(0, 8)}</small></summary><pre>{JSON.stringify(iteration.candidate_parameters, null, 2)}</pre></details>)}</div>
+      </section>
       <section className="panel" style={{ padding: 24 }}><div className="section-heading"><div><p className="eyebrow">ISOLATION</p><h2>隔离状态</h2></div></div><p>TEST 指标：{payload.test_metrics_available ? "可见" : "不可见"}。本工作区只显示后端汇总状态，不提供自由 SQL 或 TEST 结果。</p></section>
     </>}
     </>}

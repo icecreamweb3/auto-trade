@@ -18,6 +18,7 @@ from auto_trade.collectors.binance_usdm import (
 )
 from auto_trade.collectors.publisher import JetStreamEventPublisher
 from auto_trade.collectors.service import (
+    MARK_5M_SERIES,
     TRADE_5M_SERIES,
     BinanceCollectionService,
     KlineSeries,
@@ -57,6 +58,7 @@ REPAIR_SERIES = (
     KlineSeries(PriceType.TRADE, 60),
     KlineSeries(PriceType.MARK, 60),
     TRADE_5M_SERIES,
+    MARK_5M_SERIES,
 )
 
 MAX_KLINE_POINTS_PER_BACKFILL_JOB = 1500
@@ -1017,6 +1019,59 @@ async def run(command: str, settings: Settings) -> object:
         await engine.dispose()
 
 
+async def queue_mark_5m_backfill(
+    settings: Settings, start: datetime, end: datetime
+) -> dict[str, int | str]:
+    if start.tzinfo is None or start.utcoffset() != timedelta(0):
+        raise ValueError("start must be timezone-aware UTC")
+    if end.tzinfo is None or end.utcoffset() != timedelta(0):
+        raise ValueError("end must be timezone-aware UTC")
+    if start >= end:
+        raise ValueError("start must precede end")
+    engine = create_database_engine(settings)
+    repository = DataRepairRepository(
+        engine,
+        statement_timeout_seconds=settings.gap_scan_statement_timeout_seconds,
+    )
+    detected = 0
+    queued = 0
+    windows = 0
+    cursor = start
+    window = timedelta(hours=settings.gap_scan_historical_window_hours)
+    try:
+        while cursor < end:
+            window_end = min(cursor + window, end)
+            gaps = await repository.detect_kline_gaps_in_range(
+                cursor, window_end, MARK_5M_SERIES
+            )
+            detected += len(gaps)
+            queued += await repository.queue_gaps(gaps) if gaps else 0
+            windows += 1
+            logger.info(
+                "MARK 5m backfill queued window_start=%s window_end=%s gaps=%d",
+                cursor.isoformat(),
+                window_end.isoformat(),
+                len(gaps),
+            )
+            cursor = window_end
+    finally:
+        await engine.dispose()
+    return {
+        "price_type": "MARK",
+        "interval_seconds": 300,
+        "windows": windows,
+        "detected": detected,
+        "queued": queued,
+    }
+
+
+def _utc_cli_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("timestamp must include UTC offset")
+    return parsed.astimezone(UTC)
+
+
 def main() -> None:
     import argparse
 
@@ -1024,9 +1079,24 @@ def main() -> None:
     configure_logging(settings, "data-repair")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(description="Detect and repair market data gaps")
-    parser.add_argument("command", choices=("once", "run"))
+    parser.add_argument("command", choices=("once", "run", "queue-mark-5m"))
+    parser.add_argument("--start", help="inclusive UTC timestamp for queue-mark-5m")
+    parser.add_argument("--end", help="exclusive UTC timestamp for queue-mark-5m")
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(run(args.command, settings)), default=str))
+    result: object
+    if args.command == "queue-mark-5m":
+        if not args.start or not args.end:
+            parser.error("queue-mark-5m requires --start and --end")
+        result = asyncio.run(
+            queue_mark_5m_backfill(
+                settings,
+                _utc_cli_timestamp(args.start),
+                _utc_cli_timestamp(args.end),
+            )
+        )
+    else:
+        result = asyncio.run(run(args.command, settings))
+    print(json.dumps(result, default=str))
 
 
 if __name__ == "__main__":

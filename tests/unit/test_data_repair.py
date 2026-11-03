@@ -8,6 +8,7 @@ import pytest
 
 from auto_trade.collectors.binance_usdm import BinanceRateLimitError
 from auto_trade.collectors.data_repair import (
+    REPAIR_SERIES,
     BackfillJob,
     DataRepairRepository,
     DataRepairService,
@@ -15,9 +16,10 @@ from auto_trade.collectors.data_repair import (
     align_kline_range,
     group_missing_points,
     next_cycle_delay,
+    queue_mark_5m_backfill,
     split_gap_range,
 )
-from auto_trade.collectors.service import TRADE_5M_SERIES
+from auto_trade.collectors.service import MARK_5M_SERIES, TRADE_5M_SERIES
 
 
 def test_group_missing_points_merges_contiguous_ranges_per_instrument() -> None:
@@ -69,6 +71,66 @@ def test_gap_scan_ranges_align_to_series_boundaries() -> None:
         datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
         datetime(2026, 10, 1, 13, 0, tzinfo=UTC),
     )
+
+
+def test_mark_5m_series_has_distinct_backfill_identity() -> None:
+    assert MARK_5M_SERIES.price_type.value == "MARK"
+    assert MARK_5M_SERIES.interval_seconds == 300
+    assert MARK_5M_SERIES.data_type == "KLINE_MARK"
+
+
+async def test_mark_5m_backfill_queues_bounded_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    start = datetime(2026, 7, 21, tzinfo=UTC)
+    end = start + timedelta(hours=5)
+    repository = MagicMock()
+    repository.detect_kline_gaps_in_range = AsyncMock(
+        side_effect=[
+            [GapRange(1, "BTCUSDT", start, start + timedelta(hours=2), 24, MARK_5M_SERIES)],
+            [],
+            [
+                GapRange(
+                    1,
+                    "BTCUSDT",
+                    start + timedelta(hours=4),
+                    end,
+                    12,
+                    MARK_5M_SERIES,
+                )
+            ],
+        ]
+    )
+    repository.queue_gaps = AsyncMock(side_effect=[1, 1])
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    monkeypatch.setattr(
+        "auto_trade.collectors.data_repair.create_database_engine", lambda _settings: engine
+    )
+    monkeypatch.setattr(
+        "auto_trade.collectors.data_repair.DataRepairRepository",
+        lambda *_args, **_kwargs: repository,
+    )
+    settings = SimpleNamespace(
+        gap_scan_statement_timeout_seconds=45,
+        gap_scan_historical_window_hours=2,
+    )
+
+    result = await queue_mark_5m_backfill(settings, start, end)
+
+    assert result == {
+        "price_type": "MARK",
+        "interval_seconds": 300,
+        "windows": 3,
+        "detected": 2,
+        "queued": 2,
+    }
+    assert repository.detect_kline_gaps_in_range.await_count == 3
+    assert all(
+        call.args[2] == MARK_5M_SERIES
+        for call in repository.detect_kline_gaps_in_range.await_args_list
+    )
+    await_args = repository.queue_gaps.await_args_list
+    assert len(await_args) == 2
+    engine.dispose.assert_awaited_once()
 
 
 async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
@@ -213,7 +275,7 @@ async def test_historical_gap_scan_checkpoint_is_restored_and_advanced() -> None
     result = await service.run_cycle(scan_gaps=True)
 
     assert result == {"detected": 0, "queued": 0, "succeeded": 0, "failed": 0}
-    assert repository.detect_kline_gaps_in_range.await_count == 6
+    assert repository.detect_kline_gaps_in_range.await_count == 2 * len(REPAIR_SERIES)
     repository.save_historical_scan_checkpoint.assert_awaited_once_with(
         cursor + timedelta(hours=12),
         stop,

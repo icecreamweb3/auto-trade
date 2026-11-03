@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
@@ -21,6 +22,38 @@ class WorkspaceExperiment(BaseModel):
     created_at: datetime
 
 
+class WorkspaceConfigReference(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    config_version_id: str
+    semver: str
+    content_hash: str
+
+
+class WorkspaceParameterProfile(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source: str
+    experiment_id: str | None
+    factor_registry: WorkspaceConfigReference
+    search_space: WorkspaceConfigReference
+    factors: tuple[str, ...]
+    strategy_parameters: dict[str, Any]
+    search_parameters: dict[str, Any]
+
+
+class WorkspaceIteration(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    iteration_id: str
+    experiment_id: str
+    candidate_version: int
+    candidate_source: str
+    state: str
+    candidate_parameters: dict[str, Any]
+    created_at: datetime
+
+
 class WorkspaceFailure(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -37,6 +70,9 @@ class TrainingWorkspace(BaseModel):
     mode: str
     counts: dict[str, int]
     experiments: tuple[WorkspaceExperiment, ...]
+    ready_profile: WorkspaceParameterProfile | None
+    experiment_profiles: tuple[WorkspaceParameterProfile, ...]
+    iterations: tuple[WorkspaceIteration, ...]
     failures: tuple[WorkspaceFailure, ...]
     test_metrics_available: bool
 
@@ -52,6 +88,49 @@ class OperationalOnlyStatus(BaseModel):
 
 
 router = APIRouter(prefix="/api/training", tags=["training-workspace"])
+
+
+def _parameter_profile(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    source: str,
+    experiment_id: str | None,
+) -> WorkspaceParameterProfile | None:
+    configs: dict[str, Mapping[str, object]] = {}
+    for row in rows:
+        configs.setdefault(str(row["config_type"]), row)
+    factor_row = configs.get("FACTOR_REGISTRY")
+    search_row = configs.get("SEARCH_SPACE")
+    if factor_row is None or search_row is None:
+        return None
+    factor_config = cast(Mapping[str, object], factor_row["config_json"])
+    search_config = cast(Mapping[str, object], search_row["config_json"])
+    raw_factors = factor_config.get("factors")
+    raw_strategy = search_config.get("strategy_parameters")
+    raw_search = search_config.get("parameters")
+    if (
+        not isinstance(raw_factors, list)
+        or not isinstance(raw_strategy, Mapping)
+        or not isinstance(raw_search, Mapping)
+    ):
+        return None
+
+    def reference(row: Mapping[str, object]) -> WorkspaceConfigReference:
+        return WorkspaceConfigReference(
+            config_version_id=str(row["config_version_id"]),
+            semver=str(row["semver"]),
+            content_hash=str(row["content_hash"]),
+        )
+
+    return WorkspaceParameterProfile(
+        source=source,
+        experiment_id=experiment_id,
+        factor_registry=reference(factor_row),
+        search_space=reference(search_row),
+        factors=tuple(str(item) for item in raw_factors),
+        strategy_parameters=dict(raw_strategy),
+        search_parameters=dict(raw_search),
+    )
 
 
 async def require_training_researcher(
@@ -112,6 +191,50 @@ async def _workspace_payload(request: Request) -> TrainingWorkspace:
                     )
                 )
             ).mappings().all()
+            ready_config_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT config_type, config_version_id::text, semver,
+                               content_hash, config_json
+                        FROM strategy_training.training_config_versions
+                        WHERE status = 'READY'
+                          AND config_type IN ('FACTOR_REGISTRY', 'SEARCH_SPACE')
+                        ORDER BY config_type, created_at DESC
+                        """
+                    )
+                )
+            ).mappings().all()
+            experiment_config_rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT binding.experiment_id::text, binding.config_type,
+                               config.config_version_id::text, config.semver,
+                               config.content_hash, config.config_json
+                        FROM strategy_training.training_experiment_config_bindings binding
+                        JOIN strategy_training.training_config_versions config
+                          ON config.config_version_id = binding.config_version_id
+                        WHERE binding.config_type IN ('FACTOR_REGISTRY', 'SEARCH_SPACE')
+                        ORDER BY binding.experiment_id, binding.config_type
+                        """
+                    )
+                )
+            ).mappings().all()
+            iterations = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT iteration_id::text, experiment_id::text,
+                               candidate_version, candidate_source, state,
+                               candidate_parameters, created_at
+                        FROM strategy_training.training_iterations
+                        ORDER BY created_at DESC
+                        LIMIT 100
+                        """
+                    )
+                )
+            ).mappings().all()
             failures = (
                 await connection.execute(
                     text(
@@ -147,11 +270,33 @@ async def _workspace_payload(request: Request) -> TrainingWorkspace:
     except SQLAlchemyError as error:
         raise HTTPException(status_code=503, detail="training workspace unavailable") from error
 
+    grouped_bindings: dict[str, list[Mapping[str, object]]] = {}
+    for row in experiment_config_rows:
+        grouped_bindings.setdefault(str(row["experiment_id"]), []).append(row)
+    experiment_profiles = tuple(
+        profile
+        for experiment_id, rows in grouped_bindings.items()
+        if (
+            profile := _parameter_profile(
+                rows,
+                source="EXPERIMENT_FROZEN",
+                experiment_id=experiment_id,
+            )
+        )
+        is not None
+    )
     return TrainingWorkspace(
         generated_at=datetime.now(UTC),
         mode="TRAINING_RESEARCH",
         counts={key: int(value) for key, value in count_rows.items()},
         experiments=tuple(WorkspaceExperiment.model_validate(row) for row in experiments),
+        ready_profile=_parameter_profile(
+            ready_config_rows,
+            source="CURRENT_READY",
+            experiment_id=None,
+        ),
+        experiment_profiles=experiment_profiles,
+        iterations=tuple(WorkspaceIteration.model_validate(row) for row in iterations),
         failures=tuple(WorkspaceFailure.model_validate(row) for row in failures),
         test_metrics_available=False,
     )

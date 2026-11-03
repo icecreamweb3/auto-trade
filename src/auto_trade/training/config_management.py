@@ -141,6 +141,22 @@ def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[
     elif config_type == "REPRODUCIBILITY_TOLERANCE":
         _number_at_least(payload, "absolute_tolerance", 0, errors)
         _number_at_least(payload, "relative_tolerance", 0, errors)
+    elif config_type == "TICKER_POOL_RULES":
+        for key in ("policy_name", "source", "ranking_type", "required_contract_type"):
+            value = payload.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{key} 必须是非空字符串")
+        lag_days = payload.get("as_of_lag_days")
+        if not isinstance(lag_days, int) or isinstance(lag_days, bool) or lag_days < 0:
+            errors.append("as_of_lag_days 必须是非负整数")
+        top_n = payload.get("top_n")
+        if not isinstance(top_n, int) or isinstance(top_n, bool) or not 1 <= top_n <= 50:
+            errors.append("top_n 必须是 1 到 50 的整数 (当前排名契约上限为 50)")
+        excluded = payload.get("excluded_symbols")
+        if not isinstance(excluded, list) or any(
+            not isinstance(symbol, str) or not symbol.strip() for symbol in excluded
+        ):
+            errors.append("excluded_symbols 必须是字符串数组")
     elif config_type == "ELIGIBLE_POOL_RULES":
         _number_at_least(payload, "minimum_listing_age_seconds", 0, errors)
         _number_at_least(payload, "minimum_notional_volume", 0, errors, strict=True)

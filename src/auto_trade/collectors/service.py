@@ -73,6 +73,7 @@ class KlineSeries:
 TRADE_1M_SERIES = KlineSeries(PriceType.TRADE, 60)
 MARK_1M_SERIES = KlineSeries(PriceType.MARK, 60)
 TRADE_5M_SERIES = KlineSeries(PriceType.TRADE, 300)
+MARK_5M_SERIES = KlineSeries(PriceType.MARK, 300)
 
 
 def log_websocket_sync_result(

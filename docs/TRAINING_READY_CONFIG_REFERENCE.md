@@ -204,17 +204,19 @@
 
 ```json
 {
-  "policy_name": "UTC_DAILY_2355_TOP_100_D_MINUS_1_V1",
+  "policy_name": "UTC_DAILY_2355_TOP_50_D_MINUS_1_V1",
   "source": "market.ranking_snapshots",
   "ranking_type": "UTC_DAILY_2355",
   "as_of_lag_days": 1,
-  "top_n": 100,
+  "top_n": 50,
   "excluded_symbols": [],
   "required_contract_type": "USDT_PERPETUAL"
 }
 ```
 
-含义：某日训练只能使用前一日 UTC 23:55 已冻结的 Top 100 排名。
+含义：某日训练只能使用前一日 UTC 23:55 已冻结的 Top 50 排名。当前
+`ranking_entries.rank_no`、排名消息契约及历史快照的硬上限均为 50；在完成这些组件的
+版本化升级前，`top_n` 配成 100 会使数据集预检必然失败。
 
 当前数据库主要把这份 JSON 用作版本化治理身份；实际池生成器必须实现完全一致的 as-of 语义。
 
@@ -271,7 +273,6 @@
     "MARK_KLINE_5M",
     "EMA20_5M",
     "EMA240_5M",
-    "OPEN_INTEREST_5M",
     "UTC_DAILY_RANKING_D_MINUS_1",
     "TICKER_POOL_D_MINUS_1"
   ],
@@ -300,12 +301,6 @@
       "minimum_effective_folds": 1,
       "warmup_required": true
     },
-    "OPEN_INTEREST_5M": {
-      "minimum_coverage": 0.95,
-      "minimum_effective_samples": 7000,
-      "minimum_effective_folds": 1,
-      "warmup_required": true
-    },
     "UTC_DAILY_RANKING_D_MINUS_1": {
       "minimum_coverage": 0.95,
       "minimum_effective_samples": 20,
@@ -326,8 +321,25 @@
 
 - 依赖名称与质量报告实际输出一致；
 - 样本数按全数据集、单标的还是自然日统计；
-- OI 等外部数据的历史覆盖是否实际可回补；
+- 依赖是否与本次冻结的 `FACTOR_REGISTRY` 一致；首轮模型 A 不启用 OI 因子，
+  因 Binance 历史 OI 仅能取得最近约一个月，`OPEN_INTEREST_5M` 不属于本轮必需依赖；
+- 2026 年 10 月以后具备 OI 数据的实验若启用 OI 因子，必须创建新的
+  `FACTOR_REGISTRY`、`DATA_QUALITY_RULES` 和 `SEARCH_SPACE` 版本，将
+  `OPEN_INTEREST_5M` 恢复为必需依赖并重新执行预检；
 - 启用因子的全部依赖都已包含，不能以缺失值填 0 或静默禁用因子。
+
+首轮模型 A 所需的历史 `MARK_KLINE_5M` 应在数据集预检前完成回补。部署包含
+`queue-mark-5m` 命令的新 `data-repair` 镜像后，以左闭右开 UTC 区间排队：
+
+```bash
+./scripts/queue-mark-5m-backfill.sh \
+  2026-07-21T00:00:00Z \
+  2026-09-01T00:00:00Z
+```
+
+脚本只负责识别缺口并创建幂等回补任务；常驻 `data-repair` 服务继续按既有速率限制处理。
+执行期间通过 `docker compose --profile runtime logs -f --tail=100 data-repair` 观察进度，
+任务完成后必须重新运行数据集构建预检，不能仅以任务状态代替实际覆盖率检查。
 
 ---
 

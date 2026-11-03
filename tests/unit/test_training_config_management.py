@@ -87,6 +87,25 @@ def test_factor_registry_and_search_space_validation() -> None:
     )
 
 
+def test_ticker_pool_rejects_top_n_above_current_ranking_contract() -> None:
+    payload = {
+        "policy_name": "UTC_DAILY_2355_TOP_50_D_MINUS_1_V1",
+        "source": "market.ranking_snapshots",
+        "ranking_type": "UTC_DAILY_2355",
+        "as_of_lag_days": 1,
+        "top_n": 50,
+        "excluded_symbols": [],
+        "required_contract_type": "USDT_PERPETUAL",
+    }
+
+    assert validate_config_payload("TICKER_POOL_RULES", payload) == ()
+    payload["top_n"] = 100
+    assert (
+        "top_n 必须是 1 到 50 的整数 (当前排名契约上限为 50)"
+        in validate_config_payload("TICKER_POOL_RULES", payload)
+    )
+
+
 def test_random_baseline_rejects_incomplete_stratification() -> None:
     errors = validate_config_payload(
         "RANDOM_BASELINE",

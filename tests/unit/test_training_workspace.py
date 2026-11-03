@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
 from auto_trade.accounts.models import AccountSummary, CurrentUser, UserRole
-from auto_trade.training.workspace import require_training_researcher
+from auto_trade.training.workspace import _parameter_profile, require_training_researcher
 
 
 def _user(role: UserRole = UserRole.ADMIN) -> CurrentUser:
@@ -73,3 +73,42 @@ async def test_training_role_lookup_failure_is_fail_closed() -> None:
         await require_training_researcher(request, _user())
 
     assert error.value.status_code == 503
+
+
+def test_parameter_profile_exposes_frozen_factors_and_search_rules() -> None:
+    rows = [
+        {
+            "config_type": "FACTOR_REGISTRY",
+            "config_version_id": uuid4(),
+            "semver": "0.1.0",
+            "content_hash": "a" * 64,
+            "config_json": {"factors": ["volume_acceleration", "ema_bullish_setup"]},
+        },
+        {
+            "config_type": "SEARCH_SPACE",
+            "config_version_id": uuid4(),
+            "semver": "0.2.0",
+            "content_hash": "b" * 64,
+            "config_json": {
+                "strategy_parameters": {"average_days": 7},
+                "parameters": {
+                    "signal_score_threshold": {
+                        "kind": "numeric",
+                        "minimum": 60,
+                        "maximum": 85,
+                        "integer": True,
+                    }
+                },
+            },
+        },
+    ]
+
+    profile = _parameter_profile(
+        rows, source="EXPERIMENT_FROZEN", experiment_id="experiment-1"
+    )
+
+    assert profile is not None
+    assert profile.factors == ("volume_acceleration", "ema_bullish_setup")
+    assert profile.strategy_parameters == {"average_days": 7}
+    assert "signal_score_threshold" in profile.search_parameters
+    assert profile.experiment_id == "experiment-1"

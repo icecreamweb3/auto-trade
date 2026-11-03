@@ -27,7 +27,7 @@
 | 配置类型 | 必填字段/约束 | 设计已有口径 | 待审批数值 |
 |---|---|---|---|
 | `TICKER_POOL_RULES` | Ticker 池来源、历史时点计算、规则版本 | 使用历史时点池，不能读取未来榜单 | 池来源、排名口径、排除规则 |
-| `DATA_QUALITY_RULES` | `required_dependencies[]`；每个依赖必须有 `minimum_coverage`、`minimum_effective_samples`、`minimum_effective_folds`、`warmup_required` | 必须覆盖 Trade/Mark K 线、EMA、OI、D-1 UTC 日榜/Ticker 池及全部启用因子依赖 | 依赖清单及每项覆盖率/样本/折数门槛 |
+| `DATA_QUALITY_RULES` | `required_dependencies[]`；每个依赖必须有 `minimum_coverage`、`minimum_effective_samples`、`minimum_effective_folds`、`warmup_required` | 必须覆盖 Trade/Mark K 线、EMA、D-1 UTC 日榜/Ticker 池及全部启用因子依赖；首轮不启用 OI 因子，10 月后若启用须换版并恢复 `OPEN_INTEREST_5M` | 依赖清单及每项覆盖率/样本/折数门槛 |
 | `HOLDING_HORIZON_RULES` | `label_horizon_seconds > 0`、`max_holding_seconds > 0` | 标签设计使用 24h；最大持仓仍属于 Q-005 | `label_horizon_seconds`、`max_holding_seconds` |
 | `ELIGIBLE_POOL_RULES` | `minimum_listing_age_seconds`、`minimum_notional_volume`、`required_contract_type`、`liquidity_lookback_seconds` | 上市时长初始建议 14 天；合约应限定永续 | 是否采用 1,209,600 秒；最低成交额；流动性窗口；合约类型字符串 |
 | `REPRODUCIBILITY_TOLERANCE` | `absolute_tolerance >= 0`、`relative_tolerance >= 0` | 离散结果逐字节一致，浮点采用 Q-028 版本化容差 | 绝对/相对容差 |
