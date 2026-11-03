@@ -20,6 +20,7 @@ _CLAIM_FUNCTIONS = {
 
 _TASK_EXECUTORS = {
     "DATASET_BUILD": ExecutorKind.WORKER,
+    "MODEL_A_CANDIDATE_SCAN": ExecutorKind.WORKER,
     "MODEL_A_EVALUATION": ExecutorKind.EVALUATOR,
     "MODEL_B_REPLAY": ExecutorKind.MODEL_B,
     "PORTFOLIO_EVALUATION": ExecutorKind.EVALUATOR,
@@ -115,6 +116,20 @@ class DatabaseOrchestratorStore:
         )
         return tuple(
             (cast(UUID, row["optimizer_run_id"]), str(row["action"]))
+            for row in result.mappings().all()
+        )
+
+    async def advance_candidate_scans(self) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT iteration_id, action
+                FROM strategy_training.advance_training_candidate_scans()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["iteration_id"]), str(row["action"]))
             for row in result.mappings().all()
         )
 

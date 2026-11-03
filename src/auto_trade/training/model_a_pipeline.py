@@ -124,9 +124,10 @@ class AdaptedModelASignal:
     factors: tuple[FactorSnapshot, ...]
 
 
-def adapt_fixed_baseline_signal(
+def adapt_model_a_signal(
     signal: StrategySignal,
     *,
+    source: EntrySource,
     dataset_version_id: UUID,
     generating_version_id: UUID,
     instrument_id: int,
@@ -138,6 +139,11 @@ def adapt_fixed_baseline_signal(
     input_fingerprint: str,
     entry_price: Decimal,
 ) -> AdaptedModelASignal:
+    if source not in {
+        EntrySource.FIXED_BASELINE_MODEL_A,
+        EntrySource.IN_SAMPLE_MODEL_A,
+    }:
+        raise ModelAPipelineError("model-A discovery adapter received an invalid source")
     if instrument_id <= 0:
         raise ModelAPipelineError("instrument_id must be positive")
     if interval_seconds <= 0 or interval_seconds % 60:
@@ -173,7 +179,7 @@ def adapt_fixed_baseline_signal(
         generating_version_id=generating_version_id,
         instrument_id=instrument_id,
         symbol=identity.symbol,
-        source=EntrySource.FIXED_BASELINE_MODEL_A,
+        source=source,
         signal_time=signal_time,
         entry_time=entry_time,
         direction=Direction.LONG,
@@ -197,6 +203,36 @@ def adapt_fixed_baseline_signal(
         for name, result in sorted(signal.factors.items())
     )
     return AdaptedModelASignal(event, factors)
+
+
+def adapt_fixed_baseline_signal(
+    signal: StrategySignal,
+    *,
+    dataset_version_id: UUID,
+    generating_version_id: UUID,
+    instrument_id: int,
+    interval_seconds: int,
+    pool_evaluation_id: UUID,
+    ticker_pool_rule_version_id: UUID,
+    factor_registry_version_id: UUID,
+    scan_parameters_version_id: UUID,
+    input_fingerprint: str,
+    entry_price: Decimal,
+) -> AdaptedModelASignal:
+    return adapt_model_a_signal(
+        signal,
+        source=EntrySource.FIXED_BASELINE_MODEL_A,
+        dataset_version_id=dataset_version_id,
+        generating_version_id=generating_version_id,
+        instrument_id=instrument_id,
+        interval_seconds=interval_seconds,
+        pool_evaluation_id=pool_evaluation_id,
+        ticker_pool_rule_version_id=ticker_pool_rule_version_id,
+        factor_registry_version_id=factor_registry_version_id,
+        scan_parameters_version_id=scan_parameters_version_id,
+        input_fingerprint=input_fingerprint,
+        entry_price=entry_price,
+    )
 
 
 @dataclass(frozen=True, slots=True)

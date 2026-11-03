@@ -4,6 +4,10 @@ from auto_trade.accounts.models import UserRole
 
 
 def api_access_error(role: UserRole, path: str) -> tuple[int, str] | None:
+    # Training endpoints enforce their independent, expiring application roles.
+    # Product-level NORMAL/ADVANCED/ADMIN must not grant or deny training access.
+    if path.startswith("/api/training/"):
+        return None
     if path.startswith("/api/admin/"):
         if role is not UserRole.ADMIN:
             return 403, "仅管理员可以访问用户管理"

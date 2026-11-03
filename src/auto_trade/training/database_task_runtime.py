@@ -7,6 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from auto_trade.training.archive_verify_task_handler import ArchiveVerifyTaskHandler
 from auto_trade.training.dataset_task_handler import DatasetBuildTaskHandler
 from auto_trade.training.governance_repository import DatabaseTaskWorkerStore
+from auto_trade.training.model_a_candidate_scan_task_handler import (
+    ModelACandidateScanTaskHandler,
+)
 from auto_trade.training.model_a_evaluation_task_handler import (
     ModelAEvaluationTaskHandler,
 )
@@ -25,6 +28,9 @@ def build_handler_registry(
     registry = TaskHandlerRegistry()
     if executor_kind is ExecutorKind.WORKER:
         registry.register("DATASET_BUILD", DatasetBuildTaskHandler(connection))
+        registry.register(
+            "MODEL_A_CANDIDATE_SCAN", ModelACandidateScanTaskHandler(connection)
+        )
     elif executor_kind is ExecutorKind.EVALUATOR:
         registry.register("ARCHIVE_VERIFY", ArchiveVerifyTaskHandler(connection))
         registry.register("MODEL_A_EVALUATION", ModelAEvaluationTaskHandler(connection))

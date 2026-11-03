@@ -458,6 +458,8 @@ WHERE optimizer_run_id = :'optimizer_run_id' \gset
 SELECT action AS waiting_action
 FROM strategy_training.advance_training_optimizer_runs()
 WHERE optimizer_run_id = :'optimizer_run_id' \gset
+SELECT action AS scan_action
+FROM strategy_training.advance_training_candidate_scans() \gset
 
 RESET ROLE;
 SELECT link.iteration_id AS auto_iteration_id
@@ -548,6 +550,7 @@ RESET ROLE;
 SELECT set_config('test.next_trial_action', :'next_trial_action', true);
 SELECT set_config('test.candidate_action', :'candidate_action', true);
 SELECT set_config('test.waiting_action', :'waiting_action', true);
+SELECT set_config('test.scan_action', :'scan_action', true);
 SELECT set_config('test.evaluation_action', :'evaluation_action', true);
 SELECT set_config('test.l0_wait_action', :'l0_wait_action', true);
 SELECT set_config('test.tell_action', :'tell_action', true);
@@ -664,6 +667,7 @@ BEGIN
        OR current_setting('test.next_trial_action') <> 'ASK_ENQUEUED'
        OR current_setting('test.candidate_action') <> 'ITERATION_CREATED'
        OR current_setting('test.waiting_action') <> 'WAITING_ENTRY_BATCH'
+       OR current_setting('test.scan_action') <> 'SCAN_ENQUEUED'
        OR current_setting('test.evaluation_action') <> 'EVALUATION_ENQUEUED'
        OR current_setting('test.l0_wait_action') <> 'WAITING_TRAIN_L0'
        OR current_setting('test.tell_action') <> 'TELL_ENQUEUED'

@@ -337,6 +337,7 @@ async def test_authentication_database_failure_returns_json_503(
         (UserRole.NORMAL, "/api/backtests/metadata", False),
         (UserRole.NORMAL, "/api/monitoring/overview", False),
         (UserRole.NORMAL, "/api/messages/channels", False),
+        (UserRole.NORMAL, "/api/training/workspace", True),
         (UserRole.ADVANCED, "/api/rankings/daily", True),
         (UserRole.ADVANCED, "/api/messages/channels", True),
         (UserRole.ADVANCED, "/api/admin/users", False),

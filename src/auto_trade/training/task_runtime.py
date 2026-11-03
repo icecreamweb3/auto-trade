@@ -10,6 +10,9 @@ from typing import Protocol
 
 from auto_trade.training.archive_verify_task_handler import ArchiveVerifyError
 from auto_trade.training.dataset_builder import DatasetBuildError
+from auto_trade.training.model_a_candidate_scan_task_handler import (
+    ModelACandidateScanError,
+)
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
 from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialError
@@ -63,6 +66,8 @@ def failure_code(error: BaseException) -> str:
         return "ARCHIVE_VERIFY_REJECTED"
     if isinstance(error, DatasetBuildError):
         return "DATASET_BUILD_REJECTED"
+    if isinstance(error, ModelACandidateScanError):
+        return "MODEL_A_CANDIDATE_SCAN_REJECTED"
     if isinstance(error, ModelAPipelineError):
         return "MODEL_A_EVALUATION_REJECTED"
     if isinstance(error, ModelBReplayError):

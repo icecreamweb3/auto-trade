@@ -15,4 +15,7 @@ class DatabaseOrchestratorRuntime:
 
     async def tick(self) -> tuple[tuple[UUID, str], ...]:
         async with self._engine.begin() as connection:
-            return await DatabaseOrchestratorStore(connection).advance_optimizer_runs()
+            store = DatabaseOrchestratorStore(connection)
+            optimizer_actions = await store.advance_optimizer_runs()
+            scan_actions = await store.advance_candidate_scans()
+            return optimizer_actions + scan_actions
