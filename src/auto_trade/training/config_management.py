@@ -509,6 +509,11 @@ async def _load_config(connection: Any, config_version_id: UUID) -> ConfigVersio
 
 def _database_conflict(error: SQLAlchemyError) -> HTTPException:
     message = str(getattr(error, "orig", error)).splitlines()[0]
+    if "training_config_versions_config_type_semver_key" in message:
+        return HTTPException(
+            status_code=409,
+            detail="该配置类型的 SemVer 已存在; 已退役版本的版本号也不能复用, 请提高版本号后重试",
+        )
     return HTTPException(status_code=409, detail=f"配置操作被数据库契约拒绝: {message}")
 
 

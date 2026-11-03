@@ -10,6 +10,7 @@ from auto_trade.training.config_management import (
     INITIAL_MODEL_A_CONFIG_TYPES,
     ConfigVersion,
     _build_ready_export,
+    _database_conflict,
     _row_to_version,
     require_config_reader,
     validate_config_payload,
@@ -104,6 +105,19 @@ def test_ticker_pool_rejects_top_n_above_current_ranking_contract() -> None:
         "top_n 必须是 1 到 50 的整数 (当前排名契约上限为 50)"
         in validate_config_payload("TICKER_POOL_RULES", payload)
     )
+
+
+def test_duplicate_config_semver_has_actionable_conflict_message() -> None:
+    error = MagicMock()
+    error.orig = Exception(
+        'duplicate key value violates unique constraint '
+        '"training_config_versions_config_type_semver_key"'
+    )
+
+    conflict = _database_conflict(error)
+
+    assert conflict.status_code == 409
+    assert "已退役版本的版本号也不能复用" in conflict.detail
 
 
 def test_random_baseline_rejects_incomplete_stratification() -> None:

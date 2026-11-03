@@ -4830,6 +4830,17 @@ async function readTrainingConfigResponse(response: Response): Promise<unknown> 
   }
 }
 
+function nextTrainingConfigSemver(versions: TrainingConfigVersion[]) {
+  const cores = versions.flatMap((version) => {
+    const match = version.semver.match(/^(\d+)\.(\d+)\.(\d+)(?:[+-].*)?$/);
+    return match ? [[Number(match[1]), Number(match[2]), Number(match[3])] as const] : [];
+  });
+  if (cores.length === 0) return "0.1.0";
+  cores.sort((left, right) => left[0] - right[0] || left[1] - right[1] || left[2] - right[2]);
+  const latest = cores[cores.length - 1];
+  return `${latest[0]}.${latest[1]}.${latest[2] + 1}`;
+}
+
 function TrainingConfigManager() {
   const [inventory, setInventory] = useState<TrainingConfigInventory | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -4883,11 +4894,12 @@ function TrainingConfigManager() {
   }
 
   function beginDraft(version?: TrainingConfigVersion) {
+    const baseVersion = version ?? versions.find((item) => item.status !== "DRAFT");
     setEditing(true);
-    setSemver(version?.semver ?? "0.1.0");
-    setSchemaVersion(version?.schema_version ?? 1);
-    setParentId(version?.parent_version_id ?? "");
-    setJsonText(`${JSON.stringify(version?.config_json ?? {}, null, 2)}\n`);
+    setSemver(version?.semver ?? nextTrainingConfigSemver(versions));
+    setSchemaVersion(baseVersion?.schema_version ?? 1);
+    setParentId(version?.parent_version_id ?? baseVersion?.config_version_id ?? "");
+    setJsonText(`${JSON.stringify(baseVersion?.config_json ?? {}, null, 2)}\n`);
     setReason("");
     setNotice(null);
     setError(null);
