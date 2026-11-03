@@ -12,6 +12,7 @@ from auto_trade.training.model_a_evaluation_repository import (
     EntryEvaluationContext,
     ExistingEntryEvidence,
     RandomBaselineEvaluationContext,
+    RandomCandidateOutcomeContext,
 )
 from auto_trade.training.model_a_evaluation_task_handler import (
     ModelAEvaluationTaskHandler,
@@ -26,6 +27,7 @@ from auto_trade.training.model_a_pipeline import (
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
 
 ENTRY_ID = "a" * 64
+CANDIDATE_ID = "d" * 64
 
 
 def payload(*entry_ids: str) -> dict[str, object]:
@@ -73,7 +75,21 @@ def baseline_context() -> RandomBaselineEvaluationContext:
 def baseline_candidates() -> tuple[BaselineCandidate, ...]:
     baseline = baseline_context()
     return (
-        BaselineCandidate("candidate-1", context().entry_time, baseline.target),
+        BaselineCandidate(CANDIDATE_ID, context().entry_time, baseline.target),
+    )
+
+
+def random_candidate_context() -> RandomCandidateOutcomeContext:
+    base = context()
+    return RandomCandidateOutcomeContext(
+        CANDIDATE_ID,
+        base.partition,
+        base.entry_time,
+        base.entry_price,
+        base.direction,
+        base.label_window_end_at,
+        base.interval_seconds,
+        base.holding_rule_version_id,
     )
 
 
@@ -111,6 +127,20 @@ async def test_fresh_complete_outcome_records_label_and_opportunity(monkeypatch)
     store.record_opportunity = AsyncMock()
     store.load_random_baseline_context = AsyncMock(return_value=baseline_context())
     store.load_random_baseline_candidates = AsyncMock(return_value=baseline_candidates())
+    store.load_random_candidate_outcome_context = AsyncMock(
+        return_value=random_candidate_context()
+    )
+    store.load_random_candidate_outcome_bars = AsyncMock(
+        return_value=(
+            OutcomeBar(
+                context().label_window_end_at,
+                Decimal("103"),
+                Decimal("98"),
+                Decimal("102"),
+            ),
+        )
+    )
+    store.record_random_candidate_outcome = AsyncMock()
     store.record_random_baseline = AsyncMock()
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
@@ -124,6 +154,7 @@ async def test_fresh_complete_outcome_records_label_and_opportunity(monkeypatch)
     store.record_outcome.assert_awaited_once()
     store.record_opportunity.assert_awaited_once()
     store.record_random_baseline.assert_awaited_once()
+    store.record_random_candidate_outcome.assert_awaited_once()
 
 
 @pytest.mark.asyncio

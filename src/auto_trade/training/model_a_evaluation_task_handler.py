@@ -136,18 +136,62 @@ class ModelAEvaluationTaskHandler:
                     minimum_frame_size=baseline_context.minimum_frame_size,
                     random_seed=baseline_context.random_seed,
                 )
+                random_outcome_hashes: list[str] = []
+                for candidate_id in selection.selected_candidate_ids:
+                    candidate_context = (
+                        await self._store.load_random_candidate_outcome_context(
+                            lease.task_id,
+                            lease.lease_token,
+                            entry_event_id,
+                            candidate_id,
+                        )
+                    )
+                    candidate_bars = (
+                        await self._store.load_random_candidate_outcome_bars(
+                            lease.task_id,
+                            lease.lease_token,
+                            entry_event_id,
+                            candidate_id,
+                        )
+                    )
+                    candidate_outcome = calculate_entry_outcome(
+                        entry_event_id=candidate_id,
+                        partition=candidate_context.partition,
+                        entry_time=candidate_context.entry_time,
+                        entry_price=candidate_context.entry_price,
+                        direction=candidate_context.direction,
+                        label_window_end_at=candidate_context.label_window_end_at,
+                        interval_seconds=candidate_context.interval_seconds,
+                        bars=candidate_bars,
+                    )
+                    if not candidate_outcome.is_complete:
+                        raise ModelAPipelineError(
+                            "selected random-baseline candidate has an incomplete future path"
+                        )
+                    await self._store.record_random_candidate_outcome(
+                        lease.task_id,
+                        lease.lease_token,
+                        entry_event_id,
+                        candidate_outcome,
+                        candidate_context.holding_rule_version_id,
+                        candidate_context.interval_seconds,
+                    )
+                    random_outcome_hashes.append(candidate_outcome.path_fingerprint)
                 await self._store.record_random_baseline(
                     selection,
                     baseline_context.config_version_id,
                     baseline_context.target,
                 )
                 random_baseline_recorded = True
+            else:
+                random_outcome_hashes = []
             evidence.append(
                 {
                     "entry_event_id": entry_event_id,
                     "is_complete": is_complete,
                     "opportunity_recorded": opportunity_recorded,
                     "random_baseline_recorded": random_baseline_recorded,
+                    "random_outcome_hashes": tuple(random_outcome_hashes),
                     "path_fingerprint": path_fingerprint,
                 }
             )

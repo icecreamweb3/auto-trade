@@ -45,6 +45,18 @@ class PoolEvaluation:
     evaluation_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class RandomBaselineConfig:
+    config_version_id: UUID
+    config: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkBar:
+    open_time: datetime
+    close_price: Decimal
+
+
 class DatabaseModelACandidateScanStore:
     def __init__(self, connection: AsyncConnection) -> None:
         self._connection = connection
@@ -172,6 +184,146 @@ class DatabaseModelACandidateScanStore:
             )
             for row in result.mappings().all()
         )
+
+    async def load_random_baseline_config(
+        self, task_id: UUID, lease_token: UUID
+    ) -> RandomBaselineConfig:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT random_baseline_config_version_id, config_json
+                FROM strategy_training.training_model_a_candidate_scan_random_config(
+                    :task_id, :lease_token
+                )
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        row = result.mappings().one()
+        return RandomBaselineConfig(
+            config_version_id=cast(UUID, row["random_baseline_config_version_id"]),
+            config=cast(Mapping[str, object], row["config_json"]),
+        )
+
+    async def load_benchmark_bars(
+        self, task_id: UUID, lease_token: UUID
+    ) -> tuple[BenchmarkBar, ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT open_time, close_price
+                FROM strategy_training.training_model_a_candidate_scan_benchmark_bars(
+                    :task_id, :lease_token
+                )
+                ORDER BY open_time
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        return tuple(
+            BenchmarkBar(
+                open_time=cast(datetime, row["open_time"]),
+                close_price=Decimal(str(row["close_price"])),
+            )
+            for row in result.mappings().all()
+        )
+
+    async def record_signal_stratum(
+        self,
+        *,
+        task_id: UUID,
+        lease_token: UUID,
+        entry_event_id: str,
+        config_version_id: UUID,
+        volatility_bucket: str,
+        liquidity_bucket: str,
+        btc_regime: str,
+        volatility_window_start_at: datetime,
+        liquidity_window_start_at: datetime,
+        btc_regime_window_start_at: datetime,
+        evidence_json: str,
+    ) -> None:
+        await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.record_training_candidate_signal_stratum(
+                    :task_id, :lease_token, :entry_event_id, :config_version_id,
+                    :volatility_bucket, :liquidity_bucket, :btc_regime,
+                    :volatility_window_start_at, :liquidity_window_start_at,
+                    :btc_regime_window_start_at, CAST(:evidence_json AS jsonb)
+                )
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "entry_event_id": entry_event_id,
+                "config_version_id": config_version_id,
+                "volatility_bucket": volatility_bucket,
+                "liquidity_bucket": liquidity_bucket,
+                "btc_regime": btc_regime,
+                "volatility_window_start_at": volatility_window_start_at,
+                "liquidity_window_start_at": liquidity_window_start_at,
+                "btc_regime_window_start_at": btc_regime_window_start_at,
+                "evidence_json": evidence_json,
+            },
+        )
+
+    async def record_random_candidate(
+        self,
+        *,
+        task_id: UUID,
+        lease_token: UUID,
+        context: CandidateScanContext,
+        instrument_id: int,
+        observed_at: datetime,
+        pool_evaluation_id: UUID,
+        config_version_id: UUID,
+        trigger_score: Decimal,
+        signal_score_threshold: Decimal,
+        volatility_bucket: str,
+        liquidity_bucket: str,
+        btc_regime: str,
+        volatility_window_start_at: datetime,
+        liquidity_window_start_at: datetime,
+        btc_regime_window_start_at: datetime,
+        evidence_json: str,
+    ) -> str:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.record_training_candidate_random_baseline(
+                    :task_id, :lease_token, :dataset_version_id,
+                    :generating_iteration_id, :instrument_id, :observed_at,
+                    'LONG', :pool_evaluation_id, :config_version_id,
+                    :trigger_score, :signal_score_threshold,
+                    :volatility_bucket, :liquidity_bucket, :btc_regime,
+                    :volatility_window_start_at, :liquidity_window_start_at,
+                    :btc_regime_window_start_at, CAST(:evidence_json AS jsonb)
+                )
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "dataset_version_id": context.dataset_version_id,
+                "generating_iteration_id": context.iteration_id,
+                "instrument_id": instrument_id,
+                "observed_at": observed_at,
+                "pool_evaluation_id": pool_evaluation_id,
+                "config_version_id": config_version_id,
+                "trigger_score": trigger_score,
+                "signal_score_threshold": signal_score_threshold,
+                "volatility_bucket": volatility_bucket,
+                "liquidity_bucket": liquidity_bucket,
+                "btc_regime": btc_regime,
+                "volatility_window_start_at": volatility_window_start_at,
+                "liquidity_window_start_at": liquidity_window_start_at,
+                "btc_regime_window_start_at": btc_regime_window_start_at,
+                "evidence_json": evidence_json,
+            },
+        )
+        return str(result.scalar_one())
 
     async def freeze_batch(
         self, task_id: UUID, lease_token: UUID, scan_result_hash: str

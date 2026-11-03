@@ -5,10 +5,17 @@ from uuid import uuid4
 
 import pytest
 
-from auto_trade.strategies.feature_scan import FactorResult, FeatureBar, StrategySignal
+from auto_trade.strategies.feature_scan import (
+    FactorResult,
+    FeatureBar,
+    StrategyEvaluation,
+    StrategySignal,
+)
 from auto_trade.training.model_a_candidate_scan_repository import (
+    BenchmarkBar,
     CandidateScanContext,
     PoolEvaluation,
+    RandomBaselineConfig,
     ScanInstrument,
 )
 from auto_trade.training.model_a_candidate_scan_task_handler import (
@@ -90,7 +97,12 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
 ) -> None:
     context = _context()
     signal_time = context.eligible_start_at
-    bars = (_bar(signal_time, "100"), _bar(signal_time + timedelta(minutes=5), "101"))
+    bars = (
+        _bar(signal_time - timedelta(minutes=10), "98"),
+        _bar(signal_time - timedelta(minutes=5), "99"),
+        _bar(signal_time, "100"),
+        _bar(signal_time + timedelta(minutes=5), "101"),
+    )
     factor = FactorResult(
         passed=True,
         value=Decimal("1"),
@@ -107,9 +119,29 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
         score=Decimal("80"),
         coverage_percent=Decimal("100"),
     )
+    evaluation = StrategyEvaluation(
+        symbol="BTCUSDT",
+        bar_number=1,
+        open_time=signal_time,
+        close_price=Decimal("100"),
+        price_precision=2,
+        ema20=Decimal("100"),
+        ema240=Decimal("100"),
+        base_volume=Decimal("1"),
+        quote_volume=Decimal("100"),
+        factors={"single_bar_price_rise": factor},
+        matched=True,
+        candidate_triggered=True,
+        trigger_reason="test",
+        score=Decimal("80"),
+        coverage_percent=Decimal("100"),
+    )
+    def evaluate(*_args: object, **kwargs: object) -> tuple[StrategySignal, ...]:
+        kwargs["evaluation_callback"](evaluation)  # type: ignore[operator]
+        return (signal,)
+
     monkeypatch.setattr(
-        "auto_trade.training.model_a_candidate_scan_task_handler.evaluate_series",
-        lambda *_args, **_kwargs: (signal,),
+        "auto_trade.training.model_a_candidate_scan_task_handler.evaluate_series", evaluate
     )
     handler = ModelACandidateScanTaskHandler(MagicMock())
     handler._store.load_context = AsyncMock(return_value=context)
@@ -120,6 +152,34 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
     handler._store.load_pool_evaluations = AsyncMock(
         return_value=(PoolEvaluation(uuid4(), signal_time),)
     )
+    handler._store.load_random_baseline_config = AsyncMock(
+        return_value=RandomBaselineConfig(
+            uuid4(),
+            {
+                "maximum_frame_candidates": 100,
+                "stratification": {
+                    "benchmark_symbol": "BTCUSDT",
+                    "volatility_measure": "CLOSE_RETURN_STDDEV_PERCENT",
+                    "volatility_window_bars": 1,
+                    "volatility_boundaries_percent": [1],
+                    "liquidity_measure": "MEAN_QUOTE_VOLUME",
+                    "liquidity_window_bars": 1,
+                    "liquidity_boundaries_quote_volume": [1000],
+                    "btc_regime_measure": "CLOSE_RETURN_PERCENT",
+                    "btc_regime_window_bars": 1,
+                    "btc_return_boundaries_percent": [0],
+                },
+            },
+        )
+    )
+    handler._store.load_benchmark_bars = AsyncMock(
+        return_value=(
+            BenchmarkBar(signal_time - timedelta(minutes=10), Decimal("98")),
+            BenchmarkBar(signal_time - timedelta(minutes=5), Decimal("99")),
+        )
+    )
+    handler._store.record_signal_stratum = AsyncMock()
+    handler._store.record_random_candidate = AsyncMock()
     handler._store.freeze_batch = AsyncMock(return_value="b" * 64)
     handler._feature_store.record_candidate_signal = AsyncMock(return_value="c" * 64)
     lease = TaskLease(
@@ -136,6 +196,8 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
     adapted = handler._feature_store.record_candidate_signal.await_args.args[0]
     assert adapted.event.source.value == "IN_SAMPLE_MODEL_A"
     assert adapted.event.entry_price == Decimal("101")
+    handler._store.record_signal_stratum.assert_awaited_once()
+    handler._store.record_random_candidate.assert_not_awaited()
     handler._store.freeze_batch.assert_awaited_once()
 
 

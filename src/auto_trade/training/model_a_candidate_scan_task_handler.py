@@ -12,7 +12,11 @@ from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from auto_trade.strategies.feature_scan import StrategyParameters, evaluate_series
+from auto_trade.strategies.feature_scan import (
+    StrategyEvaluation,
+    StrategyParameters,
+    evaluate_series,
+)
 from auto_trade.training.contracts import EntrySource
 from auto_trade.training.model_a_candidate_scan_repository import (
     CandidateScanContext,
@@ -23,6 +27,11 @@ from auto_trade.training.model_a_candidate_scan_repository import (
 from auto_trade.training.model_a_pipeline import ModelAPipelineError, adapt_model_a_signal
 from auto_trade.training.model_a_repository import DatabaseModelAFeatureStore
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
+from auto_trade.training.random_baseline_strata import (
+    ComputedStratum,
+    compute_stratum,
+    parse_strata_config,
+)
 
 
 class ModelACandidateScanError(ModelAPipelineError):
@@ -100,6 +109,20 @@ def _pool_at(
     return selected
 
 
+def _stratum_evidence(
+    stratum: ComputedStratum, *, kind: str, score: Decimal, trigger_reason: str | None
+) -> str:
+    evidence = dict(stratum.evidence)
+    evidence.update(
+        {
+            "frame_kind": kind,
+            "trigger_reason": trigger_reason,
+            "trigger_score": str(score),
+        }
+    )
+    return json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
+
+
 class ModelACandidateScanTaskHandler:
     def __init__(self, connection: AsyncConnection) -> None:
         self._store = DatabaseModelACandidateScanStore(connection)
@@ -114,7 +137,19 @@ class ModelACandidateScanTaskHandler:
         if context.existing_batch_hash is not None:
             return context.existing_batch_hash
         parameters = build_candidate_strategy_parameters(context)
+        raw_baseline = await self._store.load_random_baseline_config(
+            lease.task_id, lease.lease_token
+        )
+        strata_config = parse_strata_config(
+            raw_baseline.config_version_id, raw_baseline.config
+        )
+        benchmark_bars = await self._store.load_benchmark_bars(
+            lease.task_id, lease.lease_token
+        )
+        if not benchmark_bars:
+            raise ModelACandidateScanError("random-baseline benchmark history is empty")
         persisted_ids: list[str] = []
+        frame_candidate_ids: list[str] = []
         for instrument in await self._store.load_instruments(
             lease.task_id, lease.lease_token
         ):
@@ -133,12 +168,15 @@ class ModelACandidateScanTaskHandler:
             pools = await self._store.load_pool_evaluations(
                 lease.task_id, lease.lease_token, instrument.instrument_id
             )
+            evaluations: list[StrategyEvaluation] = []
             signals = evaluate_series(
                 instrument.symbol,
                 scan_bars,
                 parameters,
                 context.eligible_start_at,
+                evaluation_callback=evaluations.append,
             )
+            evaluation_by_time = {item.open_time: item for item in evaluations}
             for signal in signals:
                 pool = _pool_at(pools, signal.open_time)
                 entry_time = signal.open_time + timedelta(
@@ -161,13 +199,88 @@ class ModelACandidateScanTaskHandler:
                     input_fingerprint=input_fingerprint,
                     entry_price=entry_bar.open_price,
                 )
-                persisted_ids.append(
-                    await self._feature_store.record_candidate_signal(
-                        adapted, task_id=lease.task_id, lease_token=lease.lease_token
-                    )
+                entry_event_id = await self._feature_store.record_candidate_signal(
+                    adapted, task_id=lease.task_id, lease_token=lease.lease_token
+                )
+                persisted_ids.append(entry_event_id)
+                evaluation = evaluation_by_time[signal.open_time]
+                stratum = compute_stratum(
+                    observed_at=signal.open_time,
+                    instrument_bars=bars,
+                    benchmark_bars=benchmark_bars,
+                    interval_seconds=context.interval_seconds,
+                    config=strata_config,
+                )
+                await self._store.record_signal_stratum(
+                    task_id=lease.task_id,
+                    lease_token=lease.lease_token,
+                    entry_event_id=entry_event_id,
+                    config_version_id=strata_config.config_version_id,
+                    volatility_bucket=stratum.volatility_bucket,
+                    liquidity_bucket=stratum.liquidity_bucket,
+                    btc_regime=stratum.btc_regime,
+                    volatility_window_start_at=stratum.volatility_window_start_at,
+                    liquidity_window_start_at=stratum.liquidity_window_start_at,
+                    btc_regime_window_start_at=stratum.btc_regime_window_start_at,
+                    evidence_json=_stratum_evidence(
+                        stratum,
+                        kind="MATCHED_SIGNAL",
+                        score=evaluation.score,
+                        trigger_reason=evaluation.trigger_reason,
+                    ),
                 )
                 if len(persisted_ids) > context.maximum_signal_count:
                     raise ModelACandidateScanError("candidate signal count exceeds READY limit")
+            for evaluation in evaluations:
+                if (
+                    not evaluation.candidate_triggered
+                    or evaluation.score >= parameters.signal_score_threshold
+                    or evaluation.coverage_percent
+                    < parameters.minimum_data_coverage_percent
+                ):
+                    continue
+                pool = _pool_at(pools, evaluation.open_time)
+                entry_time = evaluation.open_time + timedelta(
+                    seconds=parameters.interval_seconds
+                )
+                if pool is None or entry_bars.get(entry_time) is None:
+                    continue
+                stratum = compute_stratum(
+                    observed_at=evaluation.open_time,
+                    instrument_bars=bars,
+                    benchmark_bars=benchmark_bars,
+                    interval_seconds=context.interval_seconds,
+                    config=strata_config,
+                )
+                frame_candidate_ids.append(
+                    await self._store.record_random_candidate(
+                        task_id=lease.task_id,
+                        lease_token=lease.lease_token,
+                        context=context,
+                        instrument_id=instrument.instrument_id,
+                        observed_at=evaluation.open_time,
+                        pool_evaluation_id=pool.pool_evaluation_id,
+                        config_version_id=strata_config.config_version_id,
+                        trigger_score=evaluation.score,
+                        signal_score_threshold=parameters.signal_score_threshold,
+                        volatility_bucket=stratum.volatility_bucket,
+                        liquidity_bucket=stratum.liquidity_bucket,
+                        btc_regime=stratum.btc_regime,
+                        volatility_window_start_at=stratum.volatility_window_start_at,
+                        liquidity_window_start_at=stratum.liquidity_window_start_at,
+                        btc_regime_window_start_at=stratum.btc_regime_window_start_at,
+                        evidence_json=_stratum_evidence(
+                            stratum,
+                            kind="LOW_SCORE_CANDIDATE",
+                            score=evaluation.score,
+                            trigger_reason=evaluation.trigger_reason,
+                        ),
+                    )
+                )
+                if len(frame_candidate_ids) > strata_config.maximum_frame_candidates:
+                    raise ModelACandidateScanError(
+                        "random-baseline candidate frame exceeds READY limit"
+                    )
         if not persisted_ids:
             raise ModelACandidateScanError("candidate emitted no governed entry signals")
         ordered_ids = tuple(sorted(persisted_ids))
@@ -177,6 +290,9 @@ class ModelACandidateScanTaskHandler:
                     "candidate_parameters": context.candidate_parameters,
                     "dataset_root_fingerprint": context.dataset_root_fingerprint,
                     "entry_event_ids": ordered_ids,
+                    "random_baseline_candidate_ids": tuple(
+                        sorted(frame_candidate_ids)
+                    ),
                     "payload_version": 1,
                 },
                 sort_keys=True,

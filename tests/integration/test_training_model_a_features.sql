@@ -514,6 +514,26 @@ END
 $$;
 
 RESET ROLE;
+
+INSERT INTO strategy_training.training_random_baseline_candidate_outcomes (
+    candidate_id, matched_entry_event_id, holding_rule_version_id,
+    label_window_end_at, interval_seconds, expected_bar_count,
+    observed_bar_count, missing_bar_count, is_complete, incomplete_reason,
+    mfe_percent, mae_percent, return_percent, mfe_reached_at,
+    mae_reached_at, endpoint_observed_at, path_fingerprint
+)
+SELECT candidate.candidate_id,
+       'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234',
+       'd2000000-0000-0000-0000-000000000003',
+       candidate.entry_time + interval '24 hours', 300, 288, 288, 0,
+       true, NULL, 5, 1, 3,
+       candidate.entry_time + interval '1 hour',
+       candidate.entry_time + interval '30 minutes',
+       candidate.entry_time + interval '24 hours', repeat('7', 64)
+FROM strategy_training.training_random_baseline_candidates candidate
+WHERE candidate.generating_iteration_id =
+      'd5000000-0000-0000-0000-000000000001';
+
 SET LOCAL ROLE tb2_training_evaluator;
 
 DO $$
@@ -985,6 +1005,286 @@ BEGIN
            WHERE mapping.natural_source <> 'FIXED_BASELINE_MODEL_A'
        ) THEN
         RAISE EXCEPTION 'model-B/portfolio simulation facts are incomplete';
+    END IF;
+END
+$$;
+
+SET LOCAL session_replication_role = replica;
+
+INSERT INTO strategy_training.training_dataset_versions (
+    dataset_version_id, dataset_type, partition,
+    partition_start_at, partition_end_at, interval_seconds,
+    warmup_start_at, eligible_start_at, eligible_end_at, label_window_end_at,
+    source_as_of_at, visibility_cutoff_at, fingerprint_schema_version,
+    purge_duration, embargo_duration,
+    ticker_pool_rule_version_id, data_quality_rule_version_id,
+    holding_rule_version_id, label_horizon_duration, max_holding_duration,
+    root_fingerprint, source_revision_watermark, status,
+    created_by_user_id, ready_at
+) VALUES (
+    'd3000000-0000-0000-0000-000000000003', 'MODEL_A_FEATURES', 'TRAIN',
+    '2026-06-20 00:00:00+00', '2026-06-22 00:00:00+00', 300,
+    '2026-06-19 00:00:00+00', '2026-06-20 00:00:00+00',
+    '2026-06-20 00:05:00+00', '2026-06-21 00:05:00+00',
+    '2026-07-02 00:00:00+00', '2026-06-19 00:00:00+00', 1,
+    interval '1 day', interval '1 day',
+    'd2000000-0000-0000-0000-000000000001',
+    'd2000000-0000-0000-0000-000000000002',
+    'd2000000-0000-0000-0000-000000000003',
+    interval '1 day', interval '1 day', repeat('f', 64),
+    '{"fixture":"opportunity-universe-build"}', 'READY',
+    'd1000000-0000-0000-0000-000000000001', clock_timestamp()
+);
+
+INSERT INTO strategy_training.training_experiments (
+    experiment_id, experiment_mode, dataset_version_id,
+    resource_limit_config_version_id, experiment_name, state,
+    exposure_identity_hash, created_by_user_id, started_at
+) VALUES (
+    'd4000000-0000-0000-0000-000000000003', 'DISCOVERY',
+    'd3000000-0000-0000-0000-000000000003',
+    'd2000000-0000-0000-0000-000000000004',
+    'opportunity universe build fixture', 'RUNNING', repeat('e', 64),
+    'd1000000-0000-0000-0000-000000000001', clock_timestamp()
+);
+
+INSERT INTO strategy_training.training_experiment_config_bindings (
+    experiment_id, config_type, config_version_id
+) VALUES (
+    'd4000000-0000-0000-0000-000000000003', 'OPPORTUNITY_DEFINITION',
+    'd2000000-0000-0000-0000-000000000007'
+);
+
+INSERT INTO strategy_training.training_iterations (
+    iteration_id, experiment_id, candidate_version, candidate_source,
+    random_seed, candidate_parameters, candidate_content_hash,
+    resource_budget, state, validation_started_at, run_started_at
+)
+SELECT 'd5000000-0000-0000-0000-000000000003',
+       'd4000000-0000-0000-0000-000000000003', 1, 'FIXED_BASELINE', 13,
+       parameters, encode(digest(parameters::text, 'sha256'), 'hex'),
+       '{"worker":1}'::jsonb, 'RUNNING', clock_timestamp(), clock_timestamp()
+FROM (SELECT '{"universe_build":"v1"}'::jsonb AS parameters) fixture;
+
+INSERT INTO strategy_training.training_historical_pool_evaluations (
+    pool_evaluation_id, dataset_version_id, instrument_id, symbol,
+    evaluation_at, onboard_at, contract_identity,
+    exchange_status, system_status, status_effective_at,
+    status_payload_hash, observed_quote_notional, liquidity_observed_at,
+    liquidity_revision_hash, is_eligible, rejection_codes,
+    evidence_json, evidence_hash
+)
+SELECT 'd6000000-0000-0000-0000-000000000003',
+       'd3000000-0000-0000-0000-000000000003', 2600001, 'MODELUSDT',
+       '2026-06-19 23:55:00+00', '2025-01-01 00:00:00+00',
+       'USDT_PERPETUAL', 'TRADING', 'ACTIVE', '2026-06-01 00:00:00+00',
+       repeat('8', 64), 1000000, '2026-06-19 23:55:00+00', repeat('9', 64),
+       true, '[]'::jsonb, evidence,
+       encode(digest(evidence::text, 'sha256'), 'hex')
+FROM (SELECT '{"fixture":"universe-eligible"}'::jsonb AS evidence) source;
+
+SET LOCAL session_replication_role = origin;
+
+INSERT INTO market.klines (
+    instrument_id, price_type, interval_seconds, open_time, revision_no,
+    is_current, close_time, open_price, high_price, low_price, close_price,
+    base_volume, quote_volume, trade_count, is_closed, source,
+    data_rule_version, payload_hash, quality_status, collected_at, effective_at
+)
+SELECT 2600001, 'TRADE', 300,
+       '2026-06-20 00:00:00+00'::timestamptz + ordinal * interval '5 minutes',
+       1, true,
+       '2026-06-20 00:05:00+00'::timestamptz + ordinal * interval '5 minutes',
+       100, 110, 99, 104, 10000, 1040000, 100, true, 'ARCHIVE',
+       'fixture-v1', encode(digest('universe-' || ordinal::text, 'sha256'), 'hex'),
+       'VALID', '2026-07-01 00:00:00+00', '2026-07-01 00:00:00+00'
+FROM generate_series(0, 288) ordinal;
+
+INSERT INTO strategy_training.training_tasks (
+    task_id, experiment_id, iteration_id, task_type, executor_kind,
+    idempotency_key, task_payload, state, attempt_count,
+    lease_token, leased_by, lease_expires_at, started_at
+) VALUES (
+    'd9000000-0000-0000-0000-000000000005',
+    'd4000000-0000-0000-0000-000000000003',
+    'd5000000-0000-0000-0000-000000000003',
+    'MODEL_A_L0_AGGREGATION', 'EVALUATOR', repeat('1', 64),
+    '{"task_type":"MODEL_A_L0_AGGREGATION","payload_version":1}'::jsonb,
+    'RUNNING', 1, 'd9000000-0000-0000-0000-000000000006',
+    'opportunity-universe-fixture', clock_timestamp() + interval '5 minutes',
+    clock_timestamp()
+);
+
+SELECT strategy_training.build_training_opportunity_universe(
+    'd9000000-0000-0000-0000-000000000005',
+    'd9000000-0000-0000-0000-000000000006'
+) AS built_universe_id \gset
+
+SELECT set_config('test.built_universe_id', :'built_universe_id', true);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM strategy_training.training_opportunity_universe_versions universe
+        JOIN strategy_training.training_opportunity_universe_events event
+          ON event.opportunity_universe_id = universe.opportunity_universe_id
+        WHERE universe.opportunity_universe_id =
+              current_setting('test.built_universe_id')::uuid
+          AND universe.status = 'READY'
+          AND universe.event_count = 1
+          AND universe.opportunity_count = 1
+          AND event.signal_time = '2026-06-20 00:00:00+00'
+          AND event.is_opportunity
+          AND event.mfe_percent = 10
+          AND event.mae_percent = 1
+          AND event.return_percent = 4
+    ) THEN
+        RAISE EXCEPTION 'full-pool opportunity universe was not built correctly';
+    END IF;
+END
+$$;
+
+INSERT INTO strategy_training.training_config_versions (
+    config_version_id, config_type, semver, schema_version, config_json,
+    content_hash, created_by_user_id
+)
+SELECT 'd2000000-0000-0000-0000-000000000013', 'SCORING_MODEL_A',
+       '26.0.13', 1, config_json,
+       encode(digest(config_json::text, 'sha256'), 'hex'),
+       'd1000000-0000-0000-0000-000000000001'
+FROM (SELECT '{
+    "calculation_version":"DISCOVERY_V1",
+    "weights":{
+        "concentration_penalty":0,
+        "cross_period_stability":0,
+        "entry_timing":0,
+        "excess_mfe_quality":0,
+        "false_signal_penalty":0,
+        "low_sample_penalty":0,
+        "opportunity_recall":1
+    },
+    "entry_timing_scale_percent":5,
+    "excess_mfe_scale_percent":5,
+    "minimum_signal_count":1,
+    "minimum_opportunity_count":1,
+    "minimum_effective_day_count":1,
+    "minimum_week_count":1
+}'::jsonb AS config_json) fixture;
+
+UPDATE strategy_training.training_config_versions
+SET status = 'READY',
+    ready_by_user_id = 'd1000000-0000-0000-0000-000000000001',
+    ready_at = clock_timestamp()
+WHERE config_version_id = 'd2000000-0000-0000-0000-000000000013';
+
+SET LOCAL session_replication_role = replica;
+
+INSERT INTO strategy_training.training_experiment_config_bindings (
+    experiment_id, config_type, config_version_id
+) VALUES (
+    'd4000000-0000-0000-0000-000000000001', 'SCORING_MODEL_A',
+    'd2000000-0000-0000-0000-000000000013'
+);
+
+SET LOCAL session_replication_role = origin;
+
+INSERT INTO strategy_training.training_opportunity_universe_versions (
+    opportunity_universe_id, dataset_version_id,
+    opportunity_definition_version_id, status, event_count,
+    opportunity_count, universe_fingerprint, completed_at
+) VALUES (
+    'da000000-0000-0000-0000-000000000001',
+    'd3000000-0000-0000-0000-000000000001',
+    'd2000000-0000-0000-0000-000000000007', 'READY', 1, 1,
+    repeat('a', 64), clock_timestamp()
+);
+
+INSERT INTO strategy_training.training_opportunity_universe_events (
+    opportunity_event_id, opportunity_universe_id, instrument_id, symbol,
+    signal_time, entry_time, entry_price, direction, pool_evaluation_id,
+    mfe_percent, mae_percent, return_percent, is_opportunity,
+    reason_codes, path_fingerprint, truth_fingerprint
+) VALUES (
+    repeat('b', 64), 'da000000-0000-0000-0000-000000000001',
+    2600001, 'MODELUSDT', '2026-06-10 01:00:00+00',
+    '2026-06-10 01:05:00+00', 100, 'LONG',
+    'd6000000-0000-0000-0000-000000000001', 6, 1, 4, true,
+    '[]'::jsonb, repeat('c', 64), repeat('d', 64)
+);
+
+INSERT INTO strategy_training.training_tasks (
+    task_id, experiment_id, iteration_id, task_type, executor_kind,
+    idempotency_key, task_payload, state, attempt_count,
+    lease_token, leased_by, lease_expires_at, started_at
+) VALUES (
+    'd9000000-0000-0000-0000-000000000003',
+    'd4000000-0000-0000-0000-000000000001',
+    'd5000000-0000-0000-0000-000000000001',
+    'MODEL_A_L0_AGGREGATION', 'EVALUATOR', repeat('e', 64),
+    '{"task_type":"MODEL_A_L0_AGGREGATION","payload_version":1}'::jsonb,
+    'RUNNING', 1, 'd9000000-0000-0000-0000-000000000004',
+    'model-a-l0-fixture', clock_timestamp() + interval '5 minutes',
+    clock_timestamp()
+);
+
+SET LOCAL ROLE tb2_training_evaluator;
+
+SELECT strategy_training.finalize_training_model_a_discovery_l0(
+    'd9000000-0000-0000-0000-000000000003',
+    'd9000000-0000-0000-0000-000000000004'
+) AS model_a_l0_hash \gset
+
+SELECT set_config('test.model_a_l0_hash', :'model_a_l0_hash', true);
+
+SELECT strategy_training.complete_training_task(
+    'd9000000-0000-0000-0000-000000000003',
+    'd9000000-0000-0000-0000-000000000004',
+    'model-a-l0-fixture', 'SUCCEEDED', :'model_a_l0_hash', NULL
+);
+
+DO $$
+DECLARE replay_hash char(64);
+BEGIN
+    replay_hash := strategy_training.finalize_training_model_a_discovery_l0(
+        'd9000000-0000-0000-0000-000000000003',
+        'd9000000-0000-0000-0000-000000000004'
+    );
+    IF replay_hash <> current_setting('test.model_a_l0_hash')::char(64) THEN
+        RAISE EXCEPTION 'model-A L0 idempotent replay changed evidence hash';
+    END IF;
+END
+$$;
+
+RESET ROLE;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM strategy_training.training_iteration_evidence_l0 evidence
+        JOIN strategy_training.training_iterations iteration USING (iteration_id)
+        WHERE evidence.iteration_id = 'd5000000-0000-0000-0000-000000000001'
+          AND iteration.state = 'SUCCEEDED'
+          AND evidence.partition = 'TRAIN'
+          AND evidence.terminal_state = 'SUCCEEDED'
+          AND evidence.hard_gate_passed
+          AND evidence.objective_value = 100
+          AND evidence.aggregate_metrics ->> 'calculation_version' = 'DISCOVERY_V1'
+          AND (evidence.aggregate_metrics ->> 'signal_count')::integer = 1
+          AND (evidence.aggregate_metrics ->> 'opportunity_count')::integer = 1
+          AND (evidence.aggregate_metrics ->> 'recalled_opportunity_count')::integer = 1
+    ) OR NOT EXISTS (
+        SELECT 1 FROM strategy_training.training_tasks
+        WHERE task_id = 'd9000000-0000-0000-0000-000000000003'
+          AND state = 'SUCCEEDED'
+          AND result_hash = current_setting('test.model_a_l0_hash')::char(64)
+    ) OR NOT EXISTS (
+        SELECT 1 FROM strategy_training.optimizer_train_objectives
+        WHERE iteration_id = 'd5000000-0000-0000-0000-000000000001'
+          AND objective_value = 100
+    ) THEN
+        RAISE EXCEPTION 'authoritative model-A Discovery L0 was not finalized';
     END IF;
 END
 $$;

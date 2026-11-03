@@ -22,6 +22,7 @@ _TASK_EXECUTORS = {
     "DATASET_BUILD": ExecutorKind.WORKER,
     "MODEL_A_CANDIDATE_SCAN": ExecutorKind.WORKER,
     "MODEL_A_EVALUATION": ExecutorKind.EVALUATOR,
+    "MODEL_A_L0_AGGREGATION": ExecutorKind.EVALUATOR,
     "MODEL_B_REPLAY": ExecutorKind.MODEL_B,
     "PORTFOLIO_EVALUATION": ExecutorKind.EVALUATOR,
     "OPTIMIZER_TRIAL": ExecutorKind.OPTIMIZER,
@@ -125,6 +126,20 @@ class DatabaseOrchestratorStore:
                 """
                 SELECT iteration_id, action
                 FROM strategy_training.advance_training_candidate_scans()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["iteration_id"]), str(row["action"]))
+            for row in result.mappings().all()
+        )
+
+    async def advance_model_a_l0_tasks(self) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT iteration_id, action
+                FROM strategy_training.advance_training_model_a_l0_tasks()
                 """
             )
         )

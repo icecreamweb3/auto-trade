@@ -13,6 +13,7 @@ from auto_trade.training.model_a_candidate_scan_task_handler import (
 from auto_trade.training.model_a_evaluation_task_handler import (
     ModelAEvaluationTaskHandler,
 )
+from auto_trade.training.model_a_l0_task_handler import ModelAL0AggregationTaskHandler
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayTaskHandler
 from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialTaskHandler
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
@@ -34,6 +35,9 @@ def build_handler_registry(
     elif executor_kind is ExecutorKind.EVALUATOR:
         registry.register("ARCHIVE_VERIFY", ArchiveVerifyTaskHandler(connection))
         registry.register("MODEL_A_EVALUATION", ModelAEvaluationTaskHandler(connection))
+        registry.register(
+            "MODEL_A_L0_AGGREGATION", ModelAL0AggregationTaskHandler(connection)
+        )
         registry.register(
             "PORTFOLIO_EVALUATION", PortfolioEvaluationTaskHandler(connection)
         )

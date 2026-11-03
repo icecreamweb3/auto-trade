@@ -52,7 +52,7 @@
 
 验收：普通/通用角色无弱留出及 TEST `USAGE`；越界分区、非法转换、READY 修改均在数据库层失败；迁移可在空库完整应用并可重复跳过。
 
-当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；已在测试环境验证角色、schema 权限和连接身份。`compose.training.yaml` 的 `training` profile 继续只做 fail-closed 身份/连接 smoke check；独立的 `training-runtime` profile 已接入数据库租约、心跳、取消和有限失败码，并启用 `DATASET_BUILD` v1、`MODEL_A_CANDIDATE_SCAN` v1、`MODEL_A_EVALUATION` v1、`MODEL_B_REPLAY` v1、`PORTFOLIO_EVALUATION` v1、`OPTIMIZER_TRIAL` v1 与 `ARCHIVE_VERIFY` v1。迁移 `038`—`045` 分别落实任务载荷、隔离执行身份、模型 A/B/组合评估上下文、随机基线、TRAIN-only TELL 和归档恢复验证；迁移 `046_training_optimizer_ask.sql` 只通过当前 Optimizer ASK 租约提供冻结搜索空间和顺序 TRAIN 历史；迁移 `047_training_optimizer_orchestration.sql` 建立 proposal、候选 iteration 与 ASK/TELL 推进；迁移 `048_training_model_a_candidate_scan.sql` 新增活动租约约束的 5m 候选扫描、受控 as-of 行情读取、`IN_SAMPLE_MODEL_A` 事件和不可变 entry batch，worker 仍无权直接读取行情表或自行调用旧批次冻结入口。编排器当前可自动推进 `ASK_ENQUEUED → ITERATION_CREATED → SCAN_ENQUEUED → EVALUATION_ENQUEUED → WAITING_TRAIN_L0 → TELL_ENQUEUED`。Optimizer 只消费冻结 SEARCH_SPACE 和既有 TRAIN TELL；编排器只得到标识与动作码，不读取目标值。Q-033 的低分候选抽样框虽然已有数据库实体，但优化候选扫描尚未生成完整分层框，且随机入场尚未保存独立未来路径结果，因此权威 DiscoveryScore/L0 仍不得计算或伪造；评估完成后安全停在 `WAITING_TRAIN_L0`。A0 仍不能标记为完成，直到 `046`—`048` 和 runtime 在目标环境完成部署验收，以及 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置全部通过。
+当前进度：已补充部署侧 `database/bootstrap_training_roles.sh`，可在迁移后创建独立 LOGIN 服务账户并执行最小权限检查；已在测试环境验证角色、schema 权限和连接身份。`compose.training.yaml` 的 `training` profile 继续只做 fail-closed 身份/连接 smoke check；独立的 `training-runtime` profile 已接入数据库租约、心跳、取消和有限失败码，并启用 `DATASET_BUILD` v1、`MODEL_A_CANDIDATE_SCAN` v1、`MODEL_A_EVALUATION` v1、`MODEL_A_L0_AGGREGATION` v1、`MODEL_B_REPLAY` v1、`PORTFOLIO_EVALUATION` v1、`OPTIMIZER_TRIAL` v1 与 `ARCHIVE_VERIFY` v1。迁移 `038`—`045` 分别落实任务载荷、隔离执行身份、模型 A/B/组合评估上下文、随机基线、TRAIN-only TELL 和归档恢复验证；迁移 `046_training_optimizer_ask.sql` 只通过当前 Optimizer ASK 租约提供冻结搜索空间和顺序 TRAIN 历史；迁移 `047_training_optimizer_orchestration.sql` 建立 proposal、候选 iteration 与 ASK/TELL 推进；迁移 `048_training_model_a_candidate_scan.sql` 新增活动租约约束的 5m 候选扫描、受控 as-of 行情读取、`IN_SAMPLE_MODEL_A` 事件和不可变 entry batch；迁移 `049_training_random_baseline_strata.sql` 以 READY 配置驱动信号前波动率、流动性和 BTC 状态分层，并保存同候选触发但低于信号门槛的可信抽样框；迁移 `050_training_random_baseline_outcomes.sql` 为每个实际抽中的随机候选保存独立、完整的未来 MFE/MAE/Return 路径，缺少任一路径时数据库拒绝随机基线；迁移 `051_training_model_a_discovery_l0.sql` 以完整 5m 基础池建立可复用机会总体，通过 READY `SCORING_MODEL_A` 计算 OpportunityRecall、入场时机、超额 MFE、跨周稳定性和三项惩罚，并写入权威 TRAIN L0。worker 仍无权直接读取行情表或自行调用旧批次冻结入口。编排器当前可自动推进 `ASK_ENQUEUED → ITERATION_CREATED → SCAN_ENQUEUED → EVALUATION_ENQUEUED → L0_ENQUEUED → TELL_ENQUEUED`。Optimizer 只消费冻结 SEARCH_SPACE 和既有 TRAIN TELL；编排器只得到标识与动作码，不读取目标值。评分方法和配置契约已经实现，但各环境仍必须先审批并绑定实际数值为 READY 的 `SCORING_MODEL_A`，不得沿用测试夹具数值。A0 仍不能标记为完成，直到 `046`—`051` 和 runtime 在目标环境完成部署验收，以及 secret、角色成员关系、`application_name`、NATS/实盘权限和连接池配置全部通过。
 
 ### M2：A0 数据集构建与审计
 
@@ -133,11 +133,11 @@
 
 ## 4. 当前实施状态
 
-截至 2026-11-02，已完成并在一次性 TimescaleDB 集成环境验收：
+截至 2026-11-03，已完成并在一次性 TimescaleDB 集成环境验收：
 
 - M0：领域契约、UTC 时间边界、确定性标识、状态机与单元测试；
 - `019`：三个隔离 schema、NOLOGIN 最小权限角色、应用训练身份和追加式角色审计；
 - `020`：READY 配置、TRAIN/VALIDATION 数据集、成员/质量/暴露事实及复现清单；
 - `021`：TRAIN-only 实验/迭代、优化器检查点、冻结终选、共享 VALIDATION 逻辑身份和不可回收预算。
 
-当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；工作区现要求显式、有效且未撤销的 `TRAINING_RESEARCHER`，产品 `ADMIN` 不再隐式取得训练访问权。`019`—`048` 迁移已通过一次性数据库重复迁移和集成测试。`DATASET_BUILD`、`MODEL_A_CANDIDATE_SCAN`、`MODEL_A_EVALUATION`、`MODEL_B_REPLAY`、`PORTFOLIO_EVALUATION`、`OPTIMIZER_TRIAL` 与 `ARCHIVE_VERIFY` 已接入真实租约循环；Optimizer 已实现可重放的真实 Optuna ASK、proposal 落库、候选迭代创建、5m 受控扫描、TRAIN-only TELL 及逐 trial自动推进。自动推进仍明确等待权威 TRAIN L0，不会将空结果、随机基线抽样元数据或临时评分伪装为完成。Q-033 低分候选分层框、随机入场未来结果、DiscoveryScore 聚合、真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未完成，不能据此启动正式 TEST、影子运行或完整训练流水线。
+当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；工作区现要求显式、有效且未撤销的 `TRAINING_RESEARCHER`，产品 `ADMIN` 不再隐式取得训练访问权。`019`—`051` 迁移已通过一次性数据库重复迁移和集成测试。`DATASET_BUILD`、`MODEL_A_CANDIDATE_SCAN`、`MODEL_A_EVALUATION`、`MODEL_A_L0_AGGREGATION`、`MODEL_B_REPLAY`、`PORTFOLIO_EVALUATION`、`OPTIMIZER_TRIAL` 与 `ARCHIVE_VERIFY` 已接入真实租约循环；Optimizer 已实现可重放的真实 Optuna ASK、proposal 落库、候选迭代创建、5m 受控扫描、Q-033 配置驱动分层低分对照、被抽中候选的独立未来路径、完整基础池机会总体、配置驱动 DiscoveryScore、TRAIN-only TELL 及逐 trial 自动推进。单次真实 SQL 集成夹具已验证 L0 成功终态、Optimizer 目标可见性和幂等重放；实际评分权重与硬门槛仍须按环境审批为 READY。真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未完成，不能据此启动正式 TEST、影子运行或完整训练流水线。
