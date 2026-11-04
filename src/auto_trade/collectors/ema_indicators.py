@@ -179,15 +179,16 @@ async def _instrument_ids(
             """
             SELECT i.instrument_id
             FROM core.instruments i
-            WHERE EXISTS (
+            WHERE i.trading_status = 'TRADING'
+               OR EXISTS (
                 SELECT 1
-                FROM market.klines k
-                WHERE k.instrument_id = i.instrument_id
-                  AND k.price_type = 'TRADE'
-                  AND k.interval_seconds = 300
-                  AND k.is_current
-                  AND k.is_closed
-                  AND k.quality_status = 'VALID'
+                FROM market.kline_ema_checkpoints checkpoint
+                WHERE checkpoint.instrument_id = i.instrument_id
+            )
+               OR EXISTS (
+                SELECT 1
+                FROM market.kline_ema_dirty_ranges dirty
+                WHERE dirty.instrument_id = i.instrument_id
             )
             ORDER BY i.instrument_id
             """
@@ -247,6 +248,11 @@ async def _recompute_interval(
         if checkpoint is not None and checkpoint["calculation_version"] == CALCULATION_VERSION
         else None
     )
+    marker_dirty_start = (
+        cast(datetime, dirty_marker["dirty_start"])
+        if dirty_marker is not None
+        else None
+    )
     if previous_checked_at is None:
         dirty_statement = text(
             """
@@ -271,8 +277,8 @@ async def _recompute_interval(
             "checked_until": checked_until,
             "bootstrap_bars": bootstrap_bars,
         }
-    elif dirty_marker is not None:
-        dirty_start = cast(datetime, dirty_marker["dirty_start"])
+    elif marker_dirty_start is not None:
+        dirty_start = marker_dirty_start
     else:
         dirty_start = None
 
@@ -281,7 +287,12 @@ async def _recompute_interval(
             dirty_statement,
             dirty_parameters,
         )
-        dirty_start = cast(datetime | None, dirty_result.scalar_one())
+        bootstrap_start = cast(datetime | None, dirty_result.scalar_one())
+        dirty_start = min(
+            start
+            for start in (bootstrap_start, marker_dirty_start)
+            if start is not None
+        ) if bootstrap_start is not None or marker_dirty_start is not None else None
 
     if dirty_start is None:
         await _save_checkpoint(

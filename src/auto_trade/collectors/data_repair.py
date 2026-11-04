@@ -254,6 +254,91 @@ class DataRepairRepository:
             for gap in group_missing_points(rows, step)
         ]
 
+    async def detect_kline_gaps_for_symbols_in_range(
+        self,
+        start: datetime,
+        end: datetime,
+        series: KlineSeries,
+        symbols: tuple[str, ...],
+    ) -> list[GapRange]:
+        """Detect historical gaps for an explicit pool, including settled symbols."""
+        normalized = tuple(sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()}))
+        if not normalized:
+            raise ValueError("at least one symbol is required")
+        aligned_start, aligned_end = align_kline_range(start, end, series)
+        if aligned_start >= aligned_end:
+            return []
+        step = timedelta(seconds=series.interval_seconds)
+        async with self._engine.connect() as connection:
+            await connection.execute(
+                text(
+                    "SELECT "
+                    "set_config('statement_timeout', :statement_timeout, true), "
+                    "set_config('plan_cache_mode', 'force_custom_plan', true)"
+                ),
+                {"statement_timeout": f"{self._statement_timeout_seconds}s"},
+            )
+            result = await connection.execute(
+                text(
+                    """
+                    WITH expected AS (
+                        SELECT i.instrument_id, i.symbol, point AS open_time
+                        FROM core.instruments i
+                        CROSS JOIN generate_series(
+                            CAST(:range_start AS timestamptz),
+                            CAST(:range_end AS timestamptz) - CAST(:step AS interval),
+                            CAST(:step AS interval)
+                        ) AS point
+                        WHERE i.symbol = ANY(CAST(:symbols AS text[]))
+                          AND (i.onboard_at IS NULL OR i.onboard_at <= point)
+                    )
+                    SELECT e.instrument_id, e.symbol, e.open_time
+                    FROM expected e
+                    LEFT JOIN market.klines k
+                      ON k.instrument_id = e.instrument_id
+                     AND k.price_type = :price_type
+                     AND k.interval_seconds = :interval_seconds
+                     AND k.open_time >= CAST(:range_start AS timestamptz)
+                     AND k.open_time < CAST(:range_end AS timestamptz)
+                     AND k.open_time = e.open_time
+                     AND k.is_current
+                    LEFT JOIN market.data_gaps g
+                      ON g.instrument_id = e.instrument_id
+                     AND g.data_type = :data_type
+                     AND g.interval_seconds = :interval_seconds
+                     AND e.open_time >= g.gap_start
+                     AND e.open_time < g.gap_end
+                     AND g.status IN ('OPEN','QUEUED','BACKFILLING')
+                    WHERE k.instrument_id IS NULL AND g.gap_id IS NULL
+                    ORDER BY e.instrument_id, e.open_time
+                    """
+                ),
+                {
+                    "range_start": aligned_start,
+                    "range_end": aligned_end,
+                    "step": step,
+                    "symbols": list(normalized),
+                    "price_type": series.price_type.value,
+                    "data_type": series.data_type,
+                    "interval_seconds": series.interval_seconds,
+                },
+            )
+            rows = [
+                (cast(int, row[0]), cast(str, row[1]), cast(datetime, row[2]))
+                for row in result.all()
+            ]
+        return [
+            GapRange(
+                gap.instrument_id,
+                gap.symbol,
+                gap.start,
+                gap.end,
+                gap.expected_count,
+                series,
+            )
+            for gap in group_missing_points(rows, step)
+        ]
+
     async def queue_gaps(self, gaps: list[GapRange]) -> int:
         queued = 0
         async with self._engine.begin() as connection:
@@ -1135,6 +1220,69 @@ async def queue_mark_5m_backfill(
     }
 
 
+async def queue_symbol_5m_backfill(
+    settings: Settings,
+    start: datetime,
+    end: datetime,
+    price_type: PriceType,
+    symbols: tuple[str, ...],
+) -> dict[str, int | str]:
+    if start.tzinfo is None or start.utcoffset() != timedelta(0):
+        raise ValueError("start must be timezone-aware UTC")
+    if end.tzinfo is None or end.utcoffset() != timedelta(0):
+        raise ValueError("end must be timezone-aware UTC")
+    if start >= end:
+        raise ValueError("start must precede end")
+    if price_type not in {PriceType.TRADE, PriceType.MARK}:
+        raise ValueError("targeted 5m backfill supports TRADE or MARK")
+    normalized = tuple(sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()}))
+    if not normalized:
+        raise ValueError("at least one symbol is required")
+    series = TRADE_5M_SERIES if price_type is PriceType.TRADE else MARK_5M_SERIES
+    engine = create_database_engine(settings)
+    repository = DataRepairRepository(
+        engine,
+        statement_timeout_seconds=settings.gap_scan_statement_timeout_seconds,
+        source_priority=(
+            ("BINANCE_VISION", "BINANCE_REST")
+            if getattr(settings, "binance_vision_enabled", False)
+            else ("BINANCE_REST",)
+        ),
+    )
+    detected = queued = windows = 0
+    cursor = start
+    window = timedelta(hours=settings.gap_scan_historical_window_hours)
+    try:
+        while cursor < end:
+            window_end = min(cursor + window, end)
+            gaps = await repository.detect_kline_gaps_for_symbols_in_range(
+                cursor, window_end, series, normalized
+            )
+            detected += len(gaps)
+            queued += await repository.queue_gaps(gaps) if gaps else 0
+            windows += 1
+            logger.info(
+                "targeted 5m backfill queued price_type=%s window_start=%s "
+                "window_end=%s symbols=%d gaps=%d",
+                price_type.value,
+                cursor.isoformat(),
+                window_end.isoformat(),
+                len(normalized),
+                len(gaps),
+            )
+            cursor = window_end
+    finally:
+        await engine.dispose()
+    return {
+        "price_type": price_type.value,
+        "interval_seconds": 300,
+        "symbol_count": len(normalized),
+        "windows": windows,
+        "detected": detected,
+        "queued": queued,
+    }
+
+
 def _utc_cli_timestamp(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
@@ -1149,9 +1297,13 @@ def main() -> None:
     configure_logging(settings, "data-repair")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(description="Detect and repair market data gaps")
-    parser.add_argument("command", choices=("once", "run", "queue-mark-5m"))
+    parser.add_argument(
+        "command", choices=("once", "run", "queue-mark-5m", "queue-symbol-5m")
+    )
     parser.add_argument("--start", help="inclusive UTC timestamp for queue-mark-5m")
     parser.add_argument("--end", help="exclusive UTC timestamp for queue-mark-5m")
+    parser.add_argument("--price-type", choices=("TRADE", "MARK"))
+    parser.add_argument("--symbols", nargs="+")
     args = parser.parse_args()
     result: object
     if args.command == "queue-mark-5m":
@@ -1162,6 +1314,20 @@ def main() -> None:
                 settings,
                 _utc_cli_timestamp(args.start),
                 _utc_cli_timestamp(args.end),
+            )
+        )
+    elif args.command == "queue-symbol-5m":
+        if not args.start or not args.end or not args.price_type or not args.symbols:
+            parser.error(
+                "queue-symbol-5m requires --start, --end, --price-type, and --symbols"
+            )
+        result = asyncio.run(
+            queue_symbol_5m_backfill(
+                settings,
+                _utc_cli_timestamp(args.start),
+                _utc_cli_timestamp(args.end),
+                PriceType(args.price_type),
+                tuple(args.symbols),
             )
         )
     else:

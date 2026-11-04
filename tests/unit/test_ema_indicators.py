@@ -33,6 +33,26 @@ async def test_explicit_symbols_resolve_without_scanning_kline_chunks() -> None:
     assert parameters == {"symbols": ["BTCUSDT", "ETHUSDT"]}
 
 
+async def test_default_symbols_resolve_without_scanning_kline_chunks() -> None:
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [1, 2]
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    instrument_ids = await _instrument_ids(engine)
+
+    statement, parameters = connection.execute.await_args.args
+    sql = str(statement)
+    assert instrument_ids == (1, 2)
+    assert "FROM market.klines" not in sql
+    assert "i.trading_status = 'TRADING'" in sql
+    assert "FROM market.kline_ema_dirty_ranges" in sql
+    assert parameters == {}
+
+
 async def test_new_realtime_checkpoint_uses_bounded_bootstrap_window() -> None:
     lock_result = MagicMock()
     checkpoint_result = MagicMock()
@@ -69,6 +89,53 @@ async def test_new_realtime_checkpoint_uses_bounded_bootstrap_window() -> None:
     assert "ORDER BY k.open_time DESC" in str(dirty_statement)
     assert "LIMIT :bootstrap_bars" in str(dirty_statement)
     assert dirty_parameters["bootstrap_bars"] == 2880
+
+
+async def test_new_checkpoint_preserves_dirty_history_before_bootstrap() -> None:
+    checked_until = datetime(2026, 10, 24, tzinfo=UTC)
+    historical_start = checked_until - timedelta(days=30)
+    bootstrap_start = checked_until - timedelta(days=10)
+    checkpoint_result = MagicMock()
+    checkpoint_result.mappings.return_value.one_or_none.return_value = None
+    marker_result = MagicMock()
+    marker_result.mappings.return_value.one_or_none.return_value = {
+        "dirty_start": historical_start,
+        "changed_at": checked_until,
+    }
+    dirty_result = MagicMock()
+    dirty_result.scalar_one.return_value = bootstrap_start
+    seed_result = MagicMock()
+    seed_result.mappings.return_value.one_or_none.return_value = None
+    source_result = MagicMock()
+    source_result.mappings.return_value.all.return_value = []
+    connection = MagicMock()
+    connection.execute = AsyncMock(
+        side_effect=(
+            MagicMock(),
+            checkpoint_result,
+            marker_result,
+            dirty_result,
+            seed_result,
+            MagicMock(),
+            source_result,
+            MagicMock(),
+            MagicMock(),
+        )
+    )
+
+    updated = await _recompute_interval(
+        connection,
+        instrument_id=7,
+        interval_seconds=300,
+        checked_until=checked_until,
+        batch_size=1000,
+        bootstrap_bars=2880,
+        chunk_days=31,
+    )
+
+    seed_parameters = connection.execute.await_args_list[4].args[1]
+    assert updated == 0
+    assert seed_parameters["recompute_start"] == historical_start
 
 
 async def test_existing_realtime_checkpoint_without_marker_skips_source_scan() -> None:

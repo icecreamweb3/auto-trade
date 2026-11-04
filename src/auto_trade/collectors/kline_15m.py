@@ -165,15 +165,16 @@ async def _instrument_ids(
             """
             SELECT i.instrument_id
             FROM core.instruments i
-            WHERE EXISTS (
+            WHERE i.trading_status = 'TRADING'
+               OR EXISTS (
                 SELECT 1
-                FROM market.klines k
-                WHERE k.instrument_id = i.instrument_id
-                  AND k.price_type = 'TRADE'
-                  AND k.interval_seconds = 300
-                  AND k.is_current
-                  AND k.is_closed
-                  AND k.quality_status = 'VALID'
+                FROM market.kline_15m_checkpoints checkpoint
+                WHERE checkpoint.instrument_id = i.instrument_id
+            )
+               OR EXISTS (
+                SELECT 1
+                FROM market.kline_15m_dirty_ranges dirty
+                WHERE dirty.instrument_id = i.instrument_id
             )
             ORDER BY i.instrument_id
             """

@@ -29,6 +29,26 @@ async def test_explicit_symbols_resolve_without_scanning_kline_chunks() -> None:
     assert parameters == {"symbols": ["BTCUSDT", "ETHUSDT"]}
 
 
+async def test_default_symbols_resolve_without_scanning_kline_chunks() -> None:
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [1, 2]
+    connection = MagicMock()
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    instrument_ids = await _instrument_ids(engine)
+
+    statement, parameters = connection.execute.await_args.args
+    sql = str(statement)
+    assert instrument_ids == (1, 2)
+    assert "FROM market.klines" not in sql
+    assert "i.trading_status = 'TRADING'" in sql
+    assert "FROM market.kline_15m_dirty_ranges" in sql
+    assert parameters == {}
+
+
 async def test_new_15m_checkpoint_uses_bounded_bootstrap_window() -> None:
     plan_result = MagicMock()
     checkpoint_result = MagicMock()

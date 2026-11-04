@@ -22,9 +22,11 @@ from auto_trade.collectors.data_repair import (
     group_missing_points,
     next_cycle_delay,
     queue_mark_5m_backfill,
+    queue_symbol_5m_backfill,
     split_gap_range,
 )
 from auto_trade.collectors.service import MARK_5M_SERIES, TRADE_5M_SERIES
+from auto_trade.contracts import PriceType
 
 
 def test_group_missing_points_merges_contiguous_ranges_per_instrument() -> None:
@@ -146,6 +148,52 @@ async def test_mark_5m_backfill_queues_bounded_windows(
     engine.dispose.assert_awaited_once()
 
 
+async def test_targeted_symbol_backfill_includes_non_trading_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    repository = MagicMock()
+    repository.detect_kline_gaps_for_symbols_in_range = AsyncMock(return_value=[])
+    repository.queue_gaps = AsyncMock()
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    monkeypatch.setattr(
+        "auto_trade.collectors.data_repair.create_database_engine",
+        lambda _settings: engine,
+    )
+    monkeypatch.setattr(
+        "auto_trade.collectors.data_repair.DataRepairRepository",
+        lambda *_args, **_kwargs: repository,
+    )
+    settings = SimpleNamespace(
+        gap_scan_statement_timeout_seconds=45,
+        gap_scan_historical_window_hours=24,
+        binance_vision_enabled=True,
+    )
+
+    result = await queue_symbol_5m_backfill(
+        settings,
+        start,
+        end,
+        PriceType.MARK,
+        ("ptbusdt", "EPICUSDT", "PTBUSDT"),
+    )
+
+    assert result == {
+        "price_type": "MARK",
+        "interval_seconds": 300,
+        "symbol_count": 2,
+        "windows": 1,
+        "detected": 0,
+        "queued": 0,
+    }
+    repository.detect_kline_gaps_for_symbols_in_range.assert_awaited_once_with(
+        start, end, MARK_5M_SERIES, ("EPICUSDT", "PTBUSDT")
+    )
+    engine.dispose.assert_awaited_once()
+
+
 async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
     connection = MagicMock()
     result = MagicMock()
@@ -172,6 +220,31 @@ async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
     statement = str(connection.execute.await_args.args[0])
     assert "k.open_time >= CAST(:range_start AS timestamptz)" in statement
     assert "k.open_time < CAST(:range_end AS timestamptz)" in statement
+
+
+async def test_targeted_gap_scan_uses_explicit_symbol_pool() -> None:
+    connection = MagicMock()
+    result = MagicMock()
+    result.all.return_value = []
+    connection.execute = AsyncMock(return_value=result)
+    engine = MagicMock()
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
+    engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
+    repository = DataRepairRepository(engine)
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+
+    await repository.detect_kline_gaps_for_symbols_in_range(
+        start,
+        start + timedelta(days=1),
+        MARK_5M_SERIES,
+        ("ptbusdt", "EPICUSDT", "PTBUSDT"),
+    )
+
+    statement = str(connection.execute.await_args.args[0])
+    parameters = connection.execute.await_args.args[1]
+    assert "i.symbol = ANY(CAST(:symbols AS text[]))" in statement
+    assert "i.trading_status = 'TRADING'" not in statement
+    assert parameters["symbols"] == ["EPICUSDT", "PTBUSDT"]
 
 
 async def test_historical_checkpoint_casts_timestamp_parameters() -> None:
