@@ -29,7 +29,7 @@
 | `TICKER_POOL_RULES` | Ticker 池来源、历史时点计算、规则版本 | 使用历史时点池，不能读取未来榜单 | 池来源、排名口径、排除规则 |
 | `DATA_QUALITY_RULES` | `required_dependencies[]`；每个依赖必须有 `minimum_coverage`、`minimum_effective_samples`、`minimum_effective_folds`、`warmup_required` | 必须覆盖 Trade/Mark K 线、EMA、D-1 UTC 日榜/Ticker 池及全部启用因子依赖；首轮不启用 OI 因子，10 月后若启用须换版并恢复 `OPEN_INTEREST_5M` | 依赖清单及每项覆盖率/样本/折数门槛 |
 | `HOLDING_HORIZON_RULES` | `label_horizon_seconds > 0`、`max_holding_seconds > 0` | 标签设计使用 24h；最大持仓仍属于 Q-005 | `label_horizon_seconds`、`max_holding_seconds` |
-| `ELIGIBLE_POOL_RULES` | `minimum_listing_age_seconds`、`minimum_notional_volume`、`required_contract_type`、`liquidity_lookback_seconds` | 上市时长初始建议 14 天；合约应限定永续 | 是否采用 1,209,600 秒；最低成交额；流动性窗口；合约类型字符串 |
+| `ELIGIBLE_POOL_RULES` | `minimum_listing_age_seconds`、`minimum_notional_volume`、`inferred_trading_minimum_notional_volume`、`required_contract_type`、`liquidity_lookback_seconds` | 上市时长初始建议 14 天；合约应限定永续；历史状态缺失时才允许使用同一时点前有效 Kline 的 24h quote volume 推定 `TRADING`，已有非交易状态不得被覆盖 | 是否采用 1,209,600 秒；最低成交额；状态推定成交额（本次批准为 100,000 USDT）；流动性窗口；合约类型字符串 |
 | `REPRODUCIBILITY_TOLERANCE` | `absolute_tolerance >= 0`、`relative_tolerance >= 0` | 离散结果逐字节一致，浮点采用 Q-028 版本化容差 | 绝对/相对容差 |
 | `RESOURCE_LIMITS` | 14 个显式正数，见下表 | Q-031 已给首版安全上限，部分容量值仍需压测 | 见下表 |
 | `FEE_MODEL` | `maker_rate >= 0`、`taker_rate >= 0` | 必须版本化，不得隐含为 0 | maker/taker 费率 |

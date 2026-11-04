@@ -228,6 +228,7 @@
 |---|---|---|
 | `minimum_listing_age_seconds` | 非负数 | 上市后至少经过的时间 |
 | `minimum_notional_volume` | 正数 | 流动性窗口内最低名义成交额 |
+| `inferred_trading_minimum_notional_volume` | 正数 | 历史状态缺失时，以同一历史窗口内有效 TRADE Kline 的 quote volume 推定 `TRADING` 的严格下限；不覆盖已有的非交易状态 |
 | `required_contract_type` | 非空字符串 | 必须匹配的合约类型 |
 | `liquidity_lookback_seconds` | 正数 | 成交额统计回看窗口 |
 | `notional_currency` | 说明字段 | 名义成交额计价货币 |
@@ -239,6 +240,7 @@
 {
   "minimum_listing_age_seconds": 1209600,
   "minimum_notional_volume": 10000000,
+  "inferred_trading_minimum_notional_volume": 100000,
   "required_contract_type": "USDT_PERPETUAL",
   "liquidity_lookback_seconds": 86400,
   "notional_currency": "USDT",

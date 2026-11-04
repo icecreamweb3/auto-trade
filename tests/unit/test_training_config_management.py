@@ -107,6 +107,22 @@ def test_ticker_pool_rejects_top_n_above_current_ranking_contract() -> None:
     )
 
 
+def test_eligible_pool_requires_explicit_kline_status_inference_threshold() -> None:
+    payload = {
+        "minimum_listing_age_seconds": 86400,
+        "minimum_notional_volume": 500,
+        "liquidity_lookback_seconds": 86400,
+        "required_contract_type": "USDT_PERPETUAL",
+    }
+
+    assert (
+        "inferred_trading_minimum_notional_volume 必须是大于 0 的数值"
+        in validate_config_payload("ELIGIBLE_POOL_RULES", payload)
+    )
+    payload["inferred_trading_minimum_notional_volume"] = 100000
+    assert validate_config_payload("ELIGIBLE_POOL_RULES", payload) == ()
+
+
 def test_duplicate_config_semver_has_actionable_conflict_message() -> None:
     error = MagicMock()
     error.orig = Exception(
