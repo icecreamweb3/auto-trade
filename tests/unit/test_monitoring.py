@@ -64,6 +64,7 @@ async def test_kline_coverage_uses_bounded_latest_index_lookup() -> None:
     statement = str(coverage_call.args[0])
     parameters = coverage_call.args[1]
     assert "ORDER BY k.open_time DESC" in statement
+    assert "('MARK', 300)" in statement
     assert (
         statement.count("k.open_time >= CAST(:range_start AS timestamptz)") == 2
     )

@@ -37,6 +37,7 @@ SERIES = {
     "trade_60": ("Trade 1m", 180.0, 300.0),
     "mark_60": ("Mark 1m", 180.0, 300.0),
     "trade_300": ("Trade 5m", 480.0, 720.0),
+    "mark_300": ("Mark 5m (聚合)", 480.0, 720.0),
     "ticker_60": ("分钟Ticker", 120.0, 300.0),
     "open_interest_300": ("Open Interest 5m", 600.0, 900.0),
 }

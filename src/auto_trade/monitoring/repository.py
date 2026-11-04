@@ -1195,7 +1195,11 @@ class MonitoringRepository:
                 text(
                     """
                     WITH series(price_type, interval_seconds) AS (
-                        VALUES ('TRADE', 60), ('MARK', 60), ('TRADE', 300)
+                        VALUES
+                            ('TRADE', 60),
+                            ('MARK', 60),
+                            ('TRADE', 300),
+                            ('MARK', 300)
                     ), latest AS (
                         SELECT
                             series.price_type,

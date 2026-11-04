@@ -77,6 +77,7 @@ def test_mark_5m_series_has_distinct_backfill_identity() -> None:
     assert MARK_5M_SERIES.price_type.value == "MARK"
     assert MARK_5M_SERIES.interval_seconds == 300
     assert MARK_5M_SERIES.data_type == "KLINE_MARK"
+    assert MARK_5M_SERIES not in REPAIR_SERIES
 
 
 async def test_mark_5m_backfill_queues_bounded_windows(monkeypatch: pytest.MonkeyPatch) -> None:

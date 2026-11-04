@@ -58,7 +58,6 @@ REPAIR_SERIES = (
     KlineSeries(PriceType.TRADE, 60),
     KlineSeries(PriceType.MARK, 60),
     TRADE_5M_SERIES,
-    MARK_5M_SERIES,
 )
 
 MAX_KLINE_POINTS_PER_BACKFILL_JOB = 1500

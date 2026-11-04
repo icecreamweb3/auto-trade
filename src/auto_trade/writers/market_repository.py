@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast
 from uuid import UUID
 
@@ -16,6 +16,8 @@ from auto_trade.contracts import (
     KlinePayload,
     MarketSource,
     OpenInterestPayload,
+    PriceType,
+    QualityStatus,
     RankingSnapshotPayload,
     TickerMinutePayload,
 )
@@ -45,6 +47,9 @@ def json_text(value: object) -> str:
 
 
 class MarketRepository:
+    _MARK_5M_DERIVATION_VERSION = "mark-1m-to-5m-v1"
+    _MARK_5M_REALTIME_MAX_LAG = timedelta(minutes=15)
+
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
 
@@ -568,6 +573,181 @@ class MarketRepository:
                     "effective_at": event.collected_at,
                 },
             )
+            if (
+                payload.price_type is PriceType.MARK
+                and payload.interval_seconds == 60
+                and timedelta(0)
+                <= event.collected_at - payload.close_time
+                <= self._MARK_5M_REALTIME_MAX_LAG
+            ):
+                await self._derive_realtime_mark_5m(
+                    connection,
+                    instrument_id=instrument_id,
+                    symbol=payload.symbol,
+                    minute_open_time=payload.open_time,
+                    collected_at=event.collected_at,
+                )
+
+    async def _derive_realtime_mark_5m(
+        self,
+        connection: AsyncConnection,
+        *,
+        instrument_id: int,
+        symbol: str,
+        minute_open_time: datetime,
+        collected_at: datetime,
+    ) -> None:
+        """Persist a recent Mark 5m bar once all five closed Mark 1m bars exist."""
+        bucket_epoch = int(minute_open_time.timestamp()) // 300 * 300
+        bucket_start = datetime.fromtimestamp(
+            bucket_epoch,
+            tz=minute_open_time.tzinfo,
+        )
+        bucket_end = bucket_start + timedelta(minutes=5)
+        await connection.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(:lock_key, 0))"
+            ),
+            {"lock_key": f"mark-5m:{instrument_id}:{bucket_epoch}"},
+        )
+        rows = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT open_time, open_price, high_price, low_price, close_price,
+                           quality_status, source_event_ids
+                    FROM market.klines
+                    WHERE instrument_id = :instrument_id
+                      AND price_type = 'MARK'
+                      AND interval_seconds = 60
+                      AND open_time >= :bucket_start
+                      AND open_time < :bucket_end
+                      AND is_current
+                      AND is_closed
+                    ORDER BY open_time
+                    """
+                ),
+                {
+                    "instrument_id": instrument_id,
+                    "bucket_start": bucket_start,
+                    "bucket_end": bucket_end,
+                },
+            )
+        ).mappings().all()
+        expected_times = [bucket_start + timedelta(minutes=index) for index in range(5)]
+        if len(rows) != 5 or [row["open_time"] for row in rows] != expected_times:
+            return
+
+        quality_status = (
+            QualityStatus.VALID
+            if all(row["quality_status"] == "VALID" for row in rows)
+            else QualityStatus.DEGRADED
+        )
+        payload = KlinePayload(
+            symbol=symbol,
+            price_type=PriceType.MARK,
+            interval_seconds=300,
+            open_time=bucket_start,
+            close_time=bucket_end,
+            open_price=rows[0]["open_price"],
+            high_price=max(row["high_price"] for row in rows),
+            low_price=min(row["low_price"] for row in rows),
+            close_price=rows[-1]["close_price"],
+            is_closed=True,
+            quality_status=quality_status,
+        )
+        kline_hash = payload_hash(payload.model_dump(mode="json"))
+        current = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT revision_no, payload_hash, source
+                    FROM market.klines
+                    WHERE instrument_id = :instrument_id
+                      AND price_type = 'MARK'
+                      AND interval_seconds = 300
+                      AND open_time = :open_time
+                      AND is_current
+                    FOR UPDATE
+                    """
+                ),
+                {
+                    "instrument_id": instrument_id,
+                    "open_time": bucket_start,
+                },
+            )
+        ).mappings().one_or_none()
+        if current is not None:
+            if current["payload_hash"] == kline_hash or current["source"] != "DERIVED":
+                return
+            revision_no = cast(int, current["revision_no"]) + 1
+            supersedes_revision = cast(int, current["revision_no"])
+            await connection.execute(
+                text(
+                    """
+                    UPDATE market.klines
+                    SET is_current = false
+                    WHERE instrument_id = :instrument_id
+                      AND price_type = 'MARK'
+                      AND interval_seconds = 300
+                      AND open_time = :open_time
+                      AND revision_no = :revision_no
+                    """
+                ),
+                {
+                    "instrument_id": instrument_id,
+                    "open_time": bucket_start,
+                    "revision_no": supersedes_revision,
+                },
+            )
+        else:
+            revision_no = 1
+            supersedes_revision = None
+
+        source_event_ids = [
+            source_event_id
+            for row in rows
+            for source_event_id in row["source_event_ids"]
+        ]
+        await connection.execute(
+            text(
+                """
+                INSERT INTO market.klines (
+                    instrument_id, price_type, interval_seconds, open_time,
+                    revision_no, is_current, supersedes_revision, close_time,
+                    open_price, high_price, low_price, close_price, base_volume,
+                    quote_volume, trade_count, is_closed, source,
+                    derivation_version, data_rule_version, source_event_ids,
+                    payload_hash, quality_status, collected_at, effective_at
+                ) VALUES (
+                    :instrument_id, 'MARK', 300, :open_time,
+                    :revision_no, true, :supersedes_revision, :close_time,
+                    :open_price, :high_price, :low_price, :close_price,
+                    NULL, NULL, NULL, true, 'DERIVED',
+                    :derivation_version, 'derived-mark-5m-v1',
+                    CAST(:source_event_ids AS uuid[]), :payload_hash,
+                    :quality_status, :collected_at, :collected_at
+                )
+                """
+            ),
+            {
+                "instrument_id": instrument_id,
+                "open_time": payload.open_time,
+                "revision_no": revision_no,
+                "supersedes_revision": supersedes_revision,
+                "close_time": payload.close_time,
+                "open_price": payload.open_price,
+                "high_price": payload.high_price,
+                "low_price": payload.low_price,
+                "close_price": payload.close_price,
+                "derivation_version": self._MARK_5M_DERIVATION_VERSION,
+                "source_event_ids": source_event_ids,
+                "payload_hash": kline_hash,
+                "quality_status": payload.quality_status.value,
+                "collected_at": collected_at,
+            },
+        )
 
     async def _write_open_interest(
         self,
