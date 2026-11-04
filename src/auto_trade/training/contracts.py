@@ -84,6 +84,7 @@ class EntrySource(StrEnum):
 
 
 class EntryUse(StrEnum):
+    MODEL_A_DISCOVERY = "MODEL_A_DISCOVERY"
     MODEL_B_PROTOTYPE = "MODEL_B_PROTOTYPE"
     GO_NO_GO = "GO_NO_GO"
     MODEL_B_TRAIN = "MODEL_B_TRAIN"
@@ -244,6 +245,7 @@ def build_test_scope_hash(
 
 _ENTRY_SOURCE_ALLOWLIST = MappingProxyType(
     {
+        EntryUse.MODEL_A_DISCOVERY: frozenset({EntrySource.IN_SAMPLE_MODEL_A}),
         EntryUse.MODEL_B_PROTOTYPE: frozenset({EntrySource.FIXED_BASELINE_MODEL_A}),
         EntryUse.GO_NO_GO: frozenset({EntrySource.CROSS_FIT_MODEL_A_CANDIDATE}),
         EntryUse.MODEL_B_TRAIN: frozenset(

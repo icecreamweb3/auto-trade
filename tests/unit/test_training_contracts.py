@@ -69,6 +69,7 @@ def test_label_window_may_equal_but_not_exceed_partition_end() -> None:
 @pytest.mark.parametrize(
     ("source", "usage"),
     [
+        (EntrySource.IN_SAMPLE_MODEL_A, EntryUse.MODEL_A_DISCOVERY),
         (EntrySource.FIXED_BASELINE_MODEL_A, EntryUse.MODEL_B_PROTOTYPE),
         (EntrySource.CROSS_FIT_MODEL_A_CANDIDATE, EntryUse.GO_NO_GO),
         (EntrySource.CROSS_FIT_MODEL_A, EntryUse.MODEL_B_TRAIN),

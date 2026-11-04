@@ -94,6 +94,8 @@
 
 验收：折内 VALIDATION 次数为 0；功效不足返回 `INSUFFICIENT_POWER` 并停止；临时模型 B 产物不可进入注册表；通过后正式模型 B 必须全新运行。
 
+当前进度：已完成首个 M6 治理与执行契约切片。迁移 `054_training_cross_fit_execution.sql` 恢复并收紧 Cross-fit 来源/用途约束，增加回补覆盖、源修订水位、质量证据哈希、Q-019/Q-029/Q-030/Q-036/Q-039 READY、逐折从零 TPE/同预算随机对照、零次折内 VALIDATION、功效不足停止、候选语料和不可变正式语料映射门禁。迁移 `055_training_model_b_formal_search.sql` 增加第 0 轮基线证据、全新 TPE/随机成对正式搜索、正式安全输入、临时/随机产物禁止注册与锁定，以及正式 `MODEL_B_TRAIN` 回放路径。Python 契约同步区分 `MODEL_A_DISCOVERY`、暂定 `CROSS_FIT_MODEL_A_CANDIDATE` 和正式 `CROSS_FIT_MODEL_A`。`019`—`055` 已在一次性 TimescaleDB 环境完成顺序迁移、重复迁移和全部 SQL 集成测试。实际任务 repository/handler/runtime、真实 Optuna 执行和编排自动推进仍未接入；MARK 5m 及全部冻结依赖未完成覆盖验收前，正式 Cross-fit 语料生成和模型 B 搜索继续 fail closed，因此 M6 尚不能标记为完成。
+
 ### M7：C/F VALIDATION、弱留出与 TEST 隔离
 
 交付：共享 validation scope 原子预算、冻结终选一次验证、10 月 `DECLARED` 弱留出、TEST 逻辑身份/内容版本、双人 readiness、SEALED 原子消费、失败重试和递归谱系检查。
@@ -140,4 +142,4 @@
 - `020`：READY 配置、TRAIN/VALIDATION 数据集、成员/质量/暴露事实及复现清单；
 - `021`：TRAIN-only 实验/迭代、优化器检查点、冻结终选、共享 VALIDATION 逻辑身份和不可回收预算。
 
-当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；工作区现要求显式、有效且未撤销的 `TRAINING_RESEARCHER`，产品 `ADMIN` 不再隐式取得训练访问权。`019`—`051` 迁移已通过一次性数据库重复迁移和集成测试。`DATASET_BUILD`、`MODEL_A_CANDIDATE_SCAN`、`MODEL_A_EVALUATION`、`MODEL_A_L0_AGGREGATION`、`MODEL_B_REPLAY`、`PORTFOLIO_EVALUATION`、`OPTIMIZER_TRIAL` 与 `ARCHIVE_VERIFY` 已接入真实租约循环；Optimizer 已实现可重放的真实 Optuna ASK、proposal 落库、候选迭代创建、5m 受控扫描、Q-033 配置驱动分层低分对照、被抽中候选的独立未来路径、完整基础池机会总体、配置驱动 DiscoveryScore、TRAIN-only TELL 及逐 trial 自动推进。单次真实 SQL 集成夹具已验证 L0 成功终态、Optimizer 目标可见性和幂等重放；实际评分权重与硬门槛仍须按环境审批为 READY。真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未完成，不能据此启动正式 TEST、影子运行或完整训练流水线。
+当前切片已推进至 `M10`：训练工作区 API/UI、实验/失败/预算汇总、审计隔离和 `OPERATIONAL_ONLY` 运维入口已实现；工作区现要求显式、有效且未撤销的 `TRAINING_RESEARCHER`，产品 `ADMIN` 不再隐式取得训练访问权。`019`—`055` 迁移已通过一次性数据库顺序迁移、重复迁移和集成测试。`DATASET_BUILD`、`MODEL_A_CANDIDATE_SCAN`、`MODEL_A_EVALUATION`、`MODEL_A_L0_AGGREGATION`、`MODEL_B_REPLAY`、`PORTFOLIO_EVALUATION`、`OPTIMIZER_TRIAL` 与 `ARCHIVE_VERIFY` 已接入真实租约循环；Optimizer 已实现可重放的真实 Optuna ASK、proposal 落库、候选迭代创建、5m 受控扫描、Q-033 配置驱动分层低分对照、被抽中候选的独立未来路径、完整基础池机会总体、配置驱动 DiscoveryScore、TRAIN-only TELL 及逐 trial 自动推进。M6 已增加 Cross-fit 与正式模型 B 的数据库/Python fail-closed 契约，但尚未把 Cross-fit 和正式搜索接入任务 runtime、真实 Optuna 与编排推进。单次真实 SQL 集成夹具已验证 L0 成功终态、Optimizer 目标可见性和幂等重放；实际评分权重与硬门槛仍须按环境审批为 READY。真实月度数据覆盖、独立自然人部署和生产环境 secret/RBAC 仍未完成，不能据此启动正式 Cross-fit、正式模型 B、TEST、影子运行或完整训练流水线。

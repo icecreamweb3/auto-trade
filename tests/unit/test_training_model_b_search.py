@@ -34,11 +34,35 @@ def test_nested_model_b_search_is_not_promotable() -> None:
         search_space={"stop": NumericParameter(0.01, 0.05)},
         evaluate_train=lambda _: 1.0,
         sink=sink,
-        source=EntrySource.CROSS_FIT_MODEL_A,
+        source=EntrySource.CROSS_FIT_MODEL_A_CANDIDATE,
         gate=_gate(),
         temporary_only=True,
     )
     assert result.temporary_only and not result.promotable
+
+
+def test_nested_and_formal_model_b_sources_are_strictly_separated() -> None:
+    sink = _Sink()
+    with pytest.raises(ValueError, match="temporary"):
+        run_model_b_search(
+            candidates=({"stop": 0.02},),
+            search_space={"stop": NumericParameter(0.01, 0.05)},
+            evaluate_train=lambda _: 1.0,
+            sink=sink,
+            source=EntrySource.CROSS_FIT_MODEL_A,
+            gate=_gate(),
+            temporary_only=True,
+        )
+    with pytest.raises(ValueError, match="formal"):
+        run_model_b_search(
+            candidates=({"stop": 0.02},),
+            search_space={"stop": NumericParameter(0.01, 0.05)},
+            evaluate_train=lambda _: 1.0,
+            sink=sink,
+            source=EntrySource.CROSS_FIT_MODEL_A_CANDIDATE,
+            gate=_gate(),
+            temporary_only=False,
+        )
 
 
 def test_formal_model_b_search_requires_gate_pass() -> None:

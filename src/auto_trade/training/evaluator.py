@@ -70,9 +70,15 @@ def run_model_b_search(
     formal search is allowed only after the outer gate has passed and consumes
     natural-frequency ``CROSS_FIT_MODEL_A`` events.
     """
-    if source is not EntrySource.CROSS_FIT_MODEL_A:
+    if temporary_only:
+        if source is not EntrySource.CROSS_FIT_MODEL_A_CANDIDATE:
+            raise ValueError(
+                "temporary Model-B gate search accepts only "
+                "CROSS_FIT_MODEL_A_CANDIDATE events"
+            )
+    elif source is not EntrySource.CROSS_FIT_MODEL_A:
         raise ValueError("formal Model-B search accepts only CROSS_FIT_MODEL_A events")
-    if not temporary_only and gate.decision is not GateDecision.PASS:
+    elif gate.decision is not GateDecision.PASS:
         raise ValueError("formal Model-B search requires a passing Cross-fit gate")
     adapter = GovernedOptimizerAdapter(sink)
     outcomes: list[TrialOutcome] = []
