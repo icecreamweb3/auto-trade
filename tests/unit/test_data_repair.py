@@ -7,6 +7,11 @@ from uuid import UUID
 import pytest
 
 from auto_trade.collectors.binance_usdm import BinanceRateLimitError
+from auto_trade.collectors.binance_vision import (
+    BinanceVisionIntegrityError,
+    BinanceVisionKlines,
+    BinanceVisionUnavailable,
+)
 from auto_trade.collectors.data_repair import (
     REPAIR_SERIES,
     BackfillJob,
@@ -80,13 +85,19 @@ def test_mark_5m_series_has_distinct_backfill_identity() -> None:
     assert MARK_5M_SERIES not in REPAIR_SERIES
 
 
-async def test_mark_5m_backfill_queues_bounded_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mark_5m_backfill_queues_bounded_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     start = datetime(2026, 7, 21, tzinfo=UTC)
     end = start + timedelta(hours=5)
     repository = MagicMock()
     repository.detect_kline_gaps_in_range = AsyncMock(
         side_effect=[
-            [GapRange(1, "BTCUSDT", start, start + timedelta(hours=2), 24, MARK_5M_SERIES)],
+            [
+                GapRange(
+                    1, "BTCUSDT", start, start + timedelta(hours=2), 24, MARK_5M_SERIES
+                )
+            ],
             [],
             [
                 GapRange(
@@ -104,7 +115,8 @@ async def test_mark_5m_backfill_queues_bounded_windows(monkeypatch: pytest.Monke
     engine = MagicMock()
     engine.dispose = AsyncMock()
     monkeypatch.setattr(
-        "auto_trade.collectors.data_repair.create_database_engine", lambda _settings: engine
+        "auto_trade.collectors.data_repair.create_database_engine",
+        lambda _settings: engine,
     )
     monkeypatch.setattr(
         "auto_trade.collectors.data_repair.DataRepairRepository",
@@ -140,9 +152,7 @@ async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
     result.all.return_value = []
     connection.execute = AsyncMock(return_value=result)
     engine = MagicMock()
-    engine.connect.return_value.__aenter__ = AsyncMock(
-        return_value=connection
-    )
+    engine.connect.return_value.__aenter__ = AsyncMock(return_value=connection)
     engine.connect.return_value.__aexit__ = AsyncMock(return_value=None)
     repository = DataRepairRepository(engine)
     start = datetime(2026, 10, 1, tzinfo=UTC)
@@ -155,9 +165,8 @@ async def test_gap_scan_applies_explicit_hypertable_time_bounds() -> None:
 
     timeout_call = connection.execute.await_args_list[0]
     assert "set_config('statement_timeout'" in str(timeout_call.args[0])
-    assert (
-        "set_config('plan_cache_mode', 'force_custom_plan', true)"
-        in str(timeout_call.args[0])
+    assert "set_config('plan_cache_mode', 'force_custom_plan', true)" in str(
+        timeout_call.args[0]
     )
     assert timeout_call.args[1] == {"statement_timeout": "45s"}
     statement = str(connection.execute.await_args.args[0])
@@ -209,9 +218,8 @@ async def test_actual_count_prunes_kline_chunks_with_custom_plan() -> None:
 
     assert actual == 1
     plan_call, count_call = connection.execute.await_args_list
-    assert (
-        "set_config('plan_cache_mode', 'force_custom_plan', true)"
-        in str(plan_call.args[0])
+    assert "set_config('plan_cache_mode', 'force_custom_plan', true)" in str(
+        plan_call.args[0]
     )
     statement = str(count_call.args[0])
     assert "open_time >= CAST(:range_start AS timestamptz)" in statement
@@ -264,9 +272,7 @@ async def test_historical_gap_scan_checkpoint_is_restored_and_advanced() -> None
         backfill_request_interval_seconds=0,
     )
     repository = MagicMock()
-    repository.load_historical_scan_checkpoint = AsyncMock(
-        return_value=(cursor, stop)
-    )
+    repository.load_historical_scan_checkpoint = AsyncMock(return_value=(cursor, stop))
     repository.detect_kline_gaps_in_range = AsyncMock(return_value=[])
     repository.save_historical_scan_checkpoint = AsyncMock()
     repository.claim_job = AsyncMock(return_value=None)
@@ -503,3 +509,114 @@ async def test_backfill_workers_process_jobs_concurrently() -> None:
 
     assert result == {"detected": 0, "queued": 0, "succeeded": 4, "failed": 0}
     assert maximum_active == 4
+
+
+async def test_completed_month_job_prefers_binance_vision() -> None:
+    start = datetime(2020, 1, 1, tzinfo=UTC)
+    job = BackfillJob(
+        UUID(int=1),
+        UUID(int=2),
+        1,
+        "BTCUSDT",
+        start,
+        start + timedelta(minutes=5),
+        1,
+        TRADE_5M_SERIES,
+        ("BINANCE_VISION", "BINANCE_REST"),
+    )
+    archive = BinanceVisionKlines(
+        rows=((1577836800000, "1", "1", "1", "1", "1", 1577837099999, "1", 1),),
+        archive_paths=("/archive.zip",),
+        sha256=("a" * 64,),
+    )
+    vision = MagicMock()
+    vision.fetch_klines = AsyncMock(return_value=archive)
+    collector = MagicMock()
+    collector.publish_archived_kline_range = AsyncMock(return_value=1)
+    collector.collect_kline_range = AsyncMock()
+    service = DataRepairService(MagicMock(), collector, MagicMock(), vision)
+
+    published, source = await service._collect_job(job)
+
+    assert (published, source) == (1, "BINANCE_VISION")
+    vision.fetch_klines.assert_awaited_once()
+    collector.publish_archived_kline_range.assert_awaited_once()
+    collector.collect_kline_range.assert_not_awaited()
+
+
+async def test_missing_vision_archive_falls_back_to_rest() -> None:
+    start = datetime(2020, 1, 1, tzinfo=UTC)
+    job = BackfillJob(
+        UUID(int=1),
+        UUID(int=2),
+        1,
+        "BTCUSDT",
+        start,
+        start + timedelta(minutes=5),
+        1,
+        TRADE_5M_SERIES,
+        ("BINANCE_VISION", "BINANCE_REST"),
+    )
+    vision = MagicMock()
+    vision.fetch_klines = AsyncMock(
+        side_effect=BinanceVisionUnavailable("archive not found")
+    )
+    collector = MagicMock()
+    collector.collect_kline_range = AsyncMock(return_value=1)
+    service = DataRepairService(MagicMock(), collector, MagicMock(), vision)
+
+    assert await service._collect_job(job) == (1, "BINANCE_REST")
+    collector.collect_kline_range.assert_awaited_once_with(
+        job.symbol, job.start, job.end, job.series
+    )
+
+
+async def test_current_month_job_stays_on_rest() -> None:
+    start = datetime.now(UTC).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    job = BackfillJob(
+        UUID(int=1),
+        UUID(int=2),
+        1,
+        "BTCUSDT",
+        start,
+        start + timedelta(minutes=5),
+        1,
+        TRADE_5M_SERIES,
+        ("BINANCE_VISION", "BINANCE_REST"),
+    )
+    vision = MagicMock()
+    vision.fetch_klines = AsyncMock()
+    collector = MagicMock()
+    collector.collect_kline_range = AsyncMock(return_value=1)
+    service = DataRepairService(MagicMock(), collector, MagicMock(), vision)
+
+    assert await service._collect_job(job) == (1, "BINANCE_REST")
+    vision.fetch_klines.assert_not_awaited()
+
+
+async def test_vision_integrity_failure_does_not_silently_fall_back() -> None:
+    start = datetime(2020, 1, 1, tzinfo=UTC)
+    job = BackfillJob(
+        UUID(int=1),
+        UUID(int=2),
+        1,
+        "BTCUSDT",
+        start,
+        start + timedelta(minutes=5),
+        1,
+        TRADE_5M_SERIES,
+        ("BINANCE_VISION", "BINANCE_REST"),
+    )
+    vision = MagicMock()
+    vision.fetch_klines = AsyncMock(
+        side_effect=BinanceVisionIntegrityError("checksum mismatch")
+    )
+    collector = MagicMock()
+    collector.collect_kline_range = AsyncMock()
+    service = DataRepairService(MagicMock(), collector, MagicMock(), vision)
+
+    with pytest.raises(BinanceVisionIntegrityError, match="checksum mismatch"):
+        await service._collect_job(job)
+    collector.collect_kline_range.assert_not_awaited()

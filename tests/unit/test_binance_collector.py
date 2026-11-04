@@ -982,3 +982,53 @@ async def test_five_minute_rest_skips_trade_already_closed_by_websocket() -> Non
 
     assert count == 0
     assert calls == []
+
+
+async def test_archive_raw_trace_keeps_normalized_kline_in_backfill_lane() -> None:
+    opened = datetime(2020, 1, 1, tzinfo=UTC)
+    open_ms = int(opened.timestamp() * 1000)
+    publisher = RecordingPublisher()
+    client = BinanceUsdMClient(
+        base_url="https://example.test",
+        timeout_seconds=1,
+        max_concurrency=1,
+        attempts=1,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(500)),
+    )
+    async with client:
+        service = BinanceCollectionService(
+            client=client,
+            publisher=publisher,
+            node_id="test-node",
+            shard_id="0",
+        )
+        published = await service.publish_archived_kline_range(
+            "BTCUSDT",
+            opened,
+            opened + timedelta(minutes=5),
+            KlineSeries(PriceType.TRADE, 300),
+            (
+                [
+                    open_ms,
+                    "100",
+                    "102",
+                    "99",
+                    "101",
+                    "10",
+                    open_ms + 299_999,
+                    "1005",
+                    12,
+                ],
+            ),
+            archive_paths=("/archive.zip",),
+            sha256=("a" * 64,),
+        )
+
+    assert published == 1
+    assert len(publisher.messages) == 2
+    raw_subject, raw_event = publisher.messages[0]
+    normalized_subject, normalized_event = publisher.messages[1]
+    assert raw_subject == "raw.market.binance.kline_trade_5m_archive.BTCUSDT"
+    assert raw_event.source is MarketSource.ARCHIVE
+    assert normalized_subject == "market.normalized.kline.5m.trade.BTCUSDT"
+    assert normalized_event.source is MarketSource.BACKFILL

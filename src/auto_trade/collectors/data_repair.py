@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -15,6 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from auto_trade.collectors.binance_usdm import (
     BinanceRateLimitError,
     BinanceUsdMClient,
+)
+from auto_trade.collectors.binance_vision import (
+    BinanceVisionClient,
+    BinanceVisionUnavailable,
 )
 from auto_trade.collectors.publisher import JetStreamEventPublisher
 from auto_trade.collectors.service import (
@@ -52,6 +57,7 @@ class BackfillJob:
     end: datetime
     expected_count: int
     series: KlineSeries
+    source_priority: tuple[str, ...] = ("BINANCE_REST",)
 
 
 REPAIR_SERIES = (
@@ -143,15 +149,18 @@ def next_cycle_delay(
 
 class DataRepairRepository:
     def __init__(
-        self, engine: AsyncEngine, *, statement_timeout_seconds: int = 45
+        self,
+        engine: AsyncEngine,
+        *,
+        statement_timeout_seconds: int = 45,
+        source_priority: tuple[str, ...] = ("BINANCE_REST",),
     ) -> None:
         self._engine = engine
         self._statement_timeout_seconds = statement_timeout_seconds
+        self._source_priority = source_priority
 
     async def detect_5m_gaps(self, lookback_hours: int) -> list[GapRange]:
-        return await self.detect_kline_gaps(
-            lookback_hours, TRADE_5M_SERIES
-        )
+        return await self.detect_kline_gaps(lookback_hours, TRADE_5M_SERIES)
 
     async def detect_kline_gaps(
         self,
@@ -182,11 +191,7 @@ class DataRepairRepository:
                     "set_config("
                     "'plan_cache_mode', 'force_custom_plan', true)"
                 ),
-                {
-                    "statement_timeout": (
-                        f"{self._statement_timeout_seconds}s"
-                    )
-                },
+                {"statement_timeout": (f"{self._statement_timeout_seconds}s")},
             )
             result = await connection.execute(
                 text(
@@ -304,7 +309,7 @@ class DataRepairRepository:
                             )
                             SELECT :gap_id, :instrument_id, :data_type,
                                    :range_start, :range_end,
-                                   '["BINANCE_REST"]'::jsonb, 'PENDING'
+                                   CAST(:source_priority AS jsonb), 'PENDING'
                             WHERE NOT EXISTS (
                                 SELECT 1 FROM market.backfill_jobs
                                 WHERE gap_id = :gap_id
@@ -318,6 +323,7 @@ class DataRepairRepository:
                             "data_type": gap.series.data_type,
                             "range_start": gap.start,
                             "range_end": gap.end,
+                            "source_priority": json.dumps(self._source_priority),
                         },
                     )
                     queued += result.rowcount
@@ -361,7 +367,8 @@ class DataRepairRepository:
                           AND g.gap_id = j.gap_id
                         RETURNING j.backfill_job_id, j.gap_id, j.instrument_id,
                                   i.symbol, j.range_start, j.range_end,
-                                  g.expected_count, g.data_type, g.interval_seconds
+                                  g.expected_count, g.data_type, g.interval_seconds,
+                                  j.source_priority
                         """
                     )
                 )
@@ -397,6 +404,7 @@ class DataRepairRepository:
                 price_type,
                 cast(int, row[8]),
             ),
+            tuple(str(value) for value in cast(list[object], row[9])),
         )
 
     async def recover_interrupted_jobs(
@@ -456,10 +464,7 @@ class DataRepairRepository:
     async def _actual_count(self, job: BackfillJob) -> int:
         async with self._engine.connect() as connection:
             await connection.execute(
-                text(
-                    "SELECT set_config("
-                    "'plan_cache_mode', 'force_custom_plan', true)"
-                )
+                text("SELECT set_config('plan_cache_mode', 'force_custom_plan', true)")
             )
             return cast(
                 int,
@@ -495,6 +500,7 @@ class DataRepairRepository:
         published: int,
         actual: int,
         prefilled: bool,
+        source: str,
     ) -> bool:
         success = actual >= job.expected_count
         async with self._engine.begin() as connection:
@@ -514,6 +520,7 @@ class DataRepairRepository:
                             "published": published,
                             "verified": actual,
                             "prefilled": prefilled,
+                            "source": source,
                         }
                     ),
                     "job_id": job.job_id,
@@ -538,6 +545,7 @@ class DataRepairRepository:
                             "published": published,
                             "verified": actual,
                             "prefilled": prefilled,
+                            "source": source,
                         }
                     ),
                     "gap_id": job.gap_id,
@@ -554,6 +562,7 @@ class DataRepairRepository:
             published=0,
             actual=actual,
             prefilled=True,
+            source="PREFILLED",
         )
 
     async def finish_job(
@@ -563,6 +572,7 @@ class DataRepairRepository:
         *,
         timeout_seconds: float,
         poll_interval_seconds: float,
+        source: str = "BINANCE_REST",
     ) -> bool:
         deadline = time.monotonic() + timeout_seconds
         while True:
@@ -578,6 +588,7 @@ class DataRepairRepository:
             published=published,
             actual=actual,
             prefilled=False,
+            source=source,
         )
 
     async def fail_job(self, job: BackfillJob, error: Exception) -> None:
@@ -727,13 +738,59 @@ class DataRepairService:
         repository: DataRepairRepository,
         collector: BinanceCollectionService,
         settings: Settings,
+        vision_client: BinanceVisionClient | None = None,
     ) -> None:
         self._repository = repository
         self._collector = collector
         self._settings = settings
+        self._vision_client = vision_client
         self._historical_scan_cursor: datetime | None = None
         self._historical_scan_stop: datetime | None = None
         self._historical_checkpoint_enabled = False
+
+    async def _collect_job(self, job: BackfillJob) -> tuple[int, str]:
+        vision_client = self._vision_client
+        current_month = datetime.now(UTC).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        use_archive = (
+            vision_client is not None
+            and "BINANCE_VISION" in job.source_priority
+            and job.end <= current_month
+        )
+        if use_archive:
+            assert vision_client is not None
+            try:
+                archive = await vision_client.fetch_klines(
+                    symbol=job.symbol,
+                    interval=job.series.binance_interval,
+                    price_type=job.series.price_type,
+                    start=job.start,
+                    end=job.end,
+                )
+                published = await self._collector.publish_archived_kline_range(
+                    job.symbol,
+                    job.start,
+                    job.end,
+                    job.series,
+                    archive.rows,
+                    archive_paths=archive.archive_paths,
+                    sha256=archive.sha256,
+                )
+                return published, "BINANCE_VISION"
+            except BinanceVisionUnavailable as error:
+                logger.info(
+                    "Binance Vision unavailable; falling back to REST job=%s symbol=%s reason=%s",
+                    job.job_id,
+                    job.symbol,
+                    error,
+                )
+        return (
+            await self._collector.collect_kline_range(
+                job.symbol, job.start, job.end, job.series
+            ),
+            "BINANCE_REST",
+        )
 
     def _historical_config_signature(self) -> str:
         return (
@@ -750,19 +807,16 @@ class DataRepairService:
         ):
             return
         now = datetime.now(UTC).replace(microsecond=0)
-        scan_end = now - timedelta(
-            seconds=self._settings.gap_scan_safety_delay_seconds
-        )
-        cursor_at, scan_stop_at = (
-            await self._repository.load_historical_scan_checkpoint(
-                cursor_at=scan_end
-                - timedelta(hours=self._settings.gap_scan_lookback_hours),
-                scan_stop_at=scan_end
-                - timedelta(
-                    hours=self._settings.gap_scan_recent_lookback_hours
-                ),
-                config_signature=self._historical_config_signature(),
-            )
+        scan_end = now - timedelta(seconds=self._settings.gap_scan_safety_delay_seconds)
+        (
+            cursor_at,
+            scan_stop_at,
+        ) = await self._repository.load_historical_scan_checkpoint(
+            cursor_at=scan_end
+            - timedelta(hours=self._settings.gap_scan_lookback_hours),
+            scan_stop_at=scan_end
+            - timedelta(hours=self._settings.gap_scan_recent_lookback_hours),
+            config_signature=self._historical_config_signature(),
         )
         self._historical_scan_cursor = cursor_at
         self._historical_scan_stop = scan_stop_at
@@ -774,12 +828,8 @@ class DataRepairService:
             cursor_at >= scan_stop_at,
         )
 
-    def _gap_scan_ranges(
-        self, now: datetime
-    ) -> tuple[tuple[datetime, datetime], ...]:
-        scan_end = now - timedelta(
-            seconds=self._settings.gap_scan_safety_delay_seconds
-        )
+    def _gap_scan_ranges(self, now: datetime) -> tuple[tuple[datetime, datetime], ...]:
+        scan_end = now - timedelta(seconds=self._settings.gap_scan_safety_delay_seconds)
         recent_hours = self._settings.gap_scan_recent_lookback_hours
         historical_hours = self._settings.gap_scan_lookback_hours
         window_hours = self._settings.gap_scan_historical_window_hours
@@ -788,9 +838,7 @@ class DataRepairService:
         if historical_hours <= recent_hours:
             return tuple(ranges)
         if self._historical_scan_cursor is None:
-            self._historical_scan_cursor = scan_end - timedelta(
-                hours=historical_hours
-            )
+            self._historical_scan_cursor = scan_end - timedelta(hours=historical_hours)
             self._historical_scan_stop = recent_start
         assert self._historical_scan_stop is not None
         if self._historical_scan_cursor < self._historical_scan_stop:
@@ -860,9 +908,7 @@ class DataRepairService:
                     if await self._repository.complete_if_filled(job):
                         succeeded += 1
                         continue
-                    published = await self._collector.collect_kline_range(
-                        job.symbol, job.start, job.end, job.series
-                    )
+                    published, source = await self._collect_job(job)
                     if await self._repository.finish_job(
                         job,
                         published,
@@ -870,6 +916,7 @@ class DataRepairService:
                         poll_interval_seconds=(
                             self._settings.backfill_verify_poll_interval_seconds
                         ),
+                        source=source,
                     ):
                         succeeded += 1
                     else:
@@ -964,8 +1011,7 @@ class DataRepairService:
                         self._settings.backfill_rate_limit_cooldown_seconds,
                     )
                     logger.warning(
-                        "data repair cooling down after Binance rate limit "
-                        "status=%d delay=%.0fs",
+                        "data repair cooling down after Binance rate limit status=%d delay=%.0fs",
                         error.status_code,
                         delay,
                     )
@@ -987,12 +1033,26 @@ async def run(command: str, settings: Settings) -> object:
     try:
         jetstream = connection.jetstream()
         await ensure_streams(jetstream)
-        async with BinanceUsdMClient(
-            base_url=settings.binance_usdm_base_url,
-            timeout_seconds=settings.binance_request_timeout_seconds,
-            max_concurrency=settings.binance_max_concurrency,
-            attempts=settings.binance_request_attempts,
-        ) as client:
+        async with AsyncExitStack() as stack:
+            client = await stack.enter_async_context(
+                BinanceUsdMClient(
+                    base_url=settings.binance_usdm_base_url,
+                    timeout_seconds=settings.binance_request_timeout_seconds,
+                    max_concurrency=settings.binance_max_concurrency,
+                    attempts=settings.binance_request_attempts,
+                )
+            )
+            vision_client = None
+            if settings.binance_vision_enabled:
+                vision_client = await stack.enter_async_context(
+                    BinanceVisionClient(
+                        base_url=settings.binance_vision_base_url,
+                        timeout_seconds=settings.binance_vision_timeout_seconds,
+                        attempts=settings.binance_vision_request_attempts,
+                        cache_entries=settings.binance_vision_cache_entries,
+                        max_archive_bytes=settings.binance_vision_max_archive_bytes,
+                    )
+                )
             collector = BinanceCollectionService(
                 client=client,
                 publisher=JetStreamEventPublisher(jetstream),
@@ -1005,9 +1065,15 @@ async def run(command: str, settings: Settings) -> object:
                     statement_timeout_seconds=(
                         settings.gap_scan_statement_timeout_seconds
                     ),
+                    source_priority=(
+                        ("BINANCE_VISION", "BINANCE_REST")
+                        if settings.binance_vision_enabled
+                        else ("BINANCE_REST",)
+                    ),
                 ),
                 collector,
                 settings,
+                vision_client,
             )
             if command == "once":
                 return await service.run_cycle()
@@ -1031,6 +1097,11 @@ async def queue_mark_5m_backfill(
     repository = DataRepairRepository(
         engine,
         statement_timeout_seconds=settings.gap_scan_statement_timeout_seconds,
+        source_priority=(
+            ("BINANCE_VISION", "BINANCE_REST")
+            if getattr(settings, "binance_vision_enabled", False)
+            else ("BINANCE_REST",)
+        ),
     )
     detected = 0
     queued = 0

@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     postgres_db: str = "auto_trade"
     postgres_user: str = "auto_trade_admin"
     postgres_password: SecretStr
-    postgres_application_name: str | None = Field(default=None, min_length=1, max_length=63)
+    postgres_application_name: str | None = Field(
+        default=None, min_length=1, max_length=63
+    )
     postgres_pool_size: int = Field(default=5, ge=1, le=20)
     postgres_max_overflow: int = Field(default=0, ge=0, le=20)
 
@@ -43,6 +45,14 @@ class Settings(BaseSettings):
     binance_request_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     binance_max_concurrency: int = Field(default=8, ge=1, le=32)
     binance_request_attempts: int = Field(default=3, ge=1, le=5)
+    binance_vision_enabled: bool = False
+    binance_vision_base_url: str = "https://data.binance.vision"
+    binance_vision_timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    binance_vision_request_attempts: int = Field(default=3, ge=1, le=5)
+    binance_vision_cache_entries: int = Field(default=8, ge=1, le=64)
+    binance_vision_max_archive_bytes: int = Field(
+        default=268_435_456, ge=1_048_576, le=1_073_741_824
+    )
     collector_startup_delay_seconds: float = Field(default=5.0, ge=0, le=60)
     collector_boundary_delay_seconds: float = Field(default=15.0, ge=0, le=30)
     instrument_sync_utc_hour: int = Field(default=16, ge=0, le=23)
@@ -69,26 +79,18 @@ class Settings(BaseSettings):
     backfill_jobs_per_cycle: int = Field(default=50, ge=1, le=500)
     backfill_worker_count: int = Field(default=4, ge=1, le=16)
     backfill_verify_timeout_seconds: float = Field(default=60.0, ge=5, le=300)
-    backfill_verify_poll_interval_seconds: float = Field(
-        default=1.0, ge=0.1, le=10
-    )
+    backfill_verify_poll_interval_seconds: float = Field(default=1.0, ge=0.1, le=10)
     backfill_stale_job_seconds: int = Field(default=300, ge=30, le=3600)
     backfill_failed_retry_limit: int = Field(default=3, ge=1, le=10)
     backfill_request_interval_seconds: float = Field(default=2.0, ge=0.1, le=60)
-    backfill_rate_limit_cooldown_seconds: float = Field(
-        default=300.0, ge=60, le=86400
-    )
-    paper_history_request_interval_seconds: float = Field(
-        default=0.5, ge=0, le=60
-    )
+    backfill_rate_limit_cooldown_seconds: float = Field(default=300.0, ge=60, le=86400)
+    paper_history_request_interval_seconds: float = Field(default=0.5, ge=0, le=60)
     telegram_api_id: int | None = Field(default=None, ge=1)
     telegram_api_hash: SecretStr | None = None
     telegram_phone: SecretStr | None = None
     telegram_channel: str = Field(default="wizzalert", min_length=1, max_length=80)
     telegram_channels: list[str] = Field(default_factory=list)
-    telegram_channel_backfill_starts: dict[str, datetime] = Field(
-        default_factory=dict
-    )
+    telegram_channel_backfill_starts: dict[str, datetime] = Field(default_factory=dict)
     telegram_session_path: str = "/data/telegram/wizzalert.session"
     telegram_proxy_url: SecretStr | None = None
     telegram_recent_rescan_messages: int = Field(default=200, ge=0, le=5000)

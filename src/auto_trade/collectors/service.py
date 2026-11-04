@@ -11,7 +11,11 @@ from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from auto_trade.collectors.binance_usdm import BinanceResult, BinanceUsdMClient, JsonObject
+from auto_trade.collectors.binance_usdm import (
+    BinanceResult,
+    BinanceUsdMClient,
+    JsonObject,
+)
 from auto_trade.collectors.publisher import EventPublisher
 from auto_trade.contracts import (
     EventEnvelope,
@@ -238,7 +242,9 @@ def parse_instrument_rules(exchange_info: JsonObject) -> list[InstrumentRulePayl
                 market_min_quantity=_decimal(market_lot.get("minQty")),
                 market_max_quantity=_decimal(market_lot.get("maxQty")),
                 max_open_orders=(
-                    _int(max_orders["limit"]) if max_orders.get("limit") is not None else None
+                    _int(max_orders["limit"])
+                    if max_orders.get("limit") is not None
+                    else None
                 ),
                 max_algo_orders=(
                     _int(max_algo_orders["limit"])
@@ -273,9 +279,7 @@ class BinanceCollectionService:
         self._websocket_mark_closes: dict[str, datetime] = {}
         self._websocket_tickers: dict[str, JsonObject] = {}
         self._websocket_premiums: dict[str, JsonObject] = {}
-        self._websocket_mark_minutes: dict[
-            tuple[str, datetime], MarkMinuteState
-        ] = {}
+        self._websocket_mark_minutes: dict[tuple[str, datetime], MarkMinuteState] = {}
         self._websocket_mark_lock = asyncio.Lock()
         self._websocket_mark_frames_received = 0
         self._websocket_mark_items_received = 0
@@ -374,7 +378,9 @@ class BinanceCollectionService:
 
     async def collect_once(self, symbols: set[str] | None = None) -> CollectionSummary:
         instruments = await self.sync_instruments()
-        trading = {item.symbol for item in instruments if item.trading_status == "TRADING"}
+        trading = {
+            item.symbol for item in instruments if item.trading_status == "TRADING"
+        }
         selected = trading if symbols is None else trading.intersection(symbols)
         skipped = tuple(sorted((symbols or set()) - selected))
         ticker_count = await self.collect_ticker_minutes(selected)
@@ -413,7 +419,10 @@ class BinanceCollectionService:
                 event_type="INSTRUMENT_RULE_SNAPSHOT",
                 source=MarketSource.REST,
                 collected_at=exchange_collected_at,
-                business_key=(instrument.symbol, _payload_hash(instrument.complete_rule_payload)),
+                business_key=(
+                    instrument.symbol,
+                    _payload_hash(instrument.complete_rule_payload),
+                ),
                 payload=instrument,
             )
             await self._publisher.publish(
@@ -434,7 +443,9 @@ class BinanceCollectionService:
             ),
             payload=catalog,
         )
-        await self._publisher.publish("market.normalized.instrument.catalog", catalog_event)
+        await self._publisher.publish(
+            "market.normalized.instrument.catalog", catalog_event
+        )
         return instruments
 
     async def collect_ticker_minutes(self, symbols: set[str]) -> int:
@@ -456,8 +467,13 @@ class BinanceCollectionService:
                 collected_at=market_collected_at,
             ),
         )
-        tickers = {str(item["symbol"]): item for item in _as_object_list(ticker_result.payload)}
-        premiums = {str(item["symbol"]): item for item in _as_object_list(premium_result.payload)}
+        tickers = {
+            str(item["symbol"]): item for item in _as_object_list(ticker_result.payload)
+        }
+        premiums = {
+            str(item["symbol"]): item
+            for item in _as_object_list(premium_result.payload)
+        }
         self._latest_mark_prices = {
             symbol: Decimal(str(item["markPrice"]))
             for symbol, item in premiums.items()
@@ -470,7 +486,9 @@ class BinanceCollectionService:
             if ticker is None:
                 continue
             premium = premiums.get(symbol)
-            quality = QualityStatus.VALID if premium is not None else QualityStatus.PARTIAL
+            quality = (
+                QualityStatus.VALID if premium is not None else QualityStatus.PARTIAL
+            )
             payload = TickerMinutePayload(
                 symbol=symbol,
                 minute_time=minute_time,
@@ -484,7 +502,9 @@ class BinanceCollectionService:
                 quote_volume_24h=_decimal(ticker.get("quoteVolume")),
                 high_price_24h=_decimal(ticker.get("highPrice")),
                 low_price_24h=_decimal(ticker.get("lowPrice")),
-                current_funding_rate=_decimal(premium.get("lastFundingRate")) if premium else None,
+                current_funding_rate=_decimal(premium.get("lastFundingRate"))
+                if premium
+                else None,
                 next_funding_time=(
                     _utc_from_ms(premium["nextFundingTime"])
                     if premium and premium.get("nextFundingTime")
@@ -500,7 +520,9 @@ class BinanceCollectionService:
                 business_key=(symbol, minute_time.isoformat()),
                 payload=payload,
             )
-            await self._publisher.publish(f"market.normalized.ticker.1m.{symbol}", event)
+            await self._publisher.publish(
+                f"market.normalized.ticker.1m.{symbol}", event
+            )
             ticker_count += 1
         if int(minute_time.timestamp()) % 300 == 0:
             await self._publish_rolling_ranking(
@@ -592,12 +614,8 @@ class BinanceCollectionService:
                     state.close_price = price
         return handled
 
-    async def _publish_mark_minute(
-        self, symbol: str, state: MarkMinuteState
-    ) -> None:
-        close_ms = int(
-            (state.open_time + timedelta(minutes=1)).timestamp() * 1000
-        ) - 1
+    async def _publish_mark_minute(self, symbol: str, state: MarkMinuteState) -> None:
+        close_ms = int((state.open_time + timedelta(minutes=1)).timestamp() * 1000) - 1
         await self._publish_kline_row(
             symbol,
             [
@@ -637,11 +655,7 @@ class BinanceCollectionService:
                     ),
                 )
                 for symbol in sorted(symbols)
-                if (
-                    state := self._websocket_mark_minutes.get(
-                        (symbol, expected_open)
-                    )
-                )
+                if (state := self._websocket_mark_minutes.get((symbol, expected_open)))
                 is not None
                 and self._websocket_mark_closes.get(symbol) != expected_open
             ]
@@ -746,7 +760,9 @@ class BinanceCollectionService:
             if ticker is None or ticker.get("lastPrice") in (None, ""):
                 continue
             premium = premiums.get(symbol)
-            quality = QualityStatus.VALID if premium is not None else QualityStatus.PARTIAL
+            quality = (
+                QualityStatus.VALID if premium is not None else QualityStatus.PARTIAL
+            )
             close_time = ticker.get("closeTime")
             payload = TickerMinutePayload(
                 symbol=symbol,
@@ -787,7 +803,9 @@ class BinanceCollectionService:
                 business_key=(symbol, minute_time.isoformat()),
                 payload=payload,
             )
-            await self._publisher.publish(f"market.normalized.ticker.1m.{symbol}", event)
+            await self._publisher.publish(
+                f"market.normalized.ticker.1m.{symbol}", event
+            )
             ticker_count += 1
         if int(minute_time.timestamp()) % 300 == 0:
             await self._publish_rolling_ranking(
@@ -862,7 +880,9 @@ class BinanceCollectionService:
             observed_at=exchange_time,
             open_interest_qty=quantity,
             mark_price=mark_price,
-            open_interest_value=quantity * mark_price if mark_price is not None else None,
+            open_interest_value=quantity * mark_price
+            if mark_price is not None
+            else None,
             quality_status=(
                 QualityStatus.VALID if mark_price is not None else QualityStatus.PARTIAL
             ),
@@ -875,7 +895,9 @@ class BinanceCollectionService:
             business_key=(symbol, exchange_time.isoformat()),
             payload=payload,
         )
-        await self._publisher.publish(f"market.normalized.open_interest.5m.{symbol}", event)
+        await self._publisher.publish(
+            f"market.normalized.open_interest.5m.{symbol}", event
+        )
         return True
 
     async def collect_5m_klines(self, symbols: set[str]) -> int:
@@ -898,7 +920,10 @@ class BinanceCollectionService:
             missing_symbols=missing_symbols,
         )
         results = await asyncio.gather(
-            *(self._collect_latest_closed_5m(symbol) for symbol in sorted(missing_symbols)),
+            *(
+                self._collect_latest_closed_5m(symbol)
+                for symbol in sorted(missing_symbols)
+            ),
             return_exceptions=True,
         )
         count = 0
@@ -947,15 +972,17 @@ class BinanceCollectionService:
             missing_symbols=mark_symbols,
         )
         requests = [
-            (symbol, KlineSeries(PriceType.MARK, 60))
-            for symbol in sorted(mark_symbols)
+            (symbol, KlineSeries(PriceType.MARK, 60)) for symbol in sorted(mark_symbols)
         ]
         requests.extend(
             (symbol, KlineSeries(PriceType.TRADE, 60))
             for symbol in sorted(trade_symbols)
         )
         results = await asyncio.gather(
-            *(self.collect_latest_closed_kline(symbol, series) for symbol, series in requests),
+            *(
+                self.collect_latest_closed_kline(symbol, series)
+                for symbol, series in requests
+            ),
             return_exceptions=True,
         )
         trade_count = 0
@@ -992,9 +1019,7 @@ class BinanceCollectionService:
         return trade_count, mark_count
 
     async def _collect_latest_closed_5m(self, symbol: str) -> int:
-        return await self.collect_latest_closed_kline(
-            symbol, TRADE_5M_SERIES
-        )
+        return await self.collect_latest_closed_kline(symbol, TRADE_5M_SERIES)
 
     async def collect_latest_closed_kline(
         self,
@@ -1066,8 +1091,7 @@ class BinanceCollectionService:
         }
         await self._publish_raw(
             name=(
-                f"kline_{series.price_type.value.lower()}_"
-                f"{series.binance_interval}_backfill"
+                f"kline_{series.price_type.value.lower()}_{series.binance_interval}_backfill"
             ),
             endpoint=self._kline_endpoint(series.price_type),
             result=result,
@@ -1079,9 +1103,56 @@ class BinanceCollectionService:
         closed_rows = [
             row
             for row in rows
-            if start <= _utc_from_ms(row[0]) < end and _utc_from_ms(row[6]) < collected_at
+            if start <= _utc_from_ms(row[0]) < end
+            and _utc_from_ms(row[6]) < collected_at
         ]
         for row in closed_rows:
+            await self._publish_kline_row(
+                symbol, row, collected_at, MarketSource.BACKFILL, series
+            )
+        return len(closed_rows)
+
+    async def publish_archived_kline_range(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        series: KlineSeries,
+        rows: tuple[list[object], ...],
+        *,
+        archive_paths: tuple[str, ...],
+        sha256: tuple[str, ...],
+    ) -> int:
+        """Publish verified Vision rows through the normal backfill-only subject."""
+        collected_at = datetime.now(UTC)
+        result = BinanceResult(payload=list(rows), used_weight_1m=None)
+        await self._publish_raw(
+            name=(
+                f"kline_{series.price_type.value.lower()}_{series.binance_interval}_archive"
+            ),
+            endpoint="https://data.binance.vision",
+            result=result,
+            collected_at=collected_at,
+            params={
+                "symbol": symbol,
+                "interval": series.binance_interval,
+                "startTime": int(start.timestamp() * 1000),
+                "endTime": int(end.timestamp() * 1000) - 1,
+                "archives": ",".join(archive_paths),
+                "sha256": ",".join(sha256),
+            },
+            symbol=symbol,
+            source=MarketSource.ARCHIVE,
+        )
+        closed_rows = [
+            row
+            for row in rows
+            if start <= _utc_from_ms(row[0]) < end
+            and _utc_from_ms(row[6]) < collected_at
+        ]
+        for row in closed_rows:
+            # Keep normalized historical events marked BACKFILL so they can never
+            # be mistaken for live collection by downstream trading consumers.
             await self._publish_kline_row(
                 symbol, row, collected_at, MarketSource.BACKFILL, series
             )
@@ -1187,7 +1258,9 @@ class BinanceCollectionService:
         interval = str(kline.get("i", ""))
         if not bool(kline.get("x")) or interval not in {"1m", "5m"}:
             return False
-        price_type = PriceType.MARK if event_name == "markPrice_kline" else PriceType.TRADE
+        price_type = (
+            PriceType.MARK if event_name == "markPrice_kline" else PriceType.TRADE
+        )
         symbol = str(kline["s"])
         open_time = _utc_from_ms(kline["t"])
         collected_at = datetime.now(UTC)
