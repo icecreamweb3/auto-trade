@@ -160,6 +160,13 @@ def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[
     elif config_type == "ELIGIBLE_POOL_RULES":
         _number_at_least(payload, "minimum_listing_age_seconds", 0, errors)
         _number_at_least(payload, "minimum_notional_volume", 0, errors, strict=True)
+        _number_at_least(
+            payload,
+            "inferred_trading_minimum_notional_volume",
+            0,
+            errors,
+            strict=True,
+        )
         _number_at_least(payload, "liquidity_lookback_seconds", 0, errors, strict=True)
         if (
             not isinstance(payload.get("required_contract_type"), str)

@@ -53,7 +53,8 @@ SELECT config_version_id, config_type, semver, 1, config_json,
        'c1000000-0000-0000-0000-000000000001', clock_timestamp()
 FROM (VALUES
     ('c2000000-0000-0000-0000-000000000001'::uuid, 'TICKER_POOL_RULES'::varchar,
-     '23.0.1'::varchar, '{"rule":"historical"}'::jsonb),
+     '23.0.1'::varchar,
+     '{"policy_name":"UTC_DAILY_2355_TOP_50_D_MINUS_1_V1","source":"market.ranking_snapshots","ranking_type":"UTC_DAILY_2355","as_of_lag_days":1,"top_n":50,"excluded_symbols":[],"required_contract_type":"USDT_PERPETUAL"}'::jsonb),
     ('c2000000-0000-0000-0000-000000000002'::uuid, 'DATA_QUALITY_RULES'::varchar,
      '23.0.2'::varchar,
      '{"required_dependencies":["KLINE"],"dependency_rules":{"KLINE":{"minimum_coverage":1,"minimum_effective_samples":17280,"minimum_effective_folds":1,"warmup_required":true}}}'::jsonb),
@@ -62,7 +63,7 @@ FROM (VALUES
      '{"label_horizon_seconds":86400,"max_holding_seconds":86400}'::jsonb),
     ('c2000000-0000-0000-0000-000000000004'::uuid, 'ELIGIBLE_POOL_RULES'::varchar,
      '23.0.4'::varchar,
-     '{"minimum_listing_age_seconds":86400,"minimum_notional_volume":500,"required_contract_type":"USDT_PERPETUAL","liquidity_lookback_seconds":86400}'::jsonb),
+     '{"minimum_listing_age_seconds":86400,"minimum_notional_volume":500,"inferred_trading_minimum_notional_volume":100000,"required_contract_type":"USDT_PERPETUAL","liquidity_lookback_seconds":86400}'::jsonb),
     ('c2000000-0000-0000-0000-000000000005'::uuid, 'RESOURCE_LIMITS'::varchar,
      '23.0.5'::varchar,
      '{"max_heavy_experiments":1,"db_workers_per_experiment":2,"pool_connections":6,"statement_timeout_seconds":900,"lock_timeout_seconds":2,"idle_in_transaction_session_timeout_seconds":60,"work_mem_bytes":67108864,"cpu_limit":4,"memory_bytes":8589934592,"temp_disk_min_free_bytes":1073741824,"max_candidate_count":1000,"max_signal_count":100000,"max_decision_row_count":1000000,"max_storage_bytes":10737418240}'::jsonb),
@@ -102,7 +103,7 @@ SELECT instrument_id, 'TRADING', 'ACTIVE', '2026-06-01 00:00:00+00',
        '2026-06-01 00:00:00+00', '{"source":"fixture"}',
        encode(digest(symbol, 'sha256'), 'hex'), '2026-06-01 00:00:00+00'
 FROM core.instruments
-WHERE symbol IN ('ELIGIBLEUSDT', 'NEWUSDT');
+WHERE symbol = 'NEWUSDT';
 
 INSERT INTO market.klines (
     instrument_id, price_type, interval_seconds, open_time, revision_no, is_current,
@@ -189,6 +190,42 @@ WHERE config_version_id::text LIKE 'c2000000-0000-0000-0000-00000000000%';
 
 RESET ROLE;
 
+INSERT INTO market.ranking_snapshots (
+    ranking_snapshot_id, ranking_type, snapshot_at, utc_trade_date, scheduled_at,
+    generated_at, generation_mode, source_kline_time, window_start, window_end,
+    item_count, snapshot_hash, quality_status, created_at
+) VALUES
+(
+    'c3000000-0000-0000-0000-000000000001', 'UTC_DAILY_2355',
+    '2026-06-14 23:55:00+00', '2026-06-14', '2026-06-14 23:55:00+00',
+    '2026-07-01 00:00:00+00', 'BACKFILLED', '2026-06-14 23:55:00+00',
+    '2026-06-14 00:00:00+00', '2026-06-14 23:55:00+00', 2,
+    repeat('3', 64), 'VALID', '2026-07-01 00:00:00+00'
+),
+(
+    'c3000000-0000-0000-0000-000000000002', 'UTC_DAILY_2355',
+    '2026-06-15 23:55:00+00', '2026-06-15', '2026-06-15 23:55:00+00',
+    '2026-07-01 00:00:00+00', 'BACKFILLED', '2026-06-15 23:55:00+00',
+    '2026-06-15 00:00:00+00', '2026-06-15 23:55:00+00', 2,
+    repeat('4', 64), 'VALID', '2026-07-01 00:00:00+00'
+);
+
+INSERT INTO market.ranking_entries (
+    ranking_snapshot_id, rank_no, instrument_id, price_change, quote_volume
+)
+SELECT snapshot.ranking_snapshot_id,
+       row_number() OVER (
+           PARTITION BY snapshot.ranking_snapshot_id ORDER BY instrument.symbol
+       )::smallint,
+       instrument.instrument_id, 1, 1000000
+FROM market.ranking_snapshots snapshot
+CROSS JOIN core.instruments instrument
+WHERE snapshot.ranking_snapshot_id IN (
+          'c3000000-0000-0000-0000-000000000001',
+          'c3000000-0000-0000-0000-000000000002'
+      )
+  AND instrument.symbol IN ('ELIGIBLEUSDT', 'NEWUSDT');
+
 CREATE TEMP TABLE first_universe AS
 SELECT * FROM strategy_training.historical_instrument_universe(
     :'builder_dataset_id', '2026-06-15 00:00:00+00'
@@ -199,12 +236,15 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM first_universe
         WHERE symbol = 'ELIGIBLEUSDT' AND is_eligible AND rejection_codes = '[]'::jsonb
+          AND exchange_status = 'TRADING' AND system_status = 'ACTIVE'
+          AND status_effective_at = liquidity_observed_at
+          AND status_payload_hash IS NOT NULL
     ) OR NOT EXISTS (
         SELECT 1 FROM first_universe
         WHERE symbol = 'NEWUSDT' AND NOT is_eligible
           AND rejection_codes ? 'LISTING_AGE_TOO_SHORT'
     ) THEN
-        RAISE EXCEPTION 'historical eligibility did not use contemporaneous evidence';
+        RAISE EXCEPTION 'historical eligibility did not use status/Kline evidence';
     END IF;
 END
 $$;
@@ -514,6 +554,43 @@ SELECT strategy_training.complete_training_dataset_manifest(
 );
 
 RESET ROLE;
+
+-- A recorded historical non-TRADING state is authoritative and must never be
+-- overwritten by the Kline-volume fallback, even when volume is sufficient.
+INSERT INTO core.instrument_status_history (
+    instrument_id, exchange_status, system_status, discovered_at, effective_at,
+    disposition, payload_hash, created_at
+)
+SELECT instrument_id, 'SETTLING', 'INACTIVE', '2026-06-15 00:00:00+00',
+       '2026-06-15 00:00:00+00', '{"source":"fixture-explicit-non-trading"}',
+       encode(digest(symbol || ':explicit-non-trading', 'sha256'), 'hex'),
+       '2026-07-01 00:00:00+00'
+FROM core.instruments
+WHERE symbol = 'ELIGIBLEUSDT';
+
+DO $$
+DECLARE
+    replacement_id uuid;
+BEGIN
+    SELECT dataset_version_id INTO STRICT replacement_id
+    FROM strategy_training.training_dataset_versions
+    WHERE source_revision_watermark = '{"fixture":"source-v2"}'::jsonb;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM strategy_training.historical_instrument_universe(
+            replacement_id, '2026-06-16 00:00:00+00'
+        )
+        WHERE symbol = 'ELIGIBLEUSDT'
+          AND NOT is_eligible
+          AND exchange_status = 'SETTLING'
+          AND system_status = 'INACTIVE'
+          AND rejection_codes ? 'NOT_TRADING_AT_EVALUATION'
+    ) THEN
+        RAISE EXCEPTION 'Kline fallback overrode explicit historical non-TRADING status';
+    END IF;
+END
+$$;
+
 SET LOCAL ROLE tb2_training_orchestrator;
 
 SELECT strategy_training.mark_training_dataset_stale_for_replacement(

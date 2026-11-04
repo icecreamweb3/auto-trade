@@ -209,6 +209,7 @@ class DatabaseDatasetAuditStore:
                 "evaluation_at": fact.evaluation_at.isoformat(),
                 "liquidity_revision_hash": fact.liquidity_revision_hash,
                 "rejection_codes": fact.rejection_codes,
+                "status_policy": "HISTORICAL_EXCHANGE_STATUS_OR_KLINE_24H_VOLUME_V1",
                 "status_payload_hash": fact.status_payload_hash,
                 "symbol": fact.symbol,
             }
