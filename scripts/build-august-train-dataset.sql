@@ -144,67 +144,25 @@ ORDER BY coverage_day, entry.instrument_id
 \gexec
 \set QUIET 0
 
--- Persist the canonical point-in-time pool once per eligible day. The database
--- trigger independently rechecks every recorded fact against the controlled query.
+-- Persist the canonical point-in-time pool once per eligible day. The trusted
+-- database function computes the full governed Top-N once, verifies any partial
+-- facts from a prior run, and atomically inserts only the missing rows.
 \set QUIET 1
 SELECT format(
 $statement$
-WITH fact AS MATERIALIZED (
-    SELECT *
-    FROM strategy_training.historical_instrument_universe(
-        %1$L::uuid, %2$L::timestamptz
-    )
-    WHERE instrument_id = %3$L::bigint
-)
-SELECT strategy_training.record_historical_pool_evaluation(
-        %1$L::uuid, fact.instrument_id, fact.symbol, fact.evaluation_at,
-        fact.onboard_at, fact.contract_identity, fact.exchange_status,
-        fact.system_status, fact.status_effective_at, fact.status_payload_hash,
-        fact.observed_quote_notional, fact.liquidity_observed_at,
-        fact.liquidity_revision_hash, fact.is_eligible, fact.rejection_codes,
-        jsonb_build_object(
-            'policy', 'HISTORICAL_EXCHANGE_STATUS_OR_KLINE_24H_VOLUME_V1',
-            'evaluation_at', fact.evaluation_at,
-            'symbol', fact.symbol,
-            'status_payload_hash', fact.status_payload_hash,
-            'liquidity_revision_hash', fact.liquidity_revision_hash,
-            'rejection_codes', fact.rejection_codes
-        )
-)
-FROM fact;
+SELECT *
+FROM strategy_training.record_historical_pool_day(
+    %1$L::uuid, %2$L::timestamptz
+);
 $statement$,
-    :'dataset_id', evaluation_day, entry.instrument_id
+    :'dataset_id', evaluation_day
 )
 FROM generate_series(
     :'eligible_start'::timestamptz,
     :'dataset_eligible_end'::timestamptz - interval '1 day',
     interval '1 day'
 ) evaluation_day
-CROSS JOIN LATERAL (
-    SELECT ranked_entry.instrument_id
-    FROM market.ranking_entries ranked_entry
-    WHERE ranked_entry.ranking_snapshot_id = (
-        SELECT snapshot.ranking_snapshot_id
-        FROM market.ranking_snapshots snapshot
-        WHERE snapshot.ranking_type = 'UTC_DAILY_2355'
-          AND snapshot.utc_trade_date = evaluation_day::date - 1
-          AND snapshot.quality_status = 'VALID'
-          AND snapshot.generated_at <= :'source_as_of'::timestamptz
-          AND snapshot.created_at <= :'source_as_of'::timestamptz
-        ORDER BY snapshot.generated_at DESC, snapshot.ranking_snapshot_id
-        LIMIT 1
-    )
-      AND ranked_entry.rank_no <= :'top_n'::integer
-    ORDER BY ranked_entry.rank_no
-) entry
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM strategy_training.training_historical_pool_evaluations existing
-    WHERE existing.dataset_version_id = :'dataset_id'::uuid
-      AND existing.evaluation_at = evaluation_day
-      AND existing.instrument_id = entry.instrument_id
-)
-ORDER BY evaluation_day, entry.instrument_id
+ORDER BY evaluation_day
 \gexec
 \set QUIET 0
 
@@ -285,7 +243,7 @@ WITH binding_manifest AS (
 SELECT strategy_training.complete_training_dataset_manifest(
     :'dataset_id'::uuid, :'code_commit', :'image_digest',
     :'python_version', :'system_version', :'dependency_lock_hash',
-    '058_training_kline_shard_static_pruning',
+    '059_training_historical_pool_daily_batch',
     jsonb_build_object('dataset_builder', 'AUGUST_TRAIN_A0_V1',
                        'config_bindings', binding_manifest.value),
     42, 1, 1, 4, 1, :'coverage_query_hash',

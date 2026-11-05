@@ -24,6 +24,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'migration 058 was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '059_training_historical_pool_daily_batch' AND success
+    ) THEN
+        RAISE EXCEPTION 'migration 059 was not recorded successfully';
+    END IF;
 
     SELECT language.lanname
     INTO STRICT shard_function_language
@@ -188,6 +194,14 @@ BEGIN
         'tb2_training_rw',
         'strategy_training.historical_kline_liquidity(bigint,timestamptz,timestamptz,double precision)',
         'EXECUTE'
+    ) OR has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.record_historical_pool_evaluation(uuid,bigint,text,timestamptz,timestamptz,text,text,text,timestamptz,character,numeric,timestamptz,character,boolean,jsonb,jsonb)',
+        'EXECUTE'
+    ) OR NOT has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.record_historical_pool_day(uuid,timestamptz)',
+        'EXECUTE'
     ) THEN
         RAISE EXCEPTION 'dataset builder privilege matrix is incorrect';
     END IF;
@@ -350,22 +364,31 @@ $$;
 
 SET LOCAL ROLE tb2_training_rw;
 
-SELECT strategy_training.record_historical_pool_evaluation(
-    :'builder_dataset_id', universe.instrument_id, universe.symbol,
-    universe.evaluation_at, universe.onboard_at, universe.contract_identity,
-    universe.exchange_status, universe.system_status, universe.status_effective_at,
-    universe.status_payload_hash, universe.observed_quote_notional,
-    universe.liquidity_observed_at, universe.liquidity_revision_hash,
-    universe.is_eligible, universe.rejection_codes,
-    jsonb_build_object(
-        'symbol', universe.symbol,
-        'evaluation_at', universe.evaluation_at,
-        'liquidity_revision_hash', universe.liquidity_revision_hash
-    )
-)
-FROM strategy_training.historical_instrument_universe(
+CREATE TEMP TABLE first_day_batch AS
+SELECT * FROM strategy_training.record_historical_pool_day(
     :'builder_dataset_id', '2026-06-15 00:00:00+00'
-) universe;
+);
+
+CREATE TEMP TABLE first_day_replay AS
+SELECT * FROM strategy_training.record_historical_pool_day(
+    :'builder_dataset_id', '2026-06-15 00:00:00+00'
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM first_day_batch
+        WHERE canonical_count = 2 AND preexisting_count = 0
+          AND inserted_count = 2 AND final_count = 2
+    ) OR NOT EXISTS (
+        SELECT 1 FROM first_day_replay
+        WHERE canonical_count = 2 AND preexisting_count = 2
+          AND inserted_count = 0 AND final_count = 2
+    ) THEN
+        RAISE EXCEPTION 'daily historical pool batch is not complete and idempotent';
+    END IF;
+END
+$$;
 
 DO $$
 DECLARE
@@ -389,7 +412,7 @@ BEGIN
             true, '[]', '{"forged":true}'
         );
         RAISE EXCEPTION 'forged historical eligibility was accepted';
-    EXCEPTION WHEN check_violation THEN NULL;
+    EXCEPTION WHEN insufficient_privilege THEN NULL;
     END;
 END
 $$;
@@ -536,18 +559,9 @@ WHERE config_version_id::text LIKE 'c2000000-0000-0000-0000-00000000000%';
 RESET ROLE;
 SET LOCAL ROLE tb2_training_rw;
 
-SELECT strategy_training.record_historical_pool_evaluation(
-    :'replacement_dataset_id', universe.instrument_id, universe.symbol,
-    universe.evaluation_at, universe.onboard_at, universe.contract_identity,
-    universe.exchange_status, universe.system_status, universe.status_effective_at,
-    universe.status_payload_hash, universe.observed_quote_notional,
-    universe.liquidity_observed_at, universe.liquidity_revision_hash,
-    universe.is_eligible, universe.rejection_codes,
-    jsonb_build_object('replacement', true, 'symbol', universe.symbol)
-)
-FROM strategy_training.historical_instrument_universe(
+SELECT * FROM strategy_training.record_historical_pool_day(
     :'replacement_dataset_id', '2026-06-15 00:00:00+00'
-) universe;
+);
 
 SELECT strategy_training.record_training_resource_preflight(
     :'replacement_dataset_id', 'c2000000-0000-0000-0000-000000000005',
