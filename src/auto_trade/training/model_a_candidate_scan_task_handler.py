@@ -7,7 +7,7 @@ import heapq
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import cast
 from uuid import UUID
@@ -57,6 +57,41 @@ def _random_candidate_rank(
     identity = f"{instrument_id}|{observed_at.isoformat()}"
     digest = hashlib.sha256(f"{random_seed}|{identity}".encode()).hexdigest()
     return int(digest, 16), identity
+
+
+def _random_candidate_stratum_key(
+    candidate: _RandomCandidate,
+) -> tuple[int, str, str, str, str]:
+    return (
+        candidate.instrument_id,
+        candidate.observed_at.astimezone(UTC).strftime("UTC-%H"),
+        candidate.stratum.volatility_bucket,
+        candidate.stratum.liquidity_bucket,
+        candidate.stratum.btc_regime,
+    )
+
+
+def _retain_random_candidate(
+    heaps: dict[
+        tuple[int, str, str, str, str],
+        list[tuple[int, str, _RandomCandidate]],
+    ],
+    candidate: _RandomCandidate,
+    *,
+    random_seed: int,
+    maximum_frame_candidates: int,
+) -> None:
+    """Keep a deterministic bounded sample for each governed matching frame."""
+
+    frame = heaps.setdefault(_random_candidate_stratum_key(candidate), [])
+    rank, identity = _random_candidate_rank(
+        random_seed, candidate.instrument_id, candidate.observed_at
+    )
+    heap_entry = (-rank, identity, candidate)
+    if len(frame) < maximum_frame_candidates:
+        heapq.heappush(frame, heap_entry)
+    elif heap_entry > frame[0]:
+        heapq.heapreplace(frame, heap_entry)
 
 
 def _mapping(value: object, field_name: str) -> Mapping[str, object]:
@@ -171,7 +206,10 @@ class ModelACandidateScanTaskHandler:
             raise ModelACandidateScanError("random-baseline benchmark history is empty")
         persisted_ids: list[str] = []
         frame_candidate_ids: list[str] = []
-        frame_candidate_heap: list[tuple[int, str, _RandomCandidate]] = []
+        frame_candidate_heaps: dict[
+            tuple[int, str, str, str, str],
+            list[tuple[int, str, _RandomCandidate]],
+        ] = {}
         for instrument in await self._store.load_instruments(
             lease.task_id, lease.lease_token
         ):
@@ -290,19 +328,21 @@ class ModelACandidateScanTaskHandler:
                         trigger_reason=evaluation.trigger_reason,
                     ),
                 )
-                rank, identity = _random_candidate_rank(
-                    strata_config.random_seed,
-                    candidate.instrument_id,
-                    candidate.observed_at,
+                _retain_random_candidate(
+                    frame_candidate_heaps,
+                    candidate,
+                    random_seed=strata_config.random_seed,
+                    maximum_frame_candidates=strata_config.maximum_frame_candidates,
                 )
-                heap_entry = (-rank, identity, candidate)
-                if len(frame_candidate_heap) < strata_config.maximum_frame_candidates:
-                    heapq.heappush(frame_candidate_heap, heap_entry)
-                elif heap_entry > frame_candidate_heap[0]:
-                    heapq.heapreplace(frame_candidate_heap, heap_entry)
-        for _, _, candidate in sorted(
-            frame_candidate_heap, key=lambda item: (-item[0], item[1])
-        ):
+        retained_candidates = (
+            candidate
+            for frame_key in sorted(frame_candidate_heaps)
+            for _, _, candidate in sorted(
+                frame_candidate_heaps[frame_key],
+                key=lambda item: (-item[0], item[1]),
+            )
+        )
+        for candidate in retained_candidates:
             stratum = candidate.stratum
             frame_candidate_ids.append(
                 await self._store.record_random_candidate(

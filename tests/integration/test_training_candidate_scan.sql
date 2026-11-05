@@ -59,6 +59,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'candidate entry-source migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '065_training_outcome_bars_static_pruning' AND success
+    ) THEN
+        RAISE EXCEPTION 'outcome-bars static-pruning migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -159,6 +165,19 @@ BEGIN
         'RETURN QUERY EXECUTE format'
     ) = 0 THEN
         RAISE EXCEPTION 'candidate scan market reads do not use static chunk pruning';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.training_entry_outcome_bars(character)'::regprocedure
+        ),
+        'RETURN QUERY EXECUTE format'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.training_random_candidate_outcome_bars(uuid,uuid,character,character)'::regprocedure
+        ),
+        'RETURN QUERY EXECUTE format'
+    ) = 0 THEN
+        RAISE EXCEPTION 'model-A outcome reads do not use static chunk pruning';
     END IF;
     IF strpos(
         pg_get_functiondef(

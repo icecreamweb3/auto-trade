@@ -22,9 +22,12 @@ from auto_trade.training.model_a_candidate_scan_repository import (
 from auto_trade.training.model_a_candidate_scan_task_handler import (
     ModelACandidateScanError,
     ModelACandidateScanTaskHandler,
+    _RandomCandidate,
+    _retain_random_candidate,
     build_candidate_strategy_parameters,
 )
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
+from auto_trade.training.random_baseline_strata import ComputedStratum
 
 
 def _context(**overrides: object) -> CandidateScanContext:
@@ -74,6 +77,65 @@ def _bar(open_time: datetime, open_price: str) -> FeatureBar:
         amplitude_percent=Decimal("2"),
         open_interest_value=Decimal("1000"),
     )
+
+
+def _random_candidate(
+    instrument_id: int,
+    observed_at: datetime,
+    *,
+    volatility_bucket: str = "V1",
+) -> _RandomCandidate:
+    stratum = ComputedStratum(
+        volatility_bucket,
+        "L1",
+        "B1",
+        observed_at - timedelta(hours=1),
+        observed_at - timedelta(hours=1),
+        observed_at - timedelta(hours=1),
+        {"fixture": True},
+    )
+    return _RandomCandidate(
+        instrument_id,
+        observed_at,
+        uuid4(),
+        uuid4(),
+        Decimal("10"),
+        Decimal("70"),
+        stratum,
+        "{}",
+    )
+
+
+def test_random_candidate_cap_is_applied_per_matching_stratum() -> None:
+    heaps: dict[
+        tuple[int, str, str, str, str],
+        list[tuple[int, str, _RandomCandidate]],
+    ] = {}
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+
+    for offset in range(3):
+        _retain_random_candidate(
+            heaps,
+            _random_candidate(1, start + timedelta(minutes=offset)),
+            random_seed=42,
+            maximum_frame_candidates=2,
+        )
+        _retain_random_candidate(
+            heaps,
+            _random_candidate(
+                2, start + timedelta(minutes=offset), volatility_bucket="V2"
+            ),
+            random_seed=42,
+            maximum_frame_candidates=2,
+        )
+
+    assert len(heaps) == 2
+    assert sorted(len(frame) for frame in heaps.values()) == [2, 2]
+    assert {
+        candidate.instrument_id
+        for frame in heaps.values()
+        for _, _, candidate in frame
+    } == {1, 2}
 
 
 def test_candidate_parameters_are_merged_with_frozen_registry() -> None:
