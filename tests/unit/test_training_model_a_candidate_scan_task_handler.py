@@ -119,6 +119,7 @@ def test_random_candidate_cap_is_applied_per_matching_stratum() -> None:
             _random_candidate(1, start + timedelta(minutes=offset)),
             random_seed=42,
             maximum_frame_candidates=2,
+            time_bucket_hours=24,
         )
         _retain_random_candidate(
             heaps,
@@ -127,6 +128,7 @@ def test_random_candidate_cap_is_applied_per_matching_stratum() -> None:
             ),
             random_seed=42,
             maximum_frame_candidates=2,
+            time_bucket_hours=24,
         )
 
     assert len(heaps) == 2
@@ -231,6 +233,7 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
             {
                 "random_seed": 42,
                 "maximum_frame_candidates": 100,
+                "time_bucket_hours": 24,
                 "stratification": {
                     "benchmark_symbol": "BTCUSDT",
                     "volatility_measure": "CLOSE_RETURN_STDDEV_PERCENT",

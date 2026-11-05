@@ -142,6 +142,7 @@ async def test_fresh_complete_outcome_records_label_and_opportunity(monkeypatch)
     )
     store.record_random_candidate_outcome = AsyncMock()
     store.record_random_baseline = AsyncMock()
+    store.finalize_random_baseline_coverage = AsyncMock(return_value="READY")
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
@@ -164,12 +165,16 @@ async def test_retry_reuses_existing_evidence_without_rewriting(monkeypatch) -> 
     store.load_existing_evidence = AsyncMock(
         return_value=ExistingEntryEvidence("c" * 64, True, True, True)
     )
+    store.finalize_random_baseline_coverage = AsyncMock(return_value="READY")
     store.load_outcome_bars = AsyncMock()
     store.record_outcome = AsyncMock()
     store.record_opportunity = AsyncMock()
     store.load_random_baseline_context = AsyncMock()
     store.load_random_baseline_candidates = AsyncMock()
     store.record_random_baseline = AsyncMock()
+    store.finalize_random_baseline_coverage = AsyncMock(
+        return_value="INSUFFICIENT_POWER"
+    )
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
@@ -195,6 +200,9 @@ async def test_incomplete_outcome_never_creates_opportunity_truth(monkeypatch) -
     store.load_random_baseline_context = AsyncMock()
     store.load_random_baseline_candidates = AsyncMock()
     store.record_random_baseline = AsyncMock()
+    store.finalize_random_baseline_coverage = AsyncMock(
+        return_value="INSUFFICIENT_POWER"
+    )
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
@@ -204,6 +212,44 @@ async def test_incomplete_outcome_never_creates_opportunity_truth(monkeypatch) -
 
     store.record_outcome.assert_awaited_once()
     store.record_opportunity.assert_not_awaited()
+    store.record_random_baseline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_insufficient_reference_frame_is_excluded_without_failing_task(
+    monkeypatch,
+) -> None:
+    store = MagicMock()
+    store.load_context = AsyncMock(return_value=context())
+    store.load_existing_evidence = AsyncMock(
+        return_value=ExistingEntryEvidence("c" * 64, True, True, False, False)
+    )
+    insufficient = baseline_context()
+    insufficient = RandomBaselineEvaluationContext(
+        insufficient.config_version_id,
+        5,
+        5,
+        86400,
+        42,
+        insufficient.target,
+        (),
+    )
+    store.load_random_baseline_context = AsyncMock(return_value=insufficient)
+    store.load_random_baseline_candidates = AsyncMock(return_value=())
+    store.record_random_baseline_exclusion = AsyncMock(return_value="e" * 64)
+    store.record_random_baseline = AsyncMock()
+    store.finalize_random_baseline_coverage = AsyncMock(
+        return_value="INSUFFICIENT_POWER"
+    )
+    monkeypatch.setattr(
+        "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
+        lambda _connection: store,
+    )
+
+    result = await ModelAEvaluationTaskHandler(MagicMock())(lease(payload()))
+
+    assert len(result) == 64
+    store.record_random_baseline_exclusion.assert_awaited_once()
     store.record_random_baseline.assert_not_awaited()
 
 

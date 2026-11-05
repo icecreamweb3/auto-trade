@@ -40,6 +40,7 @@ class ExistingEntryEvidence:
     is_complete: bool
     opportunity_recorded: bool
     random_baseline_recorded: bool
+    random_baseline_excluded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,11 +133,14 @@ class DatabaseModelAEvaluationStore:
                 SELECT outcome.path_fingerprint, outcome.is_complete,
                        opportunity.entry_event_id IS NOT NULL AS opportunity_recorded,
                        baseline.random_baseline_id IS NOT NULL AS random_baseline_recorded
+                       , exclusion.entry_event_id IS NOT NULL AS random_baseline_excluded
                 FROM strategy_training.training_entry_outcomes outcome
                 LEFT JOIN strategy_training.training_opportunity_events opportunity
                   ON opportunity.entry_event_id = outcome.entry_event_id
                 LEFT JOIN strategy_training.training_random_entry_baselines baseline
                   ON baseline.matched_entry_event_id = outcome.entry_event_id
+                LEFT JOIN strategy_training.training_random_baseline_frame_exclusions exclusion
+                  ON exclusion.entry_event_id = outcome.entry_event_id
                 WHERE outcome.entry_event_id = :entry_event_id
                 """
             ),
@@ -150,6 +154,7 @@ class DatabaseModelAEvaluationStore:
             bool(row["is_complete"]),
             bool(row["opportunity_recorded"]),
             bool(row["random_baseline_recorded"]),
+            bool(row["random_baseline_excluded"]),
         )
 
     async def load_random_baseline_context(
@@ -467,3 +472,37 @@ class DatabaseModelAEvaluationStore:
             },
         )
         return cast(UUID, result.scalar_one())
+
+    async def record_random_baseline_exclusion(
+        self, task_id: UUID, lease_token: UUID, entry_event_id: str
+    ) -> str:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.record_training_random_baseline_frame_exclusion(
+                    :task_id, :lease_token, :entry_event_id
+                )
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "entry_event_id": entry_event_id,
+            },
+        )
+        return str(result.scalar_one())
+
+    async def finalize_random_baseline_coverage(
+        self, task_id: UUID, lease_token: UUID
+    ) -> str:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.finalize_training_random_baseline_coverage(
+                    :task_id, :lease_token
+                )
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        return str(result.scalar_one())

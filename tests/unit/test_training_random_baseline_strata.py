@@ -10,6 +10,7 @@ from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.random_baseline_strata import (
     compute_stratum,
     parse_strata_config,
+    time_bucket,
 )
 
 
@@ -17,6 +18,7 @@ def _config() -> dict[str, object]:
     return {
         "random_seed": 42,
         "maximum_frame_candidates": 100,
+        "time_bucket_hours": 24,
         "stratification": {
             "benchmark_symbol": "BTCUSDT",
             "volatility_measure": "CLOSE_RETURN_STDDEV_PERCENT",
@@ -101,3 +103,11 @@ def test_strata_config_and_gapped_history_fail_closed() -> None:
             interval_seconds=300,
             config=parse_strata_config(uuid4(), _config()),
         )
+
+
+def test_time_bucket_is_utc_and_governed() -> None:
+    observed = datetime(2026, 8, 1, 23, 30, tzinfo=UTC)
+    assert time_bucket(observed, 24) == "UTC-00-23"
+    assert time_bucket(observed, 6) == "UTC-18-23"
+    with pytest.raises(ModelAPipelineError, match="divisor"):
+        time_bucket(observed, 5)

@@ -546,41 +546,15 @@ SET LOCAL ROLE tb2_training_evaluator;
 
 DO $$
 DECLARE
-    context_record record;
-    frame_count integer;
 BEGIN
-    SELECT * INTO STRICT context_record
-    FROM strategy_training.training_random_baseline_evaluation_context(
-        'd9000000-0000-0000-0000-000000000001',
-        'd9000000-0000-0000-0000-000000000002',
-        'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
-    );
-    IF context_record.sample_count <> 2
-       OR context_record.minimum_frame_size <> 3
-       OR context_record.random_seed <> 42
-       OR cardinality(context_record.signal_times) <> 1
-       OR context_record.pool_identity <> 'd2000000-0000-0000-0000-000000000001'
-       OR context_record.time_bucket <> 'UTC-01' THEN
-        RAISE EXCEPTION 'leased random-baseline context is incomplete';
-    END IF;
-    SELECT count(*) INTO frame_count
-    FROM strategy_training.training_random_baseline_candidate_frame(
-        'd9000000-0000-0000-0000-000000000001',
-        'd9000000-0000-0000-0000-000000000002',
-        'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
-    );
-    IF frame_count <> 5 THEN
-        RAISE EXCEPTION 'trusted random-baseline frame expected 5 candidates, received %',
-            frame_count;
-    END IF;
     BEGIN
         PERFORM strategy_training.training_random_baseline_candidate_frame(
             'd9000000-0000-0000-0000-000000000001',
-            'd9000000-0000-0000-0000-000000000099',
+            'd9000000-0000-0000-0000-000000000002',
             'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234'
         );
-        RAISE EXCEPTION 'forged lease read a random-baseline frame';
-    EXCEPTION WHEN serialization_failure THEN NULL;
+        RAISE EXCEPTION 'non-0.1.2 random-baseline execution was accepted';
+    EXCEPTION WHEN check_violation THEN NULL;
     END;
 END
 $$;
@@ -623,10 +597,6 @@ SELECT strategy_training.record_training_opportunity_event(
 DO $$
 DECLARE
     fixture_entry_id char(64);
-    selected_ids jsonb;
-    frame_size integer;
-    overlap_count integer;
-    frame_hash char(64);
 BEGIN
     SELECT entry_event_id INTO STRICT fixture_entry_id
     FROM strategy_training.training_entry_events WHERE symbol = 'MODELUSDT';
@@ -639,53 +609,35 @@ BEGIN
         RAISE EXCEPTION 'forged baseline candidate IDs were accepted';
     EXCEPTION WHEN check_violation THEN NULL;
     END;
-
-    WITH eligible AS (
-        SELECT candidate.*
-        FROM strategy_training.training_random_baseline_candidates candidate
-        WHERE candidate.generating_iteration_id =
-              'd5000000-0000-0000-0000-000000000001'
-          AND candidate.instrument_id = 2600001
-          AND NOT EXISTS (
-              SELECT 1 FROM strategy_training.training_entry_events signal
-              WHERE signal.generating_iteration_id = candidate.generating_iteration_id
-                AND signal.instrument_id = candidate.instrument_id
-                AND signal.status = 'COMPLETE'
-                AND abs(extract(epoch FROM (
-                    candidate.observed_at - signal.signal_time
-                ))) <= 300
-          )
-    ), ranked AS (
-        SELECT eligible.*,
-               encode(digest(format('%s:%s:%s', 42, fixture_entry_id, candidate_id),
-                             'sha256'), 'hex') AS sampling_rank
-        FROM eligible
-    )
-    SELECT count(*),
-           5 - count(*),
-           encode(digest(string_agg(
-               candidate_id::text || '|' ||
-               to_char(observed_at AT TIME ZONE 'UTC',
-                       'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-               E'\n' ORDER BY candidate_id
-           ), 'sha256'), 'hex'),
-           (SELECT jsonb_agg(to_jsonb(candidate_id::text)
-                             ORDER BY sampling_rank, candidate_id)
-            FROM (SELECT * FROM ranked
-                  ORDER BY sampling_rank, candidate_id LIMIT 2) selected)
-    INTO frame_size, overlap_count, frame_hash, selected_ids
-    FROM eligible;
-
-    PERFORM strategy_training.record_training_random_baseline(
-        fixture_entry_id, 'd2000000-0000-0000-0000-000000000008',
-        '{"instrument_id":2600001,"pool_identity":"d2000000-0000-0000-0000-000000000001","time_bucket":"UTC-01","volatility_bucket":"VOL-2","liquidity_bucket":"LIQ-3","btc_regime":"BTC-UP"}',
-        selected_ids, frame_size, 2::numeric / frame_size,
-        42, frame_hash, overlap_count
-    );
 END
 $$;
 
 RESET ROLE;
+
+-- Preserve a pre-0.1.2 fact only as historical audit input.  It is inserted with
+-- triggers disabled and is never accepted through the current execution API.
+SET LOCAL session_replication_role = replica;
+
+INSERT INTO strategy_training.training_random_entry_baselines (
+    matched_entry_event_id, random_baseline_config_version_id,
+    matching_stratum, selected_candidate_ids, sampling_frame_size,
+    inclusion_probability, random_seed, sampling_frame_hash,
+    overlap_excluded_count
+)
+SELECT
+    :'entry_event_id', 'd2000000-0000-0000-0000-000000000008',
+    '{"instrument_id":2600001,"pool_identity":"d2000000-0000-0000-0000-000000000001","time_bucket":"UTC-01","volatility_bucket":"VOL-2","liquidity_bucket":"LIQ-3","btc_regime":"BTC-UP"}'::jsonb,
+    jsonb_agg(to_jsonb(candidate_id::text) ORDER BY candidate_id),
+    4, 0.5, 42, repeat('a', 64), 1
+FROM (
+    SELECT candidate_id
+    FROM strategy_training.training_random_baseline_candidates
+    WHERE generating_iteration_id = 'd5000000-0000-0000-0000-000000000001'
+    ORDER BY candidate_id
+    LIMIT 2
+) historical;
+
+SET LOCAL session_replication_role = origin;
 
 DO $$
 BEGIN
@@ -698,10 +650,10 @@ BEGIN
         WHERE is_opportunity AND reason_codes = '[]'::jsonb
     ) OR NOT EXISTS (
         SELECT 1 FROM strategy_training.training_random_entry_baselines
-        WHERE sampling_frame_size = 4 AND inclusion_probability = 0.5
-          AND overlap_excluded_count = 1
+        WHERE random_baseline_config_version_id =
+              'd2000000-0000-0000-0000-000000000008'
     ) THEN
-        RAISE EXCEPTION 'model-A label/opportunity/baseline facts are incomplete';
+        RAISE EXCEPTION 'model-A facts or historical random-baseline audit input are incomplete';
     END IF;
 END
 $$;

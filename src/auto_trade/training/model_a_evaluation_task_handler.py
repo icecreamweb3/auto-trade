@@ -104,24 +104,51 @@ class ModelAEvaluationTaskHandler:
                 path_fingerprint = outcome.path_fingerprint
                 opportunity_recorded = False
                 random_baseline_recorded = False
+                random_baseline_excluded = False
             else:
                 is_complete = existing.is_complete
                 path_fingerprint = existing.path_fingerprint
                 opportunity_recorded = existing.opportunity_recorded
                 random_baseline_recorded = existing.random_baseline_recorded
+                random_baseline_excluded = existing.random_baseline_excluded
             if is_complete and not opportunity_recorded:
                 await self._store.record_opportunity(
                     entry_event_id,
                     context.opportunity_definition_version_id,
                 )
                 opportunity_recorded = True
-            if is_complete and not random_baseline_recorded:
+            exclusion_evidence_hash: str | None = None
+            random_outcome_hashes: list[str] = []
+            if is_complete and not random_baseline_recorded and not random_baseline_excluded:
                 baseline_context = await self._store.load_random_baseline_context(
                     lease.task_id, lease.lease_token, entry_event_id
                 )
                 candidates = await self._store.load_random_baseline_candidates(
                     lease.task_id, lease.lease_token, entry_event_id
                 )
+                if len(candidates) < baseline_context.minimum_frame_size:
+                    exclusion_evidence_hash = (
+                        await self._store.record_random_baseline_exclusion(
+                            lease.task_id, lease.lease_token, entry_event_id
+                        )
+                    )
+                    random_baseline_excluded = True
+                    evidence.append(
+                        {
+                            "entry_event_id": entry_event_id,
+                            "is_complete": is_complete,
+                            "opportunity_recorded": opportunity_recorded,
+                            "random_baseline_recorded": False,
+                            "random_baseline_excluded": True,
+                            "random_baseline_exclusion_reason": (
+                                "RANDOM_BASELINE_FRAME_INSUFFICIENT"
+                            ),
+                            "random_baseline_exclusion_evidence_hash": exclusion_evidence_hash,
+                            "random_outcome_hashes": (),
+                            "path_fingerprint": path_fingerprint,
+                        }
+                    )
+                    continue
                 selection = select_matched_random_baseline(
                     matched_entry_event_id=entry_event_id,
                     target=baseline_context.target,
@@ -136,7 +163,6 @@ class ModelAEvaluationTaskHandler:
                     minimum_frame_size=baseline_context.minimum_frame_size,
                     random_seed=baseline_context.random_seed,
                 )
-                random_outcome_hashes: list[str] = []
                 for candidate_id in selection.selected_candidate_ids:
                     candidate_context = (
                         await self._store.load_random_candidate_outcome_context(
@@ -183,16 +209,25 @@ class ModelAEvaluationTaskHandler:
                     baseline_context.target,
                 )
                 random_baseline_recorded = True
-            else:
-                random_outcome_hashes = []
             evidence.append(
                 {
                     "entry_event_id": entry_event_id,
                     "is_complete": is_complete,
                     "opportunity_recorded": opportunity_recorded,
                     "random_baseline_recorded": random_baseline_recorded,
+                    "random_baseline_excluded": random_baseline_excluded,
+                    "random_baseline_exclusion_evidence_hash": exclusion_evidence_hash,
                     "random_outcome_hashes": tuple(random_outcome_hashes),
                     "path_fingerprint": path_fingerprint,
                 }
             )
-        return _sha256({"payload_version": 1, "entries": evidence})
+        coverage_status = await self._store.finalize_random_baseline_coverage(
+            lease.task_id, lease.lease_token
+        )
+        return _sha256(
+            {
+                "payload_version": 1,
+                "entries": evidence,
+                "random_baseline_coverage_status": coverage_status,
+            }
+        )

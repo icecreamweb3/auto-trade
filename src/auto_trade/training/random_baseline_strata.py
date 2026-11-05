@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import pairwise
 from typing import cast
@@ -29,6 +29,7 @@ class StrataConfig:
     liquidity_boundaries: tuple[Decimal, ...]
     btc_return_boundaries: tuple[Decimal, ...]
     maximum_frame_candidates: int
+    time_bucket_hours: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +102,13 @@ def parse_strata_config(config_version_id: UUID, config: Mapping[str, object]) -
     random_seed = config.get("random_seed")
     if isinstance(random_seed, bool) or not isinstance(random_seed, int):
         raise ModelAPipelineError("RANDOM_BASELINE random_seed must be an integer")
+    time_bucket_hours = _positive_integer(
+        config.get("time_bucket_hours"), "time_bucket_hours"
+    )
+    if 24 % time_bucket_hours:
+        raise ModelAPipelineError(
+            "RANDOM_BASELINE time_bucket_hours must be a positive divisor of 24"
+        )
     return StrataConfig(
         config_version_id,
         random_seed,
@@ -116,7 +124,23 @@ def parse_strata_config(config_version_id: UUID, config: Mapping[str, object]) -
         _positive_integer(
             config.get("maximum_frame_candidates"), "maximum_frame_candidates"
         ),
+        time_bucket_hours,
     )
+
+
+def time_bucket(observed_at: datetime, bucket_hours: int) -> str:
+    """Return the governed UTC bucket without depending on local timezone."""
+
+    if bucket_hours <= 0 or 24 % bucket_hours:
+        raise ModelAPipelineError(
+            "RANDOM_BASELINE time_bucket_hours must be a positive divisor of 24"
+        )
+    if observed_at.utcoffset() is None:
+        raise ModelAPipelineError("random-baseline timestamps must be timezone-aware")
+    hour = observed_at.astimezone(UTC).hour
+    start = hour - hour % bucket_hours
+    end = start + bucket_hours - 1
+    return f"UTC-{start:02d}-{end:02d}"
 
 
 def _bucket(prefix: str, value: Decimal, boundaries: tuple[Decimal, ...]) -> str:

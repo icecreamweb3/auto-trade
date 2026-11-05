@@ -7,7 +7,7 @@ import heapq
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import cast
 from uuid import UUID
@@ -32,6 +32,7 @@ from auto_trade.training.random_baseline_strata import (
     ComputedStratum,
     compute_stratum,
     parse_strata_config,
+    time_bucket,
 )
 
 
@@ -61,10 +62,11 @@ def _random_candidate_rank(
 
 def _random_candidate_stratum_key(
     candidate: _RandomCandidate,
+    time_bucket_hours: int,
 ) -> tuple[int, str, str, str, str]:
     return (
         candidate.instrument_id,
-        candidate.observed_at.astimezone(UTC).strftime("UTC-%H"),
+        time_bucket(candidate.observed_at, time_bucket_hours),
         candidate.stratum.volatility_bucket,
         candidate.stratum.liquidity_bucket,
         candidate.stratum.btc_regime,
@@ -80,10 +82,13 @@ def _retain_random_candidate(
     *,
     random_seed: int,
     maximum_frame_candidates: int,
+    time_bucket_hours: int,
 ) -> None:
     """Keep a deterministic bounded sample for each governed matching frame."""
 
-    frame = heaps.setdefault(_random_candidate_stratum_key(candidate), [])
+    frame = heaps.setdefault(
+        _random_candidate_stratum_key(candidate, time_bucket_hours), []
+    )
     rank, identity = _random_candidate_rank(
         random_seed, candidate.instrument_id, candidate.observed_at
     )
@@ -199,6 +204,7 @@ class ModelACandidateScanTaskHandler:
         strata_config = parse_strata_config(
             raw_baseline.config_version_id, raw_baseline.config
         )
+        uses_frozen_reference_support = "reference_set_id" in raw_baseline.config
         benchmark_bars = await self._store.load_benchmark_bars(
             lease.task_id, lease.lease_token
         )
@@ -293,6 +299,8 @@ class ModelACandidateScanTaskHandler:
                 if len(persisted_ids) > context.maximum_signal_count:
                     raise ModelACandidateScanError("candidate signal count exceeds READY limit")
             for evaluation in evaluations:
+                if uses_frozen_reference_support:
+                    continue
                 if (
                     not evaluation.candidate_triggered
                     or evaluation.score >= parameters.signal_score_threshold
@@ -333,6 +341,7 @@ class ModelACandidateScanTaskHandler:
                     candidate,
                     random_seed=strata_config.random_seed,
                     maximum_frame_candidates=strata_config.maximum_frame_candidates,
+                    time_bucket_hours=strata_config.time_bucket_hours,
                 )
         retained_candidates = (
             candidate
