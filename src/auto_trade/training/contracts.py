@@ -196,8 +196,13 @@ class EntryEventIdentity:
         object.__setattr__(self, "entry_time", entry_time)
 
 
-def _sha256_json(payload: dict[str, str]) -> str:
-    canonical = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+def _sha256_json(payload: dict[str, str], *, ensure_ascii: bool = True) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=ensure_ascii,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -212,7 +217,8 @@ def build_entry_event_id(identity: EntryEventIdentity) -> str:
             "generating_version_id": str(identity.generating_version_id),
             "signal_time": _canonical_timestamp(identity.signal_time, field_name="signal_time"),
             "symbol": identity.symbol,
-        }
+        },
+        ensure_ascii=False,
     )
 
 

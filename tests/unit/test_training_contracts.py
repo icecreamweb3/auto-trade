@@ -148,6 +148,21 @@ def test_entry_event_id_is_deterministic_and_version_specific() -> None:
     assert changed_version != first
 
 
+def test_entry_event_id_matches_database_contract_for_unicode_symbol() -> None:
+    identity = EntryEventIdentity(
+        dataset_version_id=UUID("d3000000-0000-0000-0000-000000000001"),
+        generating_version_id=UUID("d5000000-0000-0000-0000-000000000001"),
+        symbol="币安人生USDT",
+        signal_time=datetime(2026, 6, 10, 1, 0, tzinfo=UTC),
+        entry_time=datetime(2026, 6, 10, 1, 5, tzinfo=UTC),
+        direction=Direction.LONG,
+    )
+
+    assert build_entry_event_id(identity) == (
+        "6bac89616a9486546c4c5ef967d458f230b8850bbe16824823c9e2c228ab034d"
+    )
+
+
 def test_test_scope_hash_excludes_content_and_code_by_contract() -> None:
     arguments = {
         "start_at": datetime(2026, 11, 1, tzinfo=UTC),

@@ -86,7 +86,10 @@ async def run_service(
     if poll_interval_seconds <= 0:
         raise ValueError("poll_interval_seconds must be positive")
     settings = get_settings()
-    engine = create_database_engine(settings)
+    engine = create_database_engine(
+        settings,
+        minimum_pool_size=2 if role.executor_kind is not None else 1,
+    )
     try:
         await verify_identity(engine, role, expected_user)
         LOGGER.info("training service identity verified role=%s", role.name)

@@ -35,6 +35,30 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'fixed-baseline execution migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '061_training_candidate_scan_static_pruning' AND success
+    ) THEN
+        RAISE EXCEPTION 'candidate scan static-pruning migration was not recorded successfully';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '062_training_candidate_scan_market_permissions' AND success
+    ) THEN
+        RAISE EXCEPTION 'candidate scan market-permissions migration was not recorded successfully';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '063_training_candidate_scan_result_types' AND success
+    ) THEN
+        RAISE EXCEPTION 'candidate scan result-types migration was not recorded successfully';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '064_training_candidate_entry_source' AND success
+    ) THEN
+        RAISE EXCEPTION 'candidate entry-source migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -65,6 +89,20 @@ BEGIN
         'EXECUTE'
     ) OR has_table_privilege(
         'tb2_training_rw', 'market.klines', 'SELECT'
+    ) OR has_table_privilege(
+        'tb2_training_rw', 'market.kline_ema_indicators', 'SELECT'
+    ) OR has_table_privilege(
+        'tb2_training_rw', 'market.open_interest_observations', 'SELECT'
+    ) OR has_table_privilege(
+        'tb2_training_rw', 'core.instrument_rule_versions', 'SELECT'
+    ) OR NOT has_table_privilege(
+        'tb2_training_owner', 'market.klines', 'SELECT'
+    ) OR NOT has_table_privilege(
+        'tb2_training_owner', 'market.kline_ema_indicators', 'SELECT'
+    ) OR NOT has_table_privilege(
+        'tb2_training_owner', 'market.open_interest_observations', 'SELECT'
+    ) OR NOT has_table_privilege(
+        'tb2_training_owner', 'core.instrument_rule_versions', 'SELECT'
     ) OR NOT has_function_privilege(
         'tb2_training_evaluator',
         'strategy_training.training_random_candidate_outcome_context(uuid,uuid,character,character)',
@@ -108,6 +146,40 @@ BEGIN
         '''FIXED_BASELINE'''
     ) = 0 THEN
         RAISE EXCEPTION 'fixed baseline is absent from the governed scan/batch contracts';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.training_model_a_candidate_scan_benchmark_bars(uuid,uuid)'::regprocedure
+        ),
+        'RETURN QUERY EXECUTE format'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.training_model_a_candidate_scan_bars(uuid,uuid,bigint)'::regprocedure
+        ),
+        'RETURN QUERY EXECUTE format'
+    ) = 0 THEN
+        RAISE EXCEPTION 'candidate scan market reads do not use static chunk pruning';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.training_model_a_candidate_scan_bars(uuid,uuid,bigint)'::regprocedure
+        ),
+        'rules.price_precision::integer'
+    ) = 0 THEN
+        RAISE EXCEPTION 'candidate scan result types do not match the function contract';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.create_training_candidate_entry_event(uuid,uuid,character,uuid,uuid,bigint,text,timestamp with time zone,timestamp with time zone,text,numeric,numeric,numeric,numeric,uuid,uuid,uuid,uuid,character)'::regprocedure
+        ),
+        'strategy_training.training_model_a_candidate_scan_entry_source'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.create_training_candidate_entry_event(uuid,uuid,character,uuid,uuid,bigint,text,timestamp with time zone,timestamp with time zone,text,numeric,numeric,numeric,numeric,uuid,uuid,uuid,uuid,character)'::regprocedure
+        ),
+        'MODEL_B_PROTOTYPE'
+    ) = 0 THEN
+        RAISE EXCEPTION 'candidate entry source/use is not derived from its lease-bound iteration';
     END IF;
 END
 $$;

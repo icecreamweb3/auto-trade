@@ -15,6 +15,7 @@ from auto_trade.training.random_baseline_strata import (
 
 def _config() -> dict[str, object]:
     return {
+        "random_seed": 42,
         "maximum_frame_candidates": 100,
         "stratification": {
             "benchmark_symbol": "BTCUSDT",

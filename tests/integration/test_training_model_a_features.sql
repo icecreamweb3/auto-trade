@@ -252,6 +252,14 @@ BEGIN
     ) <> 'ff15d4f70eae9cacf879d83da0eb772dc448e8e8170edf4e5930abef1d68c234' THEN
         RAISE EXCEPTION 'SQL/Python entry identity contract diverged';
     END IF;
+    IF strategy_training.compute_training_entry_event_id(
+        'd3000000-0000-0000-0000-000000000001',
+        'd5000000-0000-0000-0000-000000000001',
+        '币安人生USDT', '2026-06-10 01:00:00+00',
+        '2026-06-10 01:05:00+00', 'LONG'
+    ) <> '6bac89616a9486546c4c5ef967d458f230b8850bbe16824823c9e2c228ab034d' THEN
+        RAISE EXCEPTION 'SQL/Python Unicode entry identity contract diverged';
+    END IF;
 END
 $$;
 

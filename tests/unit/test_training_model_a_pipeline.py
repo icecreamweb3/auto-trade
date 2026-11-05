@@ -25,7 +25,7 @@ def _time(hour: int) -> datetime:
     return datetime(2026, 6, 1, hour, tzinfo=UTC)
 
 
-def _adapted_signal():
+def _adapted_signal(*, factor_names: tuple[str, ...] | None = None):
     signal = StrategySignal(
         symbol="btcusdt",
         open_time=_time(1),
@@ -65,6 +65,7 @@ def _adapted_signal():
         scan_parameters_version_id=uuid4(),
         input_fingerprint="a" * 64,
         entry_price=Decimal("101"),
+        factor_names=factor_names,
     )
 
 
@@ -83,6 +84,11 @@ def test_feature_scan_adapter_preserves_diagnostics_and_next_bar_entry() -> None
     assert not missing.available
     assert missing.value is None
     assert missing.reason == "OI unavailable"
+
+
+def test_feature_scan_adapter_persists_only_frozen_registry_factors() -> None:
+    adapted = _adapted_signal(factor_names=("available_factor",))
+    assert [factor.factor_name for factor in adapted.factors] == ["available_factor"]
 
 
 def test_feature_scan_adapter_is_deterministic_for_same_versions_and_signal() -> None:

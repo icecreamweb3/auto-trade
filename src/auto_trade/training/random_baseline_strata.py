@@ -20,6 +20,7 @@ from auto_trade.training.model_a_pipeline import ModelAPipelineError
 @dataclass(frozen=True, slots=True)
 class StrataConfig:
     config_version_id: UUID
+    random_seed: int
     benchmark_symbol: str
     volatility_window_bars: int
     liquidity_window_bars: int
@@ -97,8 +98,12 @@ def parse_strata_config(config_version_id: UUID, config: Mapping[str, object]) -
     symbol = values["benchmark_symbol"]
     if not isinstance(symbol, str) or not symbol.strip() or symbol != symbol.upper():
         raise ModelAPipelineError("RANDOM_BASELINE benchmark_symbol must be uppercase")
+    random_seed = config.get("random_seed")
+    if isinstance(random_seed, bool) or not isinstance(random_seed, int):
+        raise ModelAPipelineError("RANDOM_BASELINE random_seed must be an integer")
     return StrataConfig(
         config_version_id,
+        random_seed,
         symbol,
         _positive_integer(values["volatility_window_bars"], "volatility_window_bars"),
         _positive_integer(values["liquidity_window_bars"], "liquidity_window_bars"),

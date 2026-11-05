@@ -11,11 +11,15 @@ from sqlalchemy.ext.asyncio import (
 from auto_trade.config import Settings
 
 
-def create_database_engine(settings: Settings) -> AsyncEngine:
+def create_database_engine(
+    settings: Settings, *, minimum_pool_size: int = 1
+) -> AsyncEngine:
+    if minimum_pool_size < 1:
+        raise ValueError("minimum_pool_size must be positive")
     return create_async_engine(
         settings.database_dsn,
         pool_pre_ping=True,
-        pool_size=settings.postgres_pool_size,
+        pool_size=max(settings.postgres_pool_size, minimum_pool_size),
         max_overflow=settings.postgres_max_overflow,
         connect_args={
             "server_settings": {

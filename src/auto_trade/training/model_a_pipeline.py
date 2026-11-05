@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -138,6 +139,7 @@ def adapt_model_a_signal(
     scan_parameters_version_id: UUID,
     input_fingerprint: str,
     entry_price: Decimal,
+    factor_names: Sequence[str] | None = None,
 ) -> AdaptedModelASignal:
     if source not in {
         EntrySource.FIXED_BASELINE_MODEL_A,
@@ -150,6 +152,19 @@ def adapt_model_a_signal(
         raise ModelAPipelineError("interval_seconds must be a positive whole minute")
     if not signal.factors:
         raise ModelAPipelineError("an emitted signal requires factor diagnostics")
+    selected_factor_names = (
+        tuple(sorted(signal.factors)) if factor_names is None else tuple(factor_names)
+    )
+    if not selected_factor_names or len(set(selected_factor_names)) != len(
+        selected_factor_names
+    ):
+        raise ModelAPipelineError("persisted factor names must be non-empty and unique")
+    unknown_factor_names = sorted(set(selected_factor_names) - set(signal.factors))
+    if unknown_factor_names:
+        raise ModelAPipelineError(
+            "persisted factors are absent from signal diagnostics: "
+            + ", ".join(unknown_factor_names)
+        )
     signal_time = _utc(signal.open_time, "signal.open_time")
     entry_time = signal_time + timedelta(seconds=interval_seconds)
     identity = EntryEventIdentity(
@@ -200,7 +215,8 @@ def adapt_model_a_signal(
             result=result,
             input_fingerprint=input_fingerprint,
         )
-        for name, result in sorted(signal.factors.items())
+        for name in sorted(selected_factor_names)
+        for result in (signal.factors[name],)
     )
     return AdaptedModelASignal(event, factors)
 
@@ -218,6 +234,7 @@ def adapt_fixed_baseline_signal(
     scan_parameters_version_id: UUID,
     input_fingerprint: str,
     entry_price: Decimal,
+    factor_names: Sequence[str] | None = None,
 ) -> AdaptedModelASignal:
     return adapt_model_a_signal(
         signal,
@@ -232,6 +249,7 @@ def adapt_fixed_baseline_signal(
         scan_parameters_version_id=scan_parameters_version_id,
         input_fingerprint=input_fingerprint,
         entry_price=entry_price,
+        factor_names=factor_names,
     )
 
 

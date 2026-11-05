@@ -167,6 +167,7 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
         return_value=RandomBaselineConfig(
             uuid4(),
             {
+                "random_seed": 42,
                 "maximum_frame_candidates": 100,
                 "stratification": {
                     "benchmark_symbol": "BTCUSDT",
