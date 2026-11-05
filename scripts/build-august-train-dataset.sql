@@ -35,15 +35,17 @@ BEGIN
 END
 $$;
 
-SELECT dataset_version_id AS existing_dataset_id
-FROM strategy_training.training_dataset_versions
-WHERE dataset_type = 'MODEL_A_FEATURES'
-  AND partition = 'TRAIN'
-  AND partition_start_at = :'partition_start'::timestamptz
-  AND partition_end_at = :'partition_end'::timestamptz
-  AND status = 'BUILDING'
-ORDER BY created_at DESC
-LIMIT 1
+SELECT (
+    SELECT dataset_version_id
+    FROM strategy_training.training_dataset_versions
+    WHERE dataset_type = 'MODEL_A_FEATURES'
+      AND partition = 'TRAIN'
+      AND partition_start_at = :'partition_start'::timestamptz
+      AND partition_end_at = :'partition_end'::timestamptz
+      AND status = 'BUILDING'
+    ORDER BY created_at DESC
+    LIMIT 1
+) AS existing_dataset_id
 \gset
 
 \if :{?existing_dataset_id}
