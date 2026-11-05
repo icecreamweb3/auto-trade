@@ -14,6 +14,30 @@ BEGIN
 END
 $$;
 
+DO $$
+DECLARE
+    shard_function_language text;
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '058_training_kline_shard_static_pruning' AND success
+    ) THEN
+        RAISE EXCEPTION 'migration 058 was not recorded successfully';
+    END IF;
+
+    SELECT language.lanname
+    INTO STRICT shard_function_language
+    FROM pg_proc function
+    JOIN pg_language language ON language.oid = function.prolang
+    WHERE function.oid =
+        'strategy_training.training_kline_source_shard(uuid,bigint,timestamptz,timestamptz)'::regprocedure;
+
+    IF shard_function_language <> 'plpgsql' THEN
+        RAISE EXCEPTION 'trusted Kline shard function must use static-pruning implementation';
+    END IF;
+END
+$$;
+
 INSERT INTO core.app_users (user_id, email, password_hash, username, role)
 VALUES (
     'c1000000-0000-0000-0000-000000000001',
@@ -159,6 +183,10 @@ BEGIN
     ) OR NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.record_training_kline_dataset_member(uuid,bigint,timestamptz,timestamptz)',
+        'EXECUTE'
+    ) OR has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.historical_kline_liquidity(bigint,timestamptz,timestamptz,double precision)',
         'EXECUTE'
     ) THEN
         RAISE EXCEPTION 'dataset builder privilege matrix is incorrect';

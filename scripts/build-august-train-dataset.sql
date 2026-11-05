@@ -285,7 +285,7 @@ WITH binding_manifest AS (
 SELECT strategy_training.complete_training_dataset_manifest(
     :'dataset_id'::uuid, :'code_commit', :'image_digest',
     :'python_version', :'system_version', :'dependency_lock_hash',
-    '057_training_ranked_historical_pool',
+    '058_training_kline_shard_static_pruning',
     jsonb_build_object('dataset_builder', 'AUGUST_TRAIN_A0_V1',
                        'config_bindings', binding_manifest.value),
     42, 1, 1, 4, 1, :'coverage_query_hash',
