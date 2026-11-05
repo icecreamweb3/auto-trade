@@ -21,7 +21,7 @@ def _json_text(value: object) -> str:
 
 
 class DatabaseModelAFeatureStore:
-    """Persist fixed-baseline entries only through training-worker procedures."""
+    """Persist governed Model-A discovery entries through worker procedures."""
 
     def __init__(self, connection: AsyncConnection) -> None:
         self._connection = connection

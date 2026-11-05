@@ -93,3 +93,21 @@ async def test_advance_optimizer_runs_returns_only_ids_and_actions() -> None:
     sql = str(connection.execute.await_args.args[0])
     assert "advance_training_optimizer_runs" in sql
     assert "objective" not in sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_advance_fixed_baselines_returns_only_ids_and_actions() -> None:
+    iteration_id = uuid4()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = [
+        {"iteration_id": iteration_id, "action": "SCAN_ENQUEUED"}
+    ]
+    connection = AsyncMock()
+    connection.execute.return_value = result
+
+    actions = await DatabaseOrchestratorStore(connection).advance_fixed_baselines()
+
+    assert actions == ((iteration_id, "SCAN_ENQUEUED"),)
+    sql = str(connection.execute.await_args.args[0])
+    assert "advance_training_fixed_baselines" in sql
+    assert "metric" not in sql.lower()

@@ -17,7 +17,6 @@ from auto_trade.strategies.feature_scan import (
     StrategyParameters,
     evaluate_series,
 )
-from auto_trade.training.contracts import EntrySource
 from auto_trade.training.model_a_candidate_scan_repository import (
     CandidateScanContext,
     DatabaseModelACandidateScanStore,
@@ -187,7 +186,7 @@ class ModelACandidateScanTaskHandler:
                     continue
                 adapted = adapt_model_a_signal(
                     signal,
-                    source=EntrySource.IN_SAMPLE_MODEL_A,
+                    source=context.entry_source,
                     dataset_version_id=context.dataset_version_id,
                     generating_version_id=context.iteration_id,
                     instrument_id=instrument.instrument_id,

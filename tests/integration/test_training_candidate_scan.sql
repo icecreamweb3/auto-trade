@@ -29,6 +29,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'model-A Discovery L0 migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '060_training_fixed_baseline_execution' AND success
+    ) THEN
+        RAISE EXCEPTION 'fixed-baseline execution migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -44,6 +50,14 @@ BEGIN
     ) OR NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_random_config(uuid,uuid)',
+        'EXECUTE'
+    ) OR NOT has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.training_model_a_candidate_scan_entry_source(uuid,uuid)',
+        'EXECUTE'
+    ) OR has_function_privilege(
+        'tb2_training_optimizer',
+        'strategy_training.training_model_a_candidate_scan_entry_source(uuid,uuid)',
         'EXECUTE'
     ) OR NOT has_function_privilege(
         'tb2_training_rw',
@@ -71,8 +85,29 @@ BEGIN
         'tb2_training_orchestrator',
         'strategy_training.advance_training_model_a_l0_tasks()',
         'EXECUTE'
+    ) OR NOT has_function_privilege(
+        'tb2_training_orchestrator',
+        'strategy_training.advance_training_fixed_baselines()',
+        'EXECUTE'
+    ) OR has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.advance_training_fixed_baselines()',
+        'EXECUTE'
     ) THEN
         RAISE EXCEPTION 'candidate scan least-privilege boundary is incorrect';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)'::regprocedure
+        ),
+        '''FIXED_BASELINE'''
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.freeze_training_iteration_entry_batch(uuid,character)'::regprocedure
+        ),
+        '''FIXED_BASELINE'''
+    ) = 0 THEN
+        RAISE EXCEPTION 'fixed baseline is absent from the governed scan/batch contracts';
     END IF;
 END
 $$;

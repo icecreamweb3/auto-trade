@@ -18,5 +18,11 @@ class DatabaseOrchestratorRuntime:
             store = DatabaseOrchestratorStore(connection)
             optimizer_actions = await store.advance_optimizer_runs()
             scan_actions = await store.advance_candidate_scans()
+            fixed_baseline_actions = await store.advance_fixed_baselines()
             l0_actions = await store.advance_model_a_l0_tasks()
-            return optimizer_actions + scan_actions + l0_actions
+            return (
+                optimizer_actions
+                + scan_actions
+                + fixed_baseline_actions
+                + l0_actions
+            )

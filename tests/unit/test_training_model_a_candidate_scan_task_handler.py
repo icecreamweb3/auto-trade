@@ -11,6 +11,7 @@ from auto_trade.strategies.feature_scan import (
     StrategyEvaluation,
     StrategySignal,
 )
+from auto_trade.training.contracts import EntrySource
 from auto_trade.training.model_a_candidate_scan_repository import (
     BenchmarkBar,
     CandidateScanContext,
@@ -51,6 +52,7 @@ def _context(**overrides: object) -> CandidateScanContext:
         "dataset_root_fingerprint": "a" * 64,
         "maximum_signal_count": 10,
         "existing_batch_hash": None,
+        "entry_source": EntrySource.IN_SAMPLE_MODEL_A,
     }
     values.update(overrides)
     return CandidateScanContext(**values)  # type: ignore[arg-type]
@@ -92,10 +94,19 @@ def test_candidate_scan_rejects_unknown_or_non_5m_parameters() -> None:
         build_candidate_strategy_parameters(_context(interval_seconds=900))
 
 
+@pytest.mark.parametrize(
+    ("entry_source", "expected_source"),
+    [
+        (EntrySource.IN_SAMPLE_MODEL_A, "IN_SAMPLE_MODEL_A"),
+        (EntrySource.FIXED_BASELINE_MODEL_A, "FIXED_BASELINE_MODEL_A"),
+    ],
+)
 async def test_candidate_scan_persists_entries_and_freezes_batch(
     monkeypatch: pytest.MonkeyPatch,
+    entry_source: EntrySource,
+    expected_source: str,
 ) -> None:
-    context = _context()
+    context = _context(entry_source=entry_source)
     signal_time = context.eligible_start_at
     bars = (
         _bar(signal_time - timedelta(minutes=10), "98"),
@@ -194,7 +205,7 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
 
     assert await handler(lease) == "b" * 64
     adapted = handler._feature_store.record_candidate_signal.await_args.args[0]
-    assert adapted.event.source.value == "IN_SAMPLE_MODEL_A"
+    assert adapted.event.source.value == expected_source
     assert adapted.event.entry_price == Decimal("101")
     handler._store.record_signal_stratum.assert_awaited_once()
     handler._store.record_random_candidate.assert_not_awaited()

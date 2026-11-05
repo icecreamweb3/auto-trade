@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from auto_trade.strategies.feature_scan import FeatureBar
+from auto_trade.training.contracts import EntrySource
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,7 @@ class CandidateScanContext:
     dataset_root_fingerprint: str
     maximum_signal_count: int
     existing_batch_hash: str | None
+    entry_source: EntrySource
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,10 +69,13 @@ class DatabaseModelACandidateScanStore:
         result = await self._connection.execute(
             text(
                 """
-                SELECT *
+                SELECT context.*,
+                       strategy_training.training_model_a_candidate_scan_entry_source(
+                           :task_id, :lease_token
+                       ) AS entry_source
                 FROM strategy_training.training_model_a_candidate_scan_context(
                     :task_id, :lease_token
-                )
+                ) context
                 """
             ),
             {"task_id": task_id, "lease_token": lease_token},
@@ -93,6 +98,7 @@ class DatabaseModelACandidateScanStore:
             existing_batch_hash=(
                 None if row["existing_batch_hash"] is None else str(row["existing_batch_hash"])
             ),
+            entry_source=EntrySource(str(row["entry_source"])),
         )
 
     async def load_instruments(

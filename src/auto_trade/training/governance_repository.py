@@ -134,6 +134,20 @@ class DatabaseOrchestratorStore:
             for row in result.mappings().all()
         )
 
+    async def advance_fixed_baselines(self) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT iteration_id, action
+                FROM strategy_training.advance_training_fixed_baselines()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["iteration_id"]), str(row["action"]))
+            for row in result.mappings().all()
+        )
+
     async def advance_model_a_l0_tasks(self) -> tuple[tuple[UUID, str], ...]:
         result = await self._connection.execute(
             text(
