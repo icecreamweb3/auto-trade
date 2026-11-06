@@ -24,6 +24,7 @@ from auto_trade.training.model_a_candidate_scan_task_handler import (
     ModelACandidateScanTaskHandler,
     _RandomCandidate,
     _retain_random_candidate,
+    _uses_frozen_reference_support,
     build_candidate_strategy_parameters,
 )
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
@@ -140,6 +141,28 @@ def test_random_candidate_cap_is_applied_per_matching_stratum() -> None:
     } == {1, 2}
 
 
+def test_fixed_baseline_rebuilds_support_only_for_a_new_dataset() -> None:
+    reference_dataset_id = uuid4()
+    baseline = RandomBaselineConfig(
+        uuid4(), {"reference_set_id": str(uuid4())}, reference_dataset_id
+    )
+
+    assert _uses_frozen_reference_support(
+        _context(dataset_version_id=reference_dataset_id), baseline
+    )
+    assert not _uses_frozen_reference_support(
+        _context(
+            dataset_version_id=uuid4(),
+            entry_source=EntrySource.FIXED_BASELINE_MODEL_A,
+        ),
+        baseline,
+    )
+    with pytest.raises(ModelACandidateScanError, match="differs"):
+        _uses_frozen_reference_support(
+            _context(dataset_version_id=uuid4()), baseline
+        )
+
+
 def test_candidate_parameters_are_merged_with_frozen_registry() -> None:
     parameters = build_candidate_strategy_parameters(_context())
 
@@ -247,6 +270,7 @@ async def test_candidate_scan_persists_entries_and_freezes_batch(
                     "btc_return_boundaries_percent": [0],
                 },
             },
+            context.dataset_version_id,
         )
     )
     handler._store.load_benchmark_bars = AsyncMock(

@@ -6,6 +6,9 @@ MIGRATION = ROOT / "database/067_training_random_baseline_version_progression.sq
 BINDING_MIGRATION = (
     ROOT / "database/068_training_random_baseline_binding_progression.sql"
 )
+REBUILD_MIGRATION = (
+    ROOT / "database/069_training_random_baseline_reference_rebuild.sql"
+)
 
 
 def test_new_reference_versions_are_not_pinned_to_0_1_2() -> None:
@@ -39,3 +42,12 @@ def test_experiment_binding_accepts_new_reference_versions_only() -> None:
     assert "config.semver::text NOT IN ('0.1.0', '0.1.1')" in sql
     assert "reference_set.status = 'READY'" in sql
     assert "config.status = 'READY'" in sql
+
+
+def test_reference_rebuild_context_exposes_the_frozen_dataset() -> None:
+    sql = REBUILD_MIGRATION.read_text()
+
+    assert "training_model_a_candidate_scan_random_context" in sql
+    assert "reference_set.dataset_version_id" in sql
+    assert "reference_set.status = 'READY'" in sql
+    assert "TO tb2_training_rw" in sql

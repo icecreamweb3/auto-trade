@@ -19,6 +19,7 @@ from auto_trade.strategies.feature_scan import (
     StrategyParameters,
     evaluate_series,
 )
+from auto_trade.training.contracts import EntrySource
 from auto_trade.training.model_a_candidate_scan_repository import (
     CandidateScanContext,
     DatabaseModelACandidateScanStore,
@@ -103,6 +104,23 @@ def _mapping(value: object, field_name: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise ModelACandidateScanError(f"{field_name} must be an object")
     return cast(Mapping[str, object], value)
+
+
+def _uses_frozen_reference_support(
+    context: CandidateScanContext,
+    baseline: RandomBaselineConfig,
+) -> bool:
+    """Select frozen support unless a fixed baseline is rebuilding for new data."""
+
+    if "reference_set_id" not in baseline.config:
+        return False
+    if baseline.reference_dataset_version_id == context.dataset_version_id:
+        return True
+    if context.entry_source is not EntrySource.FIXED_BASELINE_MODEL_A:
+        raise ModelACandidateScanError(
+            "random-baseline reference dataset differs from the scan dataset"
+        )
+    return False
 
 
 def build_candidate_strategy_parameters(context: CandidateScanContext) -> StrategyParameters:
@@ -204,7 +222,9 @@ class ModelACandidateScanTaskHandler:
         strata_config = parse_strata_config(
             raw_baseline.config_version_id, raw_baseline.config
         )
-        uses_frozen_reference_support = "reference_set_id" in raw_baseline.config
+        uses_frozen_reference_support = _uses_frozen_reference_support(
+            context, raw_baseline
+        )
         benchmark_bars = await self._store.load_benchmark_bars(
             lease.task_id, lease.lease_token
         )

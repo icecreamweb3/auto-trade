@@ -65,6 +65,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'outcome-bars static-pruning migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '069_training_random_baseline_reference_rebuild' AND success
+    ) THEN
+        RAISE EXCEPTION 'random-baseline reference-rebuild migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -80,6 +86,10 @@ BEGIN
     ) OR NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_random_config(uuid,uuid)',
+        'EXECUTE'
+    ) OR NOT has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.training_model_a_candidate_scan_random_context(uuid,uuid)',
         'EXECUTE'
     ) OR NOT has_function_privilege(
         'tb2_training_rw',

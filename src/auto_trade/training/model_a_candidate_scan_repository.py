@@ -51,6 +51,7 @@ class PoolEvaluation:
 class RandomBaselineConfig:
     config_version_id: UUID
     config: Mapping[str, object]
+    reference_dataset_version_id: UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,7 +199,7 @@ class DatabaseModelACandidateScanStore:
             text(
                 """
                 SELECT random_baseline_config_version_id, config_json
-                FROM strategy_training.training_model_a_candidate_scan_random_config(
+                FROM strategy_training.training_model_a_candidate_scan_random_context(
                     :task_id, :lease_token
                 )
                 """
@@ -209,6 +210,9 @@ class DatabaseModelACandidateScanStore:
         return RandomBaselineConfig(
             config_version_id=cast(UUID, row["random_baseline_config_version_id"]),
             config=cast(Mapping[str, object], row["config_json"]),
+            reference_dataset_version_id=cast(
+                UUID, row["reference_dataset_version_id"]
+            ),
         )
 
     async def load_benchmark_bars(
