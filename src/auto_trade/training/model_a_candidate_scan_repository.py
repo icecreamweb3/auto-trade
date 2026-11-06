@@ -198,7 +198,8 @@ class DatabaseModelACandidateScanStore:
         result = await self._connection.execute(
             text(
                 """
-                SELECT random_baseline_config_version_id, config_json
+                SELECT random_baseline_config_version_id, config_json,
+                       reference_dataset_version_id
                 FROM strategy_training.training_model_a_candidate_scan_random_context(
                     :task_id, :lease_token
                 )
