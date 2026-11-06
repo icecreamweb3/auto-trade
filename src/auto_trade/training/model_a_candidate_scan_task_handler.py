@@ -212,13 +212,17 @@ class ModelACandidateScanTaskHandler:
             raise ModelACandidateScanError("random-baseline benchmark history is empty")
         persisted_ids: list[str] = []
         frame_candidate_ids: list[str] = []
-        frame_candidate_heaps: dict[
-            tuple[int, str, str, str, str],
-            list[tuple[int, str, _RandomCandidate]],
-        ] = {}
         for instrument in await self._store.load_instruments(
             lease.task_id, lease.lease_token
         ):
+            # The governed frame key includes instrument_id, so candidates from
+            # different instruments never compete for the same bounded frame.
+            # Flush each instrument as soon as it is complete instead of retaining
+            # every instrument's evidence until the end of a long dataset scan.
+            frame_candidate_heaps: dict[
+                tuple[int, str, str, str, str],
+                list[tuple[int, str, _RandomCandidate]],
+            ] = {}
             bars = await self._store.load_bars(
                 lease.task_id, lease.lease_token, instrument.instrument_id
             )
@@ -343,36 +347,36 @@ class ModelACandidateScanTaskHandler:
                     maximum_frame_candidates=strata_config.maximum_frame_candidates,
                     time_bucket_hours=strata_config.time_bucket_hours,
                 )
-        retained_candidates = (
-            candidate
-            for frame_key in sorted(frame_candidate_heaps)
-            for _, _, candidate in sorted(
-                frame_candidate_heaps[frame_key],
-                key=lambda item: (-item[0], item[1]),
-            )
-        )
-        for candidate in retained_candidates:
-            stratum = candidate.stratum
-            frame_candidate_ids.append(
-                await self._store.record_random_candidate(
-                    task_id=lease.task_id,
-                    lease_token=lease.lease_token,
-                    context=context,
-                    instrument_id=candidate.instrument_id,
-                    observed_at=candidate.observed_at,
-                    pool_evaluation_id=candidate.pool_evaluation_id,
-                    config_version_id=candidate.config_version_id,
-                    trigger_score=candidate.trigger_score,
-                    signal_score_threshold=candidate.signal_score_threshold,
-                    volatility_bucket=stratum.volatility_bucket,
-                    liquidity_bucket=stratum.liquidity_bucket,
-                    btc_regime=stratum.btc_regime,
-                    volatility_window_start_at=stratum.volatility_window_start_at,
-                    liquidity_window_start_at=stratum.liquidity_window_start_at,
-                    btc_regime_window_start_at=stratum.btc_regime_window_start_at,
-                    evidence_json=candidate.evidence_json,
+            retained_candidates = (
+                candidate
+                for frame_key in sorted(frame_candidate_heaps)
+                for _, _, candidate in sorted(
+                    frame_candidate_heaps[frame_key],
+                    key=lambda item: (-item[0], item[1]),
                 )
             )
+            for candidate in retained_candidates:
+                stratum = candidate.stratum
+                frame_candidate_ids.append(
+                    await self._store.record_random_candidate(
+                        task_id=lease.task_id,
+                        lease_token=lease.lease_token,
+                        context=context,
+                        instrument_id=candidate.instrument_id,
+                        observed_at=candidate.observed_at,
+                        pool_evaluation_id=candidate.pool_evaluation_id,
+                        config_version_id=candidate.config_version_id,
+                        trigger_score=candidate.trigger_score,
+                        signal_score_threshold=candidate.signal_score_threshold,
+                        volatility_bucket=stratum.volatility_bucket,
+                        liquidity_bucket=stratum.liquidity_bucket,
+                        btc_regime=stratum.btc_regime,
+                        volatility_window_start_at=stratum.volatility_window_start_at,
+                        liquidity_window_start_at=stratum.liquidity_window_start_at,
+                        btc_regime_window_start_at=stratum.btc_regime_window_start_at,
+                        evidence_json=candidate.evidence_json,
+                    )
+                )
         if not persisted_ids:
             raise ModelACandidateScanError("candidate emitted no governed entry signals")
         ordered_ids = tuple(sorted(persisted_ids))
