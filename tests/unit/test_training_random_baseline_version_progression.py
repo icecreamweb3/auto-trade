@@ -3,6 +3,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "database/067_training_random_baseline_version_progression.sql"
+BINDING_MIGRATION = (
+    ROOT / "database/068_training_random_baseline_binding_progression.sql"
+)
 
 
 def test_new_reference_versions_are_not_pinned_to_0_1_2() -> None:
@@ -27,3 +30,12 @@ def test_frozen_policy_and_reference_binding_remain_mandatory() -> None:
         "minimum_evaluable_events_per_fold",
     ):
         assert required in sql
+
+
+def test_experiment_binding_accepts_new_reference_versions_only() -> None:
+    sql = BINDING_MIGRATION.read_text()
+
+    assert "config.semver::text = '0.1.2'" not in sql
+    assert "config.semver::text NOT IN ('0.1.0', '0.1.1')" in sql
+    assert "reference_set.status = 'READY'" in sql
+    assert "config.status = 'READY'" in sql
