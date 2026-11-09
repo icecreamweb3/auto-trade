@@ -290,3 +290,22 @@ def test_random_baseline_fails_closed_when_matched_frame_is_too_small() -> None:
             minimum_frame_size=2,
             random_seed=1,
         )
+
+
+def test_random_baseline_probability_uses_database_numeric_scale() -> None:
+    target = BaselineStratum(1, "pool-v1", "UTC-01", "VOL-2", "LIQ-3", "BTC-UP")
+    selection = select_matched_random_baseline(
+        matched_entry_event_id="e" * 64,
+        target=target,
+        candidates=tuple(
+            BaselineCandidate(f"candidate-{index}", _time(index), target)
+            for index in range(1, 4)
+        ),
+        signal_times_by_instrument={},
+        exclusion_window=timedelta(0),
+        sample_count=1,
+        minimum_frame_size=1,
+        random_seed=42,
+    )
+
+    assert selection.inclusion_probability == Decimal("0.333333333333")

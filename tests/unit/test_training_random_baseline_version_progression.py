@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "database/067_training_random_baseline_version_progression.sql"
 BINDING_MIGRATION = (
@@ -8,6 +7,9 @@ BINDING_MIGRATION = (
 )
 REBUILD_MIGRATION = (
     ROOT / "database/069_training_random_baseline_reference_rebuild.sql"
+)
+PROBABILITY_MIGRATION = (
+    ROOT / "database/070_training_random_baseline_probability_precision.sql"
 )
 
 
@@ -51,3 +53,11 @@ def test_reference_rebuild_context_exposes_the_frozen_dataset() -> None:
     assert "reference_set.dataset_version_id" in sql
     assert "reference_set.status = 'READY'" in sql
     assert "TO tb2_training_rw" in sql
+
+
+def test_probability_guard_uses_persisted_numeric_scale() -> None:
+    sql = PROBABILITY_MIGRATION.read_text()
+
+    assert "expected_inclusion_probability numeric(18, 12)" in sql
+    assert "selected_count::numeric / p_sampling_frame_size" in sql
+    assert "p_inclusion_probability <> expected_inclusion_probability" in sql

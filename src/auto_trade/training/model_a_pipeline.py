@@ -5,7 +5,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
 from auto_trade.strategies.feature_scan import FactorResult, StrategySignal
@@ -21,6 +21,9 @@ from auto_trade.training.contracts import (
 
 class ModelAPipelineError(TrainingContractError):
     """A model-A fact cannot be produced without violating its contract."""
+
+
+_INCLUSION_PROBABILITY_QUANTUM = Decimal("0.000000000001")
 
 
 def _utc(value: datetime, field_name: str) -> datetime:
@@ -522,7 +525,10 @@ def select_matched_random_baseline(
     )
     selected_count = min(sample_count, len(ranked))
     selected = tuple(candidate.candidate_id for candidate in ranked[:selected_count])
-    probability = Decimal(selected_count) / Decimal(len(ranked))
+    probability = (Decimal(selected_count) / Decimal(len(ranked))).quantize(
+        _INCLUSION_PROBABILITY_QUANTUM,
+        rounding=ROUND_HALF_UP,
+    )
     return RandomBaselineSelection(
         matched_entry_event_id,
         selected,
