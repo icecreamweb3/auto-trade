@@ -82,5 +82,5 @@ async def test_model_a_evaluation_uses_chunk_managed_connection(monkeypatch) -> 
     registry_factory.assert_called_once_with(
         engine.connection,
         ExecutorKind.EVALUATOR,
-        50,
+        1,
     )

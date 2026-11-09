@@ -98,7 +98,7 @@ class DatabaseTaskRuntimeBackend:
                 registry = build_handler_registry(
                     connection,
                     self._executor_kind,
-                    evaluation_commit_interval=50,
+                    evaluation_commit_interval=1,
                 )
                 return await registry.execute(lease)
         async with self._engine.begin() as connection:

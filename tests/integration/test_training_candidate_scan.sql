@@ -71,6 +71,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'random-baseline reference-rebuild migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '071_training_random_candidate_outcome_context' AND success
+    ) THEN
+        RAISE EXCEPTION 'random-candidate outcome-context migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -209,6 +215,19 @@ BEGIN
         'MODEL_B_PROTOTYPE'
     ) = 0 THEN
         RAISE EXCEPTION 'candidate entry source/use is not derived from its lease-bound iteration';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.training_random_candidate_outcome_context(uuid,uuid,character,character)'::regprocedure
+        ),
+        'training_random_baseline_reference_support'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.training_random_candidate_outcome_context(uuid,uuid,character,character)'::regprocedure
+        ),
+        'training_random_baseline_candidate_frame'
+    ) <> 0 THEN
+        RAISE EXCEPTION 'random candidate outcome context does not use direct frozen-reference membership';
     END IF;
 END
 $$;
