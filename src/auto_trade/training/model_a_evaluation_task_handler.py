@@ -70,15 +70,29 @@ def parse_model_a_evaluation_payload(
 
 
 class ModelAEvaluationTaskHandler:
-    def __init__(self, connection: AsyncConnection) -> None:
+    def __init__(
+        self,
+        connection: AsyncConnection,
+        *,
+        commit_interval: int | None = None,
+    ) -> None:
+        if commit_interval is not None and commit_interval <= 0:
+            raise ValueError("commit_interval must be positive")
         self._store = DatabaseModelAEvaluationStore(connection)
+        self._commit_interval = commit_interval
+
+    async def _commit_progress(self, processed_count: int, *, force: bool = False) -> None:
+        if self._commit_interval is None:
+            return
+        if force or processed_count % self._commit_interval == 0:
+            await self._store.commit_progress()
 
     async def __call__(self, lease: TaskLease) -> str:
         if lease.executor_kind is not ExecutorKind.EVALUATOR:
             raise ModelAPipelineError("MODEL_A_EVALUATION requires EVALUATOR executor")
         payload = parse_model_a_evaluation_payload(lease.payload)
         evidence: list[dict[str, object]] = []
-        for entry_event_id in payload.entry_event_ids:
+        for processed_count, entry_event_id in enumerate(payload.entry_event_ids, 1):
             context = await self._store.load_context(
                 lease.task_id, lease.lease_token, entry_event_id
             )
@@ -105,20 +119,24 @@ class ModelAEvaluationTaskHandler:
                 opportunity_recorded = False
                 random_baseline_recorded = False
                 random_baseline_excluded = False
+                exclusion_evidence_hash: str | None = None
+                random_outcome_hashes: list[str] = []
             else:
                 is_complete = existing.is_complete
                 path_fingerprint = existing.path_fingerprint
                 opportunity_recorded = existing.opportunity_recorded
                 random_baseline_recorded = existing.random_baseline_recorded
                 random_baseline_excluded = existing.random_baseline_excluded
+                exclusion_evidence_hash = (
+                    existing.random_baseline_exclusion_evidence_hash
+                )
+                random_outcome_hashes = list(existing.random_outcome_hashes)
             if is_complete and not opportunity_recorded:
                 await self._store.record_opportunity(
                     entry_event_id,
                     context.opportunity_definition_version_id,
                 )
                 opportunity_recorded = True
-            exclusion_evidence_hash: str | None = None
-            random_outcome_hashes: list[str] = []
             if is_complete and not random_baseline_recorded and not random_baseline_excluded:
                 baseline_context = await self._store.load_random_baseline_context(
                     lease.task_id, lease.lease_token, entry_event_id
@@ -148,6 +166,7 @@ class ModelAEvaluationTaskHandler:
                             "path_fingerprint": path_fingerprint,
                         }
                     )
+                    await self._commit_progress(processed_count)
                     continue
                 selection = select_matched_random_baseline(
                     matched_entry_event_id=entry_event_id,
@@ -224,9 +243,11 @@ class ModelAEvaluationTaskHandler:
                     "path_fingerprint": path_fingerprint,
                 }
             )
+            await self._commit_progress(processed_count)
         coverage_status = await self._store.finalize_random_baseline_coverage(
             lease.task_id, lease.lease_token
         )
+        await self._commit_progress(len(payload.entry_event_ids), force=True)
         return _sha256(
             {
                 "payload_version": 1,

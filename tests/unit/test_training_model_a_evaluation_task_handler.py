@@ -194,24 +194,37 @@ async def test_frozen_reference_support_is_not_excluded_again(monkeypatch) -> No
     store.record_random_baseline = AsyncMock()
     store.record_random_baseline_exclusion = AsyncMock()
     store.finalize_random_baseline_coverage = AsyncMock(return_value="READY")
+    store.commit_progress = AsyncMock()
     monkeypatch.setattr(
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
     )
 
-    result = await ModelAEvaluationTaskHandler(MagicMock())(lease(payload()))
+    result = await ModelAEvaluationTaskHandler(MagicMock(), commit_interval=1)(
+        lease(payload())
+    )
 
     assert len(result) == 64
     store.record_random_baseline.assert_awaited_once()
     store.record_random_baseline_exclusion.assert_not_awaited()
+    assert store.commit_progress.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_retry_reuses_existing_evidence_without_rewriting(monkeypatch) -> None:
+    hashed_evidence: list[object] = []
     store = MagicMock()
     store.load_context = AsyncMock(return_value=context())
     store.load_existing_evidence = AsyncMock(
-        return_value=ExistingEntryEvidence("c" * 64, True, True, True)
+        return_value=ExistingEntryEvidence(
+            "c" * 64,
+            True,
+            True,
+            True,
+            False,
+            None,
+            ("d" * 64,),
+        )
     )
     store.finalize_random_baseline_coverage = AsyncMock(return_value="READY")
     store.load_outcome_bars = AsyncMock()
@@ -227,6 +240,10 @@ async def test_retry_reuses_existing_evidence_without_rewriting(monkeypatch) -> 
         "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
         lambda _connection: store,
     )
+    monkeypatch.setattr(
+        "auto_trade.training.model_a_evaluation_task_handler._sha256",
+        lambda value: hashed_evidence.append(value) or "e" * 64,
+    )
 
     result = await ModelAEvaluationTaskHandler(MagicMock())(lease(payload()))
 
@@ -235,6 +252,24 @@ async def test_retry_reuses_existing_evidence_without_rewriting(monkeypatch) -> 
     store.record_outcome.assert_not_awaited()
     store.record_opportunity.assert_not_awaited()
     store.record_random_baseline.assert_not_awaited()
+    assert hashed_evidence == [
+        {
+            "payload_version": 1,
+            "entries": [
+                {
+                    "entry_event_id": ENTRY_ID,
+                    "is_complete": True,
+                    "opportunity_recorded": True,
+                    "random_baseline_recorded": True,
+                    "random_baseline_excluded": False,
+                    "random_baseline_exclusion_evidence_hash": None,
+                    "random_outcome_hashes": ("d" * 64,),
+                    "path_fingerprint": "c" * 64,
+                }
+            ],
+            "random_baseline_coverage_status": "INSUFFICIENT_POWER",
+        }
+    ]
 
 
 @pytest.mark.asyncio

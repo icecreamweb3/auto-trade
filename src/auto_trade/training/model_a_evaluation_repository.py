@@ -41,6 +41,8 @@ class ExistingEntryEvidence:
     opportunity_recorded: bool
     random_baseline_recorded: bool
     random_baseline_excluded: bool = False
+    random_baseline_exclusion_evidence_hash: str | None = None
+    random_outcome_hashes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +135,15 @@ class DatabaseModelAEvaluationStore:
                 SELECT outcome.path_fingerprint, outcome.is_complete,
                        opportunity.entry_event_id IS NOT NULL AS opportunity_recorded,
                        baseline.random_baseline_id IS NOT NULL AS random_baseline_recorded
-                       , exclusion.entry_event_id IS NOT NULL AS random_baseline_excluded
+                       , exclusion.entry_event_id IS NOT NULL AS random_baseline_excluded,
+                       exclusion.evidence_hash AS random_baseline_exclusion_evidence_hash,
+                       COALESCE((
+                           SELECT array_agg(candidate.path_fingerprint::text
+                                            ORDER BY candidate.candidate_id)
+                           FROM strategy_training.training_random_baseline_candidate_outcomes
+                               AS candidate
+                           WHERE candidate.matched_entry_event_id = outcome.entry_event_id
+                       ), ARRAY[]::text[]) AS random_outcome_hashes
                 FROM strategy_training.training_entry_outcomes outcome
                 LEFT JOIN strategy_training.training_opportunity_events opportunity
                   ON opportunity.entry_event_id = outcome.entry_event_id
@@ -155,7 +165,17 @@ class DatabaseModelAEvaluationStore:
             bool(row["opportunity_recorded"]),
             bool(row["random_baseline_recorded"]),
             bool(row["random_baseline_excluded"]),
+            (
+                str(row["random_baseline_exclusion_evidence_hash"])
+                if row["random_baseline_exclusion_evidence_hash"] is not None
+                else None
+            ),
+            tuple(str(value) for value in row["random_outcome_hashes"]),
         )
+
+    async def commit_progress(self) -> None:
+        """Commit one bounded, internally complete evaluation chunk."""
+        await self._connection.commit()
 
     async def load_random_baseline_context(
         self, task_id: UUID, lease_token: UUID, entry_event_id: str

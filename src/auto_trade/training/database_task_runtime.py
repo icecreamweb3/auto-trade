@@ -24,7 +24,10 @@ from auto_trade.training.task_handlers import TaskHandlerRegistry
 
 
 def build_handler_registry(
-    connection: AsyncConnection, executor_kind: ExecutorKind
+    connection: AsyncConnection,
+    executor_kind: ExecutorKind,
+    *,
+    evaluation_commit_interval: int | None = None,
 ) -> TaskHandlerRegistry:
     registry = TaskHandlerRegistry()
     if executor_kind is ExecutorKind.WORKER:
@@ -34,7 +37,13 @@ def build_handler_registry(
         )
     elif executor_kind is ExecutorKind.EVALUATOR:
         registry.register("ARCHIVE_VERIFY", ArchiveVerifyTaskHandler(connection))
-        registry.register("MODEL_A_EVALUATION", ModelAEvaluationTaskHandler(connection))
+        registry.register(
+            "MODEL_A_EVALUATION",
+            ModelAEvaluationTaskHandler(
+                connection,
+                commit_interval=evaluation_commit_interval,
+            ),
+        )
         registry.register(
             "MODEL_A_L0_AGGREGATION", ModelAL0AggregationTaskHandler(connection)
         )
@@ -80,6 +89,18 @@ class DatabaseTaskRuntimeBackend:
             return await self._store(connection).heartbeat(lease, lease_seconds)
 
     async def execute(self, lease: TaskLease) -> str:
+        if lease.payload.get("task_type") == "MODEL_A_EVALUATION":
+            # Model-A evaluation can persist tens of thousands of entry and
+            # random-path facts.  A single task-wide transaction causes the
+            # PostgreSQL backend to retain enough state to be OOM-killed.
+            # The handler commits internally complete entry chunks instead.
+            async with self._engine.connect() as connection:
+                registry = build_handler_registry(
+                    connection,
+                    self._executor_kind,
+                    evaluation_commit_interval=50,
+                )
+                return await registry.execute(lease)
         async with self._engine.begin() as connection:
             registry = build_handler_registry(connection, self._executor_kind)
             return await registry.execute(lease)
