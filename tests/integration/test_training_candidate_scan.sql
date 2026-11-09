@@ -77,6 +77,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'random-candidate outcome-context migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '073_training_random_baseline_incomplete_outcomes' AND success
+    ) THEN
+        RAISE EXCEPTION 'random-baseline incomplete-outcome migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -228,6 +234,24 @@ BEGIN
         'training_random_baseline_candidate_frame'
     ) <> 0 THEN
         RAISE EXCEPTION 'random candidate outcome context does not use direct frozen-reference membership';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.finalize_training_random_baseline_coverage(uuid,uuid)'::regprocedure
+        ),
+        'NOT outcome.is_complete'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.finalize_training_random_baseline_coverage(uuid,uuid)'::regprocedure
+        ),
+        'ENTRY_OUTCOME_'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.finalize_training_random_baseline_coverage(uuid,uuid)'::regprocedure
+        ),
+        'by_exclusion_reason'
+    ) = 0 THEN
+        RAISE EXCEPTION 'random-baseline coverage does not classify and report incomplete outcomes';
     END IF;
 END
 $$;
