@@ -83,6 +83,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'random-baseline incomplete-outcome migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '074_training_l0_opportunity_universe_indexes' AND success
+    ) THEN
+        RAISE EXCEPTION 'L0 opportunity-universe index migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -252,6 +258,19 @@ BEGIN
         'by_exclusion_reason'
     ) = 0 THEN
         RAISE EXCEPTION 'random-baseline coverage does not classify and report incomplete outcomes';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.build_training_opportunity_universe(uuid,uuid)'::regprocedure
+        ),
+        'CREATE TEMP TABLE training_l0_opportunity_revisions'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.build_training_opportunity_universe(uuid,uuid)'::regprocedure
+        ),
+        'ix_training_l0_opportunity_revisions_instrument_time'
+    ) = 0 THEN
+        RAISE EXCEPTION 'L0 opportunity universe does not index its frozen K-line paths';
     END IF;
 END
 $$;
