@@ -159,6 +159,54 @@ async def test_fresh_complete_outcome_records_label_and_opportunity(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_frozen_reference_support_is_not_excluded_again(monkeypatch) -> None:
+    store = MagicMock()
+    store.load_context = AsyncMock(return_value=context())
+    store.load_existing_evidence = AsyncMock(
+        return_value=ExistingEntryEvidence("c" * 64, True, True, False, False)
+    )
+    baseline = baseline_context()
+    frozen_context = RandomBaselineEvaluationContext(
+        baseline.config_version_id,
+        1,
+        1,
+        86400,
+        42,
+        baseline.target,
+        (context().entry_time,),
+    )
+    store.load_random_baseline_context = AsyncMock(return_value=frozen_context)
+    store.load_random_baseline_candidates = AsyncMock(return_value=baseline_candidates())
+    store.load_random_candidate_outcome_context = AsyncMock(
+        return_value=random_candidate_context()
+    )
+    store.load_random_candidate_outcome_bars = AsyncMock(
+        return_value=(
+            OutcomeBar(
+                context().label_window_end_at,
+                Decimal("103"),
+                Decimal("98"),
+                Decimal("102"),
+            ),
+        )
+    )
+    store.record_random_candidate_outcome = AsyncMock()
+    store.record_random_baseline = AsyncMock()
+    store.record_random_baseline_exclusion = AsyncMock()
+    store.finalize_random_baseline_coverage = AsyncMock(return_value="READY")
+    monkeypatch.setattr(
+        "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
+        lambda _connection: store,
+    )
+
+    result = await ModelAEvaluationTaskHandler(MagicMock())(lease(payload()))
+
+    assert len(result) == 64
+    store.record_random_baseline.assert_awaited_once()
+    store.record_random_baseline_exclusion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_retry_reuses_existing_evidence_without_rewriting(monkeypatch) -> None:
     store = MagicMock()
     store.load_context = AsyncMock(return_value=context())

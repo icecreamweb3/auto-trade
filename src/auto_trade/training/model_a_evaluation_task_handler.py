@@ -153,9 +153,12 @@ class ModelAEvaluationTaskHandler:
                     matched_entry_event_id=entry_event_id,
                     target=baseline_context.target,
                     candidates=candidates,
-                    signal_times_by_instrument={
-                        baseline_context.target.instrument_id: baseline_context.signal_times
-                    },
+                    # The governed reference support is sealed only after the
+                    # +/- exclusion window has been applied.  Applying it again
+                    # here can shrink an otherwise sufficient frozen frame and
+                    # makes the evaluator disagree with the database guard,
+                    # which requires overlap_excluded_count = 0 for that frame.
+                    signal_times_by_instrument={},
                     exclusion_window=timedelta(
                         seconds=baseline_context.exclusion_window_seconds
                     ),
