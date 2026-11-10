@@ -8,6 +8,8 @@ from fastapi import HTTPException
 from auto_trade.accounts.models import AccountSummary, CurrentUser, UserRole
 from auto_trade.training.config_management import (
     INITIAL_MODEL_A_CONFIG_TYPES,
+    INITIAL_MODEL_B_CONFIG_TYPES,
+    MODEL_B_DRAFT_TEMPLATES,
     ConfigVersion,
     _build_ready_export,
     _database_conflict,
@@ -62,6 +64,23 @@ def test_initial_model_a_inventory_contains_exactly_fourteen_governed_types() ->
     assert len(set(INITIAL_MODEL_A_CONFIG_TYPES)) == 14
     assert "RESOURCE_LIMITS" in INITIAL_MODEL_A_CONFIG_TYPES
     assert "SCORING_MODEL_A" in INITIAL_MODEL_A_CONFIG_TYPES
+
+
+def test_initial_model_b_inventory_has_separate_exit_search_and_shared_costs() -> None:
+    assert len(INITIAL_MODEL_B_CONFIG_TYPES) == 9
+    assert len(set(INITIAL_MODEL_B_CONFIG_TYPES)) == 9
+    assert "SEARCH_SPACE" not in INITIAL_MODEL_B_CONFIG_TYPES
+    assert "MODEL_B_SEARCH_SPACE" in INITIAL_MODEL_B_CONFIG_TYPES
+    assert {"FEE_MODEL", "SLIPPAGE_MODEL", "CROSS_FIT_PROTOCOL"}.issubset(
+        INITIAL_MODEL_B_CONFIG_TYPES
+    )
+    assert set(MODEL_B_DRAFT_TEMPLATES) == {
+        "EXIT_RULES",
+        "MODEL_B_SEARCH_SPACE",
+        "SCORING_MODEL_B",
+        "MODEL_B_SAMPLE_MIX",
+        "PORTFOLIO_RULES",
+    }
 
 
 def test_factor_registry_and_search_space_validation() -> None:
@@ -177,6 +196,40 @@ def test_scoring_model_a_requires_exact_weights_and_minimum_counts() -> None:
 
     assert "weights 必须精确包含七个模型 A 权重" in errors
     assert "minimum_signal_count 必须是正整数" in errors
+
+
+@pytest.mark.parametrize(
+    ("config_type", "payload"),
+    tuple(MODEL_B_DRAFT_TEMPLATES.items()),
+)
+def test_model_b_draft_templates_pass_service_validation(
+    config_type: str, payload: dict[str, object]
+) -> None:
+    assert validate_config_payload(config_type, payload) == ()
+
+
+def test_model_b_search_space_rejects_model_a_or_over_24h_rules() -> None:
+    model_a_errors = validate_config_payload(
+        "MODEL_B_SEARCH_SPACE",
+        {
+            "interval_seconds": 300,
+            "strategy_parameters": {"cooldown_bars": 4},
+            "parameters": {"cooldown_bars": [1, 12]},
+        },
+    )
+    assert "model_family 必须为 RULE_BASED_EXIT_V1" in model_a_errors
+    assert "parameters 必须精确包含五个模型 B 退出参数" in model_a_errors
+
+    payload = dict(MODEL_B_DRAFT_TEMPLATES["MODEL_B_SEARCH_SPACE"])
+    payload["parameters"] = dict(payload["parameters"])
+    payload["parameters"]["max_holding_seconds"] = {
+        "kind": "categorical",
+        "choices": [86700],
+    }
+    assert (
+        "max_holding_seconds choices 必须按 5m 对齐且不超过 24h"
+        in validate_config_payload("MODEL_B_SEARCH_SPACE", payload)
+    )
 
 
 def test_database_row_is_converted_without_duplicate_config_json_argument() -> None:

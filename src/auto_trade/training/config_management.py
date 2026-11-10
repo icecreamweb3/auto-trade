@@ -20,6 +20,7 @@ from auto_trade.accounts.router import AuthenticatedUser
 CONFIG_TYPES = (
     "FACTOR_REGISTRY",
     "SEARCH_SPACE",
+    "MODEL_B_SEARCH_SPACE",
     "SCORING_MODEL_A",
     "SCORING_MODEL_B",
     "SCORING_END_TO_END",
@@ -59,6 +60,18 @@ INITIAL_MODEL_A_CONFIG_TYPES = (
     "SCORING_MODEL_A",
 )
 
+INITIAL_MODEL_B_CONFIG_TYPES = (
+    "HOLDING_HORIZON_RULES",
+    "FEE_MODEL",
+    "SLIPPAGE_MODEL",
+    "CROSS_FIT_PROTOCOL",
+    "EXIT_RULES",
+    "MODEL_B_SEARCH_SPACE",
+    "SCORING_MODEL_B",
+    "MODEL_B_SAMPLE_MIX",
+    "PORTFOLIO_RULES",
+)
+
 CONFIG_LABELS = {
     "TICKER_POOL_RULES": "Ticker 池规则",
     "DATA_QUALITY_RULES": "数据质量规则",
@@ -74,6 +87,70 @@ CONFIG_LABELS = {
     "RANDOM_BASELINE": "随机基线",
     "OPPORTUNITY_DEFINITION": "机会定义",
     "SCORING_MODEL_A": "模型 A 评分",
+    "CROSS_FIT_PROTOCOL": "Cross-fit 协议",
+    "EXIT_RULES": "模型 B 退出边界",
+    "MODEL_B_SEARCH_SPACE": "模型 B 搜索空间",
+    "SCORING_MODEL_B": "模型 B 评分",
+    "MODEL_B_SAMPLE_MIX": "模型 B 样本混合",
+    "PORTFOLIO_RULES": "组合与仓位规则",
+}
+
+MODEL_B_DRAFT_TEMPLATES: dict[str, dict[str, Any]] = {
+    "EXIT_RULES": {
+        "stop_loss_percent": 2.0,
+        "take_profit_percent": 3.0,
+        "trailing_activation_percent": 0.0,
+        "trailing_distance_percent": 0.0,
+        "max_holding_seconds": 86400,
+        "intrabar_conflict_policy": "WORST_CASE",
+    },
+    "MODEL_B_SEARCH_SPACE": {
+        "model_family": "RULE_BASED_EXIT_V1",
+        "interval_seconds": 300,
+        "hard_max_holding_seconds": 86400,
+        "parameters": {
+            "max_holding_seconds": {
+                "kind": "categorical",
+                "choices": [21600, 43200, 64800, 86400],
+            },
+            "stop_loss_percent": {
+                "kind": "numeric", "minimum": 0.5, "maximum": 5.0, "integer": False,
+            },
+            "take_profit_percent": {
+                "kind": "numeric", "minimum": 1.0, "maximum": 12.0, "integer": False,
+            },
+            "trailing_activation_percent": {
+                "kind": "numeric", "minimum": 0.5, "maximum": 6.0, "integer": False,
+            },
+            "trailing_distance_percent": {
+                "kind": "numeric", "minimum": 0.25, "maximum": 3.0, "integer": False,
+            },
+        },
+    },
+    "SCORING_MODEL_B": {
+        "calculation_version": "EXIT_NET_EXPECTANCY_V1",
+        "primary_metric": "NET_EXPECTANCY_PERCENTAGE_POINTS",
+        "cluster_unit": "UTC_DAY",
+        "bootstrap_method": "BCA_CLUSTER_BOOTSTRAP",
+        "bootstrap_replicates": 5000,
+        "confidence_level": 0.95,
+        "cost_stress_multipliers": [1.0, 1.5, 2.0],
+    },
+    "MODEL_B_SAMPLE_MIX": {
+        "natural_frequency_source": "CROSS_FIT_MODEL_A",
+        "natural_frequency_weight": 1.0,
+        "control_source": "ADVERSE_OR_RANGE_CONTROL",
+        "control_weight": 0.0,
+        "oracle_source": "ORACLE_ENTRY_BENCHMARK",
+        "oracle_weight": 0.0,
+        "random_seed": 42,
+    },
+    "PORTFOLIO_RULES": {
+        "initial_capital": 1000,
+        "notional_per_trade": 1000,
+        "maximum_concurrent_positions": 1,
+        "same_ticker_position_policy": "ONE_OPEN_POSITION",
+    },
 }
 
 
@@ -98,6 +175,57 @@ def _number_at_least(
     if value <= minimum if strict else value < minimum:
         operator = "大于" if strict else "不小于"
         errors.append(f"{key} 必须是{operator} {minimum} 的数值")
+
+
+def _validate_model_b_parameter_rules(payload: dict[str, Any], errors: list[str]) -> None:
+    expected = {
+        "max_holding_seconds",
+        "stop_loss_percent",
+        "take_profit_percent",
+        "trailing_activation_percent",
+        "trailing_distance_percent",
+    }
+    parameters = payload.get("parameters")
+    if not isinstance(parameters, dict) or set(parameters) != expected:
+        errors.append("parameters 必须精确包含五个模型 B 退出参数")
+        return
+    for name, raw_rule in parameters.items():
+        if not isinstance(raw_rule, dict):
+            errors.append(f"{name} 参数规则必须是对象")
+            continue
+        kind = raw_rule.get("kind")
+        if name == "max_holding_seconds" and kind != "categorical":
+            errors.append("max_holding_seconds 必须使用 categorical choices")
+            continue
+        if name != "max_holding_seconds" and kind != "numeric":
+            errors.append(f"{name} 必须使用 numeric 范围")
+            continue
+        if kind == "numeric":
+            minimum = raw_rule.get("minimum")
+            maximum = raw_rule.get("maximum")
+            if (
+                not _is_number(minimum)
+                or not _is_number(maximum)
+                or minimum > maximum
+                or not isinstance(raw_rule.get("integer"), bool)
+            ):
+                errors.append(f"{name} 数值规则必须包含有效 minimum/maximum/integer")
+        elif kind == "categorical":
+            choices = raw_rule.get("choices")
+            if not isinstance(choices, list) or not choices:
+                errors.append(f"{name} 分类规则 choices 必须是非空数组")
+                continue
+            if name == "max_holding_seconds" and any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+                or value > 86400
+                or value % 300 != 0
+                for value in choices
+            ):
+                errors.append("max_holding_seconds choices 必须按 5m 对齐且不超过 24h")
+        else:
+            errors.append(f"{name}.kind 必须为 numeric 或 categorical")
 
 
 def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[str, ...]:
@@ -130,6 +258,14 @@ def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[
             errors.append("strategy_parameters 必须是非空对象")
         if not isinstance(payload.get("parameters"), dict) or not payload["parameters"]:
             errors.append("parameters 必须是非空 Optuna 参数对象")
+    elif config_type == "MODEL_B_SEARCH_SPACE":
+        if payload.get("model_family") != "RULE_BASED_EXIT_V1":
+            errors.append("model_family 必须为 RULE_BASED_EXIT_V1")
+        if payload.get("interval_seconds") != 300:
+            errors.append("interval_seconds 必须为 300")
+        if payload.get("hard_max_holding_seconds") != 86400:
+            errors.append("hard_max_holding_seconds 必须为 86400")
+        _validate_model_b_parameter_rules(payload, errors)
     elif config_type == "OPPORTUNITY_DEFINITION":
         _number_at_least(payload, "minimum_mfe_percent", 0, errors, strict=True)
         _number_at_least(payload, "maximum_mae_percent", 0, errors)
@@ -310,6 +446,71 @@ def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[
             "minimum_week_count",
         ):
             _positive_integer(payload, key, errors)
+    elif config_type == "EXIT_RULES":
+        for key in (
+            "stop_loss_percent",
+            "take_profit_percent",
+        ):
+            _number_at_least(payload, key, 0, errors, strict=True)
+        for key in ("trailing_activation_percent", "trailing_distance_percent"):
+            _number_at_least(payload, key, 0, errors)
+        activation = payload.get("trailing_activation_percent")
+        distance = payload.get("trailing_distance_percent")
+        if _is_number(activation) and _is_number(distance) and bool(activation) != bool(distance):
+            errors.append("移动止损启动阈值和距离必须同时为 0 或同时大于 0")
+        holding = payload.get("max_holding_seconds")
+        if (
+            not isinstance(holding, int)
+            or isinstance(holding, bool)
+            or holding <= 0
+            or holding > 86400
+            or holding % 300 != 0
+        ):
+            errors.append("max_holding_seconds 必须按 5m 对齐且不超过 24h")
+        if payload.get("intrabar_conflict_policy") != "WORST_CASE":
+            errors.append("intrabar_conflict_policy 必须为 WORST_CASE")
+    elif config_type == "SCORING_MODEL_B":
+        if payload.get("calculation_version") != "EXIT_NET_EXPECTANCY_V1":
+            errors.append("calculation_version 必须为 EXIT_NET_EXPECTANCY_V1")
+        if payload.get("primary_metric") != "NET_EXPECTANCY_PERCENTAGE_POINTS":
+            errors.append("primary_metric 必须为 NET_EXPECTANCY_PERCENTAGE_POINTS")
+        if payload.get("cluster_unit") != "UTC_DAY":
+            errors.append("cluster_unit 必须为 UTC_DAY")
+        if payload.get("bootstrap_method") != "BCA_CLUSTER_BOOTSTRAP":
+            errors.append("bootstrap_method 必须为 BCA_CLUSTER_BOOTSTRAP")
+        _positive_integer(payload, "bootstrap_replicates", errors)
+        confidence = payload.get("confidence_level")
+        if not _is_number(confidence) or not 0 < confidence < 1:
+            errors.append("confidence_level 必须在 0 和 1 之间")
+        multipliers = payload.get("cost_stress_multipliers")
+        if (
+            not isinstance(multipliers, list)
+            or any(not _is_number(value) or value < 1 for value in multipliers)
+            or 2.0 not in multipliers
+        ):
+            errors.append("cost_stress_multipliers 必须包含 2.0 且所有值不小于 1")
+    elif config_type == "MODEL_B_SAMPLE_MIX":
+        expected_sources = {
+            "natural_frequency_source": "CROSS_FIT_MODEL_A",
+            "control_source": "ADVERSE_OR_RANGE_CONTROL",
+            "oracle_source": "ORACLE_ENTRY_BENCHMARK",
+        }
+        for key, expected in expected_sources.items():
+            if payload.get(key) != expected:
+                errors.append(f"{key} 必须为 {expected}")
+        _number_at_least(payload, "natural_frequency_weight", 0, errors, strict=True)
+        _number_at_least(payload, "control_weight", 0, errors)
+        if payload.get("oracle_weight") != 0:
+            errors.append("oracle_weight 必须固定为 0")
+        seed = payload.get("random_seed")
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            errors.append("random_seed 必须是整数")
+    elif config_type == "PORTFOLIO_RULES":
+        _number_at_least(payload, "initial_capital", 0, errors, strict=True)
+        _number_at_least(payload, "notional_per_trade", 0, errors, strict=True)
+        _positive_integer(payload, "maximum_concurrent_positions", errors)
+        if payload.get("same_ticker_position_policy") != "ONE_OPEN_POSITION":
+            errors.append("same_ticker_position_policy 必须为 ONE_OPEN_POSITION")
 
     return tuple(dict.fromkeys(errors))
 
@@ -341,6 +542,10 @@ class ConfigInventory(BaseModel):
     required_types: tuple[str, ...]
     missing_ready_types: tuple[str, ...]
     ready_complete: bool
+    model_b_required_types: tuple[str, ...]
+    model_b_missing_ready_types: tuple[str, ...]
+    model_b_ready_complete: bool
+    draft_templates: dict[str, dict[str, Any]]
     can_edit: bool
     can_approve: bool
     versions: tuple[ConfigVersion, ...]
@@ -545,10 +750,17 @@ async def list_configs(request: Request, user: ConfigReader) -> ConfigInventory:
     versions = tuple(_row_to_version(row) for row in rows)
     ready_types = {version.config_type for version in versions if version.status == "READY"}
     missing = tuple(item for item in INITIAL_MODEL_A_CONFIG_TYPES if item not in ready_types)
+    model_b_missing = tuple(
+        item for item in INITIAL_MODEL_B_CONFIG_TYPES if item not in ready_types
+    )
     return ConfigInventory(
         required_types=INITIAL_MODEL_A_CONFIG_TYPES,
         missing_ready_types=missing,
         ready_complete=not missing,
+        model_b_required_types=INITIAL_MODEL_B_CONFIG_TYPES,
+        model_b_missing_ready_types=model_b_missing,
+        model_b_ready_complete=not model_b_missing,
+        draft_templates=MODEL_B_DRAFT_TEMPLATES,
         can_edit="TRAINING_RESEARCHER" in roles,
         can_approve="TRAINING_ADMIN" in roles,
         versions=versions,

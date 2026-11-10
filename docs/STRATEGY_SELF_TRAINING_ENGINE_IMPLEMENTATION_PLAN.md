@@ -98,6 +98,8 @@
 
 补充进度（2026-11-10）：迁移 `082_training_cross_fit_candidate_corpus.sql` 已把最后一个完整预测折识别为正常边界，并接入 `CROSS_FIT_FINALIZE_CORPUS` evaluator task。候选语料只包含同时满足拟合样本、TPE/RANDOM 成对覆盖和每折最低事件数的有效折中 TPE 可评估事件；有效折不能按收益结果筛选。`019`—`082` 已通过顺序迁移、重复迁移和全部 SQL 集成测试。当前剩余阻断项为临时模型 B 嵌套评估、BCa/Q-036 runtime gate 与通过后的正式模型 B 自动启动。
 
+配置治理补充（2026-11-10）：迁移 `083_training_model_b_config_contracts.sql` 新增独立 `MODEL_B_SEARCH_SPACE`，并在数据库 READY 边界校验规则型退出参数、24h/5m 持仓边界、UTC 日 BCa 成本压力评分和模型 B 样本来源/权重。训练配置页面将模型 B 的共享依赖与五项专属 DRAFT/READY 配置单独展示；页面建议模板只创建草稿，不构成参数审批，也不会自动启动训练。
+
 ### M7：C/F VALIDATION、弱留出与 TEST 隔离
 
 交付：共享 validation scope 原子预算、冻结终选一次验证、10 月 `DECLARED` 弱留出、TEST 逻辑身份/内容版本、双人 readiness、SEALED 原子消费、失败重试和递归谱系检查。

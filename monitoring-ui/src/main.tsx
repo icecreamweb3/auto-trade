@@ -4803,6 +4803,10 @@ interface TrainingConfigInventory {
   required_types: string[];
   missing_ready_types: string[];
   ready_complete: boolean;
+  model_b_required_types: string[];
+  model_b_missing_ready_types: string[];
+  model_b_ready_complete: boolean;
+  draft_templates: Record<string, Record<string, unknown>>;
   can_edit: boolean;
   can_approve: boolean;
   versions: TrainingConfigVersion[];
@@ -4895,11 +4899,12 @@ function TrainingConfigManager() {
 
   function beginDraft(version?: TrainingConfigVersion) {
     const baseVersion = version ?? versions.find((item) => item.status !== "DRAFT");
+    const draftTemplate = selectedType ? inventory?.draft_templates[selectedType] : undefined;
     setEditing(true);
     setSemver(version?.semver ?? nextTrainingConfigSemver(versions));
     setSchemaVersion(baseVersion?.schema_version ?? 1);
     setParentId(version?.parent_version_id ?? baseVersion?.config_version_id ?? "");
-    setJsonText(`${JSON.stringify(baseVersion?.config_json ?? {}, null, 2)}\n`);
+    setJsonText(`${JSON.stringify(baseVersion?.config_json ?? draftTemplate ?? {}, null, 2)}\n`);
     setReason("");
     setNotice(null);
     setError(null);
@@ -5016,6 +5021,23 @@ function TrainingConfigManager() {
           const ready = typeVersions.find((item) => item.status === "READY");
           const draft = typeVersions.find((item) => item.status === "DRAFT");
           return <button type="button" key={configType} className={`training-config-card ${selectedType === configType ? "selected" : ""}`} onClick={() => chooseType(configType)}>
+            <span>{ready ? "READY" : draft ? "DRAFT" : "MISSING"}</span>
+            <strong>{typeVersions[0]?.label ?? configType}</strong>
+            <small>{ready ? `v${ready.semver}` : draft ? `草稿 v${draft.semver}` : configType}</small>
+          </button>;
+        })}</div>
+        <div className="training-config-scope-heading">
+          <div><p className="eyebrow">MODEL B READINESS</p><h3>模型 B 退出训练配置</h3></div>
+          <span className={inventory.model_b_ready_complete ? "training-ready" : "training-blocked"}>
+            {inventory.model_b_required_types.length - inventory.model_b_missing_ready_types.length}/{inventory.model_b_required_types.length} READY
+          </span>
+        </div>
+        <p className="training-config-note">费用、滑点、24h 持仓与 Cross-fit 协议沿用已审批版本；缺失项的新建 DRAFT 会载入建议模板，模板不代表已审批，退出边界、专属搜索空间、评分、样本混合及组合规则仍须分别审批。</p>
+        <div className="training-config-grid">{inventory.model_b_required_types.map((configType) => {
+          const typeVersions = inventory.versions.filter((item) => item.config_type === configType);
+          const ready = typeVersions.find((item) => item.status === "READY");
+          const draft = typeVersions.find((item) => item.status === "DRAFT");
+          return <button type="button" key={`model-b-${configType}`} className={`training-config-card ${selectedType === configType ? "selected" : ""}`} onClick={() => chooseType(configType)}>
             <span>{ready ? "READY" : draft ? "DRAFT" : "MISSING"}</span>
             <strong>{typeVersions[0]?.label ?? configType}</strong>
             <small>{ready ? `v${ready.semver}` : draft ? `草稿 v${draft.semver}` : configType}</small>
