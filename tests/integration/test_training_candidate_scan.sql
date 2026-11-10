@@ -95,6 +95,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'L0 timeout/progress migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '076_training_l0_daily_pool_validity' AND success
+    ) THEN
+        RAISE EXCEPTION 'L0 daily pool-validity migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -298,6 +304,14 @@ BEGIN
         'PATH_AGGREGATION_COMPLETED'
     ) = 0 THEN
         RAISE EXCEPTION 'L0 wall-clock timeout or progress logging contract is incorrect';
+    END IF;
+    IF strpos(
+        pg_get_functiondef(
+            'strategy_training.build_training_opportunity_universe(uuid,uuid)'::regprocedure
+        ),
+        'signal.open_time < evaluation.evaluation_at + interval ''1 day'''
+    ) = 0 THEN
+        RAISE EXCEPTION 'L0 historical pool eligibility is not bounded to one day';
     END IF;
 END
 $$;
