@@ -96,6 +96,8 @@
 
 当前进度：已完成首个 M6 治理与执行契约切片。迁移 `054_training_cross_fit_execution.sql` 恢复并收紧 Cross-fit 来源/用途约束，增加回补覆盖、源修订水位、质量证据哈希、Q-019/Q-029/Q-030/Q-036/Q-039 READY、逐折从零 TPE/同预算随机对照、零次折内 VALIDATION、功效不足停止、候选语料和不可变正式语料映射门禁。迁移 `055_training_model_b_formal_search.sql` 增加第 0 轮基线证据、全新 TPE/随机成对正式搜索、正式安全输入、临时/随机产物禁止注册与锁定，以及正式 `MODEL_B_TRAIN` 回放路径。迁移 `077_training_cross_fit_runtime_guards.sql` 进一步要求每个 TPE/RANDOM optimizer run 在启动扫描前绑定外层折有效 TRAIN 区间，完成折必须满足冻结的试验、墙钟和重复次数，并由数据库依据锁定阈值计算 Q-036 intersection-union 结论；模型 A 点估计/BCa CI 与模型 B 2 倍成本压力门任一未通过都不能产生 `PASS`。迁移 `078_training_cross_fit_optimizer_orchestration.sql` 和 `CROSS_FIT_COORDINATE` evaluator task 接入首折及后续折的同预算 TPE/RANDOM 原子创建、扩展窗口、上一折完成门禁、失败传播和冻结墙钟超时。迁移 `079_training_cross_fit_predictions.sql` 与 `CROSS_FIT_PREDICT` worker task 按 TRAIN-only objective 和固定 tie-break 冻结每组最佳 trial，只开放对应外层预测窗，保留一日历史池有效期，允许零事件形成可审计批次，并在 TPE/RANDOM 两组任务均成功前禁止折完成；不同外层折可在各自 optimizer scope 内重新评估相同参数。迁移 `080_training_cross_fit_prediction_evaluation.sql` 将两组折外预测接入结果计算、固定参考集随机基线和覆盖率报告。迁移 `081_training_cross_fit_fold_finalization.sql` 与 `CROSS_FIT_FINALIZE_FOLD` evaluator task 在两组评估成功后，以租约绑定方式记录折样本数、最低拟合样本功效、TPE/RANDOM 预测与覆盖证据，并明确暂定候选不注册为模型版本。Python 已实现以 UTC 日为主聚类、固定种子 5,000 次 bootstrap 的 BCa 区间计算，但该统计实现尚未接入数据库 Q-036 gate task。编排器仍只读取 ID 与动作码；READY 协议严格解析，旧协议缺少运行预算时 fail closed。`019`—`081` 已在一次性 TimescaleDB 环境完成顺序迁移、重复迁移和全部 SQL 集成测试。固定候选语料汇总、BCa/Q-036 runtime gate、临时模型 B 嵌套训练及正式模型 B 自动启动仍未接入，因此 M6 尚不能标记为完成；在这些链路完成前不得创建正式 RUNNING Cross-fit。
 
+补充进度（2026-11-10）：迁移 `082_training_cross_fit_candidate_corpus.sql` 已把最后一个完整预测折识别为正常边界，并接入 `CROSS_FIT_FINALIZE_CORPUS` evaluator task。候选语料只包含同时满足拟合样本、TPE/RANDOM 成对覆盖和每折最低事件数的有效折中 TPE 可评估事件；有效折不能按收益结果筛选。`019`—`082` 已通过顺序迁移、重复迁移和全部 SQL 集成测试。当前剩余阻断项为临时模型 B 嵌套评估、BCa/Q-036 runtime gate 与通过后的正式模型 B 自动启动。
+
 ### M7：C/F VALIDATION、弱留出与 TEST 隔离
 
 交付：共享 validation scope 原子预算、冻结终选一次验证、10 月 `DECLARED` 弱留出、TEST 逻辑身份/内容版本、双人 readiness、SEALED 原子消费、失败重试和递归谱系检查。
@@ -121,6 +123,8 @@
 交付：训练工作区、实验/版本/预算/失败/审计页面和 `OPERATIONAL_ONLY` 运维页面；权威指标仍由后端计算。
 
 验收：浏览器权限矩阵、403/空数据/网络失败/恢复状态和候选月后端 cutoff 门禁通过。
+
+补充运行状态（2026-11-10）：`CROSS_FIT_FINALIZE_CORPUS` 已接入真实 evaluator 租约循环，末折之后不再尝试创建越出 TRAIN 区间的下一折。M6 仍未完成，也不得据此启动正式 Cross-fit。
 
 ## 3. 每个里程碑的完成定义
 

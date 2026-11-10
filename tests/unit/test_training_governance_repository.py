@@ -59,6 +59,21 @@ async def test_enqueue_rejects_wrong_executor_for_task_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_enqueue_accepts_cross_fit_finalization_tasks_for_evaluator() -> None:
+    result = MagicMock()
+    result.scalar_one.return_value = uuid4()
+    connection = AsyncMock()
+    connection.execute.return_value = result
+    store = DatabaseOrchestratorStore(connection)
+
+    for task_type in ("CROSS_FIT_FINALIZE_FOLD", "CROSS_FIT_FINALIZE_CORPUS"):
+        arguments = enqueue_arguments({"payload_version": 1})
+        arguments["task_type"] = task_type
+        arguments["executor_kind"] = ExecutorKind.EVALUATOR
+        await store.enqueue_task(**arguments)
+
+
+@pytest.mark.asyncio
 async def test_enqueue_adds_authoritative_task_type_to_payload() -> None:
     expected_id = uuid4()
     result = MagicMock()
