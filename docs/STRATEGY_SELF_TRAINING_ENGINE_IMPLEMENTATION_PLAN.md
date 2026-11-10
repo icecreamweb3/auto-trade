@@ -94,7 +94,7 @@
 
 验收：折内 VALIDATION 次数为 0；功效不足返回 `INSUFFICIENT_POWER` 并停止；临时模型 B 产物不可进入注册表；通过后正式模型 B 必须全新运行。
 
-当前进度：已完成首个 M6 治理与执行契约切片。迁移 `054_training_cross_fit_execution.sql` 恢复并收紧 Cross-fit 来源/用途约束，增加回补覆盖、源修订水位、质量证据哈希、Q-019/Q-029/Q-030/Q-036/Q-039 READY、逐折从零 TPE/同预算随机对照、零次折内 VALIDATION、功效不足停止、候选语料和不可变正式语料映射门禁。迁移 `055_training_model_b_formal_search.sql` 增加第 0 轮基线证据、全新 TPE/随机成对正式搜索、正式安全输入、临时/随机产物禁止注册与锁定，以及正式 `MODEL_B_TRAIN` 回放路径。Python 契约同步区分 `MODEL_A_DISCOVERY`、暂定 `CROSS_FIT_MODEL_A_CANDIDATE` 和正式 `CROSS_FIT_MODEL_A`。`019`—`055` 已在一次性 TimescaleDB 环境完成顺序迁移、重复迁移和全部 SQL 集成测试。实际任务 repository/handler/runtime、真实 Optuna 执行和编排自动推进仍未接入；MARK 5m 及全部冻结依赖未完成覆盖验收前，正式 Cross-fit 语料生成和模型 B 搜索继续 fail closed，因此 M6 尚不能标记为完成。
+当前进度：已完成首个 M6 治理与执行契约切片。迁移 `054_training_cross_fit_execution.sql` 恢复并收紧 Cross-fit 来源/用途约束，增加回补覆盖、源修订水位、质量证据哈希、Q-019/Q-029/Q-030/Q-036/Q-039 READY、逐折从零 TPE/同预算随机对照、零次折内 VALIDATION、功效不足停止、候选语料和不可变正式语料映射门禁。迁移 `055_training_model_b_formal_search.sql` 增加第 0 轮基线证据、全新 TPE/随机成对正式搜索、正式安全输入、临时/随机产物禁止注册与锁定，以及正式 `MODEL_B_TRAIN` 回放路径。迁移 `077_training_cross_fit_runtime_guards.sql` 进一步要求每个 TPE/RANDOM optimizer run 在启动扫描前绑定外层折有效 TRAIN 区间，完成折必须满足冻结的样本、试验、墙钟和重复次数，并由数据库依据锁定阈值计算 Q-036 intersection-union 结论；模型 A 点估计/BCa CI 与模型 B 2 倍成本压力门任一未通过都不能产生 `PASS`。Python 增加 READY 协议严格解析和租约绑定 repository，旧协议缺少运行预算时 fail closed。`019`—`077` 已在一次性 TimescaleDB 环境完成顺序迁移、重复迁移和全部 SQL 集成测试。Cross-fit optimizer 的自动创建/逐折推进、折外预测事件生成、BCa 统计 evaluator、临时模型 B 嵌套训练及正式模型 B 自动启动仍未接入任务 runtime，因此 M6 尚不能标记为完成，也不得创建正式 RUNNING Cross-fit。
 
 ### M7：C/F VALIDATION、弱留出与 TEST 隔离
 
