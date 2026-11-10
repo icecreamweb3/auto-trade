@@ -180,7 +180,7 @@ async def admin_account_daily(
     request: Request,
     _administrator: Administrator,
     days: int = Query(default=30, ge=7, le=90),
-    user_id: UUID | None = Query(default=None),
+    user_id: Annotated[UUID | None, Query()] = None,
 ) -> tuple[DailyPerformance, ...]:
     return await _repository(request).daily_performance(user_id, days=days)
 

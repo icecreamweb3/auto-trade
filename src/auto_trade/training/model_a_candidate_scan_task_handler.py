@@ -24,6 +24,7 @@ from auto_trade.training.model_a_candidate_scan_repository import (
     CandidateScanContext,
     DatabaseModelACandidateScanStore,
     PoolEvaluation,
+    RandomBaselineConfig,
     feature_bar_fingerprint,
 )
 from auto_trade.training.model_a_pipeline import ModelAPipelineError, adapt_model_a_signal
