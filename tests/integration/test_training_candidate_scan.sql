@@ -89,6 +89,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'L0 opportunity-universe index migration was not recorded successfully';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '075_training_l0_timeout_progress' AND success
+    ) THEN
+        RAISE EXCEPTION 'L0 timeout/progress migration was not recorded successfully';
+    END IF;
     IF NOT has_function_privilege(
         'tb2_training_rw',
         'strategy_training.training_model_a_candidate_scan_context(uuid,uuid)',
@@ -271,6 +277,27 @@ BEGIN
         'ix_training_l0_opportunity_revisions_instrument_time'
     ) = 0 THEN
         RAISE EXCEPTION 'L0 opportunity universe does not index its frozen K-line paths';
+    END IF;
+    IF NOT has_function_privilege(
+        'tb2_training_evaluator',
+        'strategy_training.configure_training_l0_statement_timeout(uuid,uuid)',
+        'EXECUTE'
+    ) OR has_function_privilege(
+        'tb2_training_rw',
+        'strategy_training.configure_training_l0_statement_timeout(uuid,uuid)',
+        'EXECUTE'
+    ) OR strpos(
+        pg_get_functiondef(
+            'strategy_training.configure_training_l0_statement_timeout(uuid,uuid)'::regprocedure
+        ),
+        'maximum_wall_clock_seconds'
+    ) = 0 OR strpos(
+        pg_get_functiondef(
+            'strategy_training.build_training_opportunity_universe(uuid,uuid)'::regprocedure
+        ),
+        'PATH_AGGREGATION_COMPLETED'
+    ) = 0 THEN
+        RAISE EXCEPTION 'L0 wall-clock timeout or progress logging contract is incorrect';
     END IF;
 END
 $$;
