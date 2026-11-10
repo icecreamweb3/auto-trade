@@ -71,7 +71,8 @@ BEGIN
         'strategy_training.advance_training_cross_fit_executions()'::regprocedure
     ) INTO advance_source;
     IF position('PREDICTION_PAIR_COMPLETED' IN advance_source) = 0
-       OR position('WAITING_FOLD_FINALIZATION' IN advance_source) = 0 THEN
+       OR position('prepare_cross_fit_evaluation_tasks' IN advance_source) = 0
+       OR position('EVALUATION_PAIR_COMPLETED' IN advance_source) = 0 THEN
         RAISE EXCEPTION 'fold progression does not wait for both predictions';
     END IF;
 

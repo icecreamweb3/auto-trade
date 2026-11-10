@@ -7,6 +7,7 @@ DO $$
 DECLARE context_source text;
 DECLARE gate_source text;
 DECLARE fold_guard_source text;
+DECLARE fold_finalize_source text;
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM core.schema_migrations
@@ -42,10 +43,16 @@ BEGIN
     SELECT pg_get_functiondef(
         'strategy_training.guard_cross_fit_fold_runtime_scope()'::regprocedure
     ) INTO fold_guard_source;
-    IF position('minimum_fitting_samples_per_fold' IN fold_guard_source) = 0
-       OR position('wall_clock_budget_seconds' IN fold_guard_source) = 0
+    SELECT pg_get_functiondef(
+        'strategy_training.finalize_cross_fit_fold(uuid,uuid)'::regprocedure
+    ) INTO fold_finalize_source;
+    IF position('wall_clock_budget_seconds' IN fold_guard_source) = 0
        OR position('repeat_count' IN fold_guard_source) = 0 THEN
         RAISE EXCEPTION 'completed fold is not bound to runtime limits';
+    END IF;
+    IF position('minimum_fitting_samples_per_fold' IN fold_finalize_source) = 0
+       OR position('fitting_sample_qualified' IN fold_finalize_source) = 0 THEN
+        RAISE EXCEPTION 'fold fitting power is not recorded from the locked protocol';
     END IF;
 
     IF has_table_privilege(

@@ -65,6 +65,19 @@ class DatabaseCrossFitStore:
         row = result.mappings().one()
         return str(row["action"]), str(row["result_hash"])
 
+    async def finalize_fold(self, task_id: UUID, lease_token: UUID) -> str:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.finalize_cross_fit_fold(
+                    :task_id, :lease_token
+                )
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        return str(result.scalar_one())
+
     async def register_optimizer_scope(self, scope: CrossFitOptimizerScope) -> None:
         await self._connection.execute(
             text(

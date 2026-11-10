@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
+from statistics import NormalDist
 
 from auto_trade.training.contracts import EntrySource
 from auto_trade.training.optimizer import (
@@ -43,6 +44,10 @@ class GoNoGoResult:
     effective_folds: int
     bootstrap_replicates: int
     seed: int
+    ci_lower_bound: float
+    ci_upper_bound: float
+    confidence_level: float
+    bootstrap_method: str = "BCA_UTC_DAY_CLUSTER"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,47 +116,128 @@ def _mean(values: Iterable[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _quantile(values: Iterable[float], probability: float) -> float:
+    ordered = sorted(values)
+    if not ordered or not 0 <= probability <= 1:
+        raise ValueError("invalid quantile inputs")
+    position = probability * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+
+def _bca_interval(
+    values: tuple[float, ...],
+    bootstrap_means: tuple[float, ...],
+    *,
+    confidence_level: float,
+) -> tuple[float, float]:
+    """Return a bias-corrected and accelerated interval over UTC-day clusters."""
+
+    observed = _mean(values)
+    normal = NormalDist()
+    less_count = sum(value < observed for value in bootstrap_means)
+    # A half-observation continuity correction keeps inv_cdf finite for
+    # deterministic or near-deterministic bootstrap distributions.
+    bias_probability = (less_count + 0.5) / (len(bootstrap_means) + 1)
+    bias_correction = normal.inv_cdf(bias_probability)
+    jackknife = tuple(
+        _mean(values[:index] + values[index + 1 :])
+        for index in range(len(values))
+    )
+    jackknife_mean = _mean(jackknife)
+    numerator = sum((jackknife_mean - value) ** 3 for value in jackknife)
+    denominator_base = sum((jackknife_mean - value) ** 2 for value in jackknife)
+    acceleration = (
+        numerator / (6 * denominator_base**1.5)
+        if denominator_base > 0
+        else 0.0
+    )
+
+    alpha = 1 - confidence_level
+
+    def adjusted_probability(probability: float) -> float:
+        z_value = normal.inv_cdf(probability)
+        denominator = 1 - acceleration * (bias_correction + z_value)
+        if denominator == 0:
+            return 0.0 if z_value < 0 else 1.0
+        adjusted = normal.cdf(
+            bias_correction
+            + (bias_correction + z_value) / denominator
+        )
+        return min(max(adjusted, 0.0), 1.0)
+
+    return (
+        _quantile(bootstrap_means, adjusted_probability(alpha / 2)),
+        _quantile(bootstrap_means, adjusted_probability(1 - alpha / 2)),
+    )
+
+
 def evaluate_cross_fit_gate(
     metrics: Iterable[FoldMetric],
     *,
     alpha: float,
     minimum_effective_days: int,
     minimum_effective_folds: int,
-    bootstrap_replicates: int = 2000,
+    bootstrap_replicates: int = 5000,
     seed: int = 0,
+    confidence_level: float = 0.95,
 ) -> GoNoGoResult:
     """Compare TPE and random on outer-fold predictions only.
 
-    Resampling is clustered by UTC day and symbol so overlapping signals do not
-    inflate the independent sample count.
+    The primary analysis gives each UTC day one cluster. Symbol-by-day is a
+    sensitivity analysis only and must not determine this gate.
     """
     rows = tuple(metrics)
-    if not rows or not 0 < alpha < 1 or bootstrap_replicates <= 0:
+    if (
+        not rows
+        or not 0 < alpha < 1
+        or bootstrap_replicates <= 0
+        or not 0 < confidence_level < 1
+    ):
         raise ValueError("invalid go/no-go inputs")
-    clusters: dict[tuple[date, str], list[float]] = defaultdict(list)
+    clusters: dict[date, list[FoldMetric]] = defaultdict(list)
     for row in rows:
         if not math.isfinite(row.tpe_value) or not math.isfinite(row.random_value):
             raise ValueError("gate metrics must be finite")
-        clusters[(row.prediction_day, row.symbol)].append(row.tpe_value - row.random_value)
-    differences = tuple(_mean(values) for values in clusters.values())
+        clusters[row.prediction_day].append(row)
+    daily_rows = tuple(clusters[day] for day in sorted(clusters))
+    differences = tuple(
+        _mean(row.tpe_value - row.random_value for row in day_rows)
+        for day_rows in daily_rows
+    )
     excess = _mean(differences)
-    tpe_mean = _mean(row.tpe_value for row in rows)
-    random_mean = _mean(row.random_value for row in rows)
+    tpe_mean = _mean(_mean(row.tpe_value for row in day_rows) for day_rows in daily_rows)
+    random_mean = _mean(
+        _mean(row.random_value for row in day_rows) for day_rows in daily_rows
+    )
     folds = len({row.fold_number for row in rows})
-    days = len({row.prediction_day for row in rows})
+    days = len(differences)
+    rng = random.Random(seed)
+    bootstrap_means = tuple(
+        _mean(differences[rng.randrange(days)] for _ in range(days))
+        for _ in range(bootstrap_replicates)
+    )
+    ci_lower, ci_upper = _bca_interval(
+        differences,
+        bootstrap_means,
+        confidence_level=confidence_level,
+    )
     if days < minimum_effective_days or folds < minimum_effective_folds:
         decision = GateDecision.INSUFFICIENT_POWER
         p_value = 1.0
     else:
-        rng = random.Random(seed)
-        at_least_zero = 0
-        for _ in range(bootstrap_replicates):
-            sample = [differences[rng.randrange(len(differences))] for _ in differences]
-            if _mean(sample) <= 0:
-                at_least_zero += 1
+        at_least_zero = sum(value <= 0 for value in bootstrap_means)
         p_value = (at_least_zero + 1) / (bootstrap_replicates + 1)
-        decision = GateDecision.PASS if excess > 0 and p_value < alpha else GateDecision.FAIL
+        decision = (
+            GateDecision.PASS
+            if excess > 0 and ci_lower > 0 and p_value <= alpha
+            else GateDecision.FAIL
+        )
     return GoNoGoResult(
         decision, tpe_mean, random_mean, excess, p_value, days, folds,
-        bootstrap_replicates, seed,
+        bootstrap_replicates, seed, ci_lower, ci_upper, confidence_level,
     )

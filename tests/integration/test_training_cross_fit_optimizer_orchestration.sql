@@ -41,7 +41,9 @@ BEGIN
     ) INTO advance_source;
     IF position('CROSS_FIT_COORDINATE' IN advance_source) = 0
        OR position('WAITING_OPTIMIZER_PAIR' IN advance_source) = 0
-       OR position('WAITING_FOLD_FINALIZATION' IN advance_source) = 0
+       OR position('prepare_cross_fit_prediction_tasks' IN advance_source) = 0
+       OR position('prepare_cross_fit_evaluation_tasks' IN advance_source) = 0
+       OR position('prepare_cross_fit_fold_finalization_task' IN advance_source) = 0
        OR position('FOLD_OPTIMIZER_FAILED' IN advance_source) = 0
        OR position('CROSS_FIT_WALL_CLOCK_EXCEEDED' IN advance_source) = 0 THEN
         RAISE EXCEPTION 'Cross-fit orchestrator progression is incomplete';

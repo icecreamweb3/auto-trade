@@ -37,7 +37,8 @@ BEGIN
     );
     IF position('prepare_cross_fit_evaluation_tasks' IN advance_source) = 0
        OR position('EVALUATION_PAIR_COMPLETED' IN advance_source) = 0
-       OR position('WAITING_FOLD_FINALIZATION' IN advance_source) = 0 THEN
+       OR position('prepare_cross_fit_fold_finalization_task' IN advance_source) = 0
+       OR position('FOLD_FINALIZED' IN advance_source) = 0 THEN
         RAISE EXCEPTION 'Cross-fit orchestration can bypass prediction evaluation';
     END IF;
     wrapper_source := pg_get_functiondef(

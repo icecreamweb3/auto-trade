@@ -8,6 +8,9 @@ from auto_trade.training.archive_verify_task_handler import ArchiveVerifyTaskHan
 from auto_trade.training.cross_fit_coordination_task_handler import (
     CrossFitCoordinationTaskHandler,
 )
+from auto_trade.training.cross_fit_fold_finalization_task_handler import (
+    CrossFitFoldFinalizationTaskHandler,
+)
 from auto_trade.training.cross_fit_prediction_task_handler import (
     CrossFitPredictionTaskHandler,
 )
@@ -46,6 +49,10 @@ def build_handler_registry(
         registry.register("ARCHIVE_VERIFY", ArchiveVerifyTaskHandler(connection))
         registry.register(
             "CROSS_FIT_COORDINATE", CrossFitCoordinationTaskHandler(connection)
+        )
+        registry.register(
+            "CROSS_FIT_FINALIZE_FOLD",
+            CrossFitFoldFinalizationTaskHandler(connection),
         )
         registry.register(
             "MODEL_A_EVALUATION",
