@@ -48,6 +48,23 @@ class DatabaseCrossFitStore:
     def __init__(self, connection: AsyncConnection) -> None:
         self._connection = connection
 
+    async def prepare_optimizer_pair(
+        self, task_id: UUID, lease_token: UUID
+    ) -> tuple[str, str]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT action, result_hash
+                FROM strategy_training.prepare_cross_fit_optimizer_pair(
+                    :task_id, :lease_token
+                )
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        row = result.mappings().one()
+        return str(row["action"]), str(row["result_hash"])
+
     async def register_optimizer_scope(self, scope: CrossFitOptimizerScope) -> None:
         await self._connection.execute(
             text(

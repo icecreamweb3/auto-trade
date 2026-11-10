@@ -20,9 +20,11 @@ class DatabaseOrchestratorRuntime:
             scan_actions = await store.advance_candidate_scans()
             fixed_baseline_actions = await store.advance_fixed_baselines()
             l0_actions = await store.advance_model_a_l0_tasks()
+            cross_fit_actions = await store.advance_cross_fit_executions()
             return (
                 optimizer_actions
                 + scan_actions
                 + fixed_baseline_actions
                 + l0_actions
+                + cross_fit_actions
             )

@@ -27,6 +27,7 @@ _TASK_EXECUTORS = {
     "PORTFOLIO_EVALUATION": ExecutorKind.EVALUATOR,
     "OPTIMIZER_TRIAL": ExecutorKind.OPTIMIZER,
     "ARCHIVE_VERIFY": ExecutorKind.EVALUATOR,
+    "CROSS_FIT_COORDINATE": ExecutorKind.EVALUATOR,
 }
 
 
@@ -159,6 +160,20 @@ class DatabaseOrchestratorStore:
         )
         return tuple(
             (cast(UUID, row["iteration_id"]), str(row["action"]))
+            for row in result.mappings().all()
+        )
+
+    async def advance_cross_fit_executions(self) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT cross_fit_execution_id, action
+                FROM strategy_training.advance_training_cross_fit_executions()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["cross_fit_execution_id"]), str(row["action"]))
             for row in result.mappings().all()
         )
 
