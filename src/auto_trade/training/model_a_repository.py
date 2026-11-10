@@ -126,6 +126,55 @@ class DatabaseModelAFeatureStore:
         )
         return persisted_id
 
+    async def record_cross_fit_prediction_signal(
+        self, adapted: AdaptedModelASignal, *, task_id: UUID, lease_token: UUID
+    ) -> str:
+        event = adapted.event
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.create_cross_fit_prediction_entry_event(
+                    :task_id, :lease_token, :entry_event_id, :dataset_version_id,
+                    :generating_iteration_id, :instrument_id, :symbol,
+                    :signal_time, :entry_time, :direction, :trigger_score,
+                    :coverage_percent, :theoretical_signal_price,
+                    :entry_price, :pool_evaluation_id,
+                    :ticker_pool_rule_version_id, :factor_registry_version_id,
+                    :scan_parameters_version_id, :signal_payload_hash
+                )
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "entry_event_id": event.entry_event_id,
+                "dataset_version_id": event.dataset_version_id,
+                "generating_iteration_id": event.generating_version_id,
+                "instrument_id": event.instrument_id,
+                "symbol": event.symbol,
+                "signal_time": event.signal_time,
+                "entry_time": event.entry_time,
+                "direction": event.direction.value,
+                "trigger_score": event.trigger_score,
+                "coverage_percent": event.coverage_percent,
+                "theoretical_signal_price": event.theoretical_signal_price,
+                "entry_price": event.entry_price,
+                "pool_evaluation_id": event.pool_evaluation_id,
+                "ticker_pool_rule_version_id": event.ticker_pool_rule_version_id,
+                "factor_registry_version_id": event.factor_registry_version_id,
+                "scan_parameters_version_id": event.scan_parameters_version_id,
+                "signal_payload_hash": event.signal_payload_hash,
+            },
+        )
+        persisted_id = str(result.scalar_one())
+        for snapshot in adapted.factors:
+            await self._record_factor(snapshot, event.factor_registry_version_id)
+        await self._connection.execute(
+            text("SELECT strategy_training.finalize_training_entry_event(:entry_event_id)"),
+            {"entry_event_id": persisted_id},
+        )
+        return persisted_id
+
     async def _record_factor(
         self, snapshot: FactorSnapshot, factor_registry_version_id: UUID
     ) -> None:

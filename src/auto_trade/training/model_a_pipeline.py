@@ -147,8 +147,9 @@ def adapt_model_a_signal(
     if source not in {
         EntrySource.FIXED_BASELINE_MODEL_A,
         EntrySource.IN_SAMPLE_MODEL_A,
+        EntrySource.CROSS_FIT_MODEL_A_CANDIDATE,
     }:
-        raise ModelAPipelineError("model-A discovery adapter received an invalid source")
+        raise ModelAPipelineError("model-A adapter received an invalid source")
     if instrument_id <= 0:
         raise ModelAPipelineError("instrument_id must be positive")
     if interval_seconds <= 0 or interval_seconds % 60:

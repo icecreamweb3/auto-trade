@@ -8,6 +8,9 @@ from auto_trade.training.archive_verify_task_handler import ArchiveVerifyTaskHan
 from auto_trade.training.cross_fit_coordination_task_handler import (
     CrossFitCoordinationTaskHandler,
 )
+from auto_trade.training.cross_fit_prediction_task_handler import (
+    CrossFitPredictionTaskHandler,
+)
 from auto_trade.training.dataset_task_handler import DatasetBuildTaskHandler
 from auto_trade.training.governance_repository import DatabaseTaskWorkerStore
 from auto_trade.training.model_a_candidate_scan_task_handler import (
@@ -35,6 +38,7 @@ def build_handler_registry(
     registry = TaskHandlerRegistry()
     if executor_kind is ExecutorKind.WORKER:
         registry.register("DATASET_BUILD", DatasetBuildTaskHandler(connection))
+        registry.register("CROSS_FIT_PREDICT", CrossFitPredictionTaskHandler(connection))
         registry.register(
             "MODEL_A_CANDIDATE_SCAN", ModelACandidateScanTaskHandler(connection)
         )

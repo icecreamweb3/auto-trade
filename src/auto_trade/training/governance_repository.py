@@ -28,6 +28,7 @@ _TASK_EXECUTORS = {
     "OPTIMIZER_TRIAL": ExecutorKind.OPTIMIZER,
     "ARCHIVE_VERIFY": ExecutorKind.EVALUATOR,
     "CROSS_FIT_COORDINATE": ExecutorKind.EVALUATOR,
+    "CROSS_FIT_PREDICT": ExecutorKind.WORKER,
 }
 
 
