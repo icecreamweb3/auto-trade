@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from auto_trade.strategies.feature_scan import FeatureBar
 from auto_trade.training.contracts import EntrySource
 from auto_trade.training.model_a_candidate_scan_repository import (
+    BenchmarkBar,
     CandidateScanContext,
     PoolEvaluation,
+    RandomBaselineConfig,
     ScanInstrument,
 )
 
@@ -152,6 +154,94 @@ class DatabaseCrossFitPredictionStore:
                 ),
             )
             for row in result.mappings().all()
+        )
+
+    async def load_random_baseline_config(
+        self, task_id: UUID, lease_token: UUID
+    ) -> RandomBaselineConfig:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT random_baseline_config_version_id, config_json,
+                       reference_dataset_version_id
+                FROM strategy_training.training_cross_fit_prediction_random_context(
+                    :task_id, :lease_token
+                )
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        row = result.mappings().one()
+        return RandomBaselineConfig(
+            config_version_id=cast(UUID, row["random_baseline_config_version_id"]),
+            config=cast(Mapping[str, object], row["config_json"]),
+            reference_dataset_version_id=cast(
+                UUID, row["reference_dataset_version_id"]
+            ),
+        )
+
+    async def load_benchmark_bars(
+        self, task_id: UUID, lease_token: UUID
+    ) -> tuple[BenchmarkBar, ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT open_time, close_price
+                FROM strategy_training.training_cross_fit_prediction_benchmark_bars(
+                    :task_id, :lease_token
+                )
+                ORDER BY open_time
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        return tuple(
+            BenchmarkBar(
+                open_time=cast(datetime, row["open_time"]),
+                close_price=Decimal(str(row["close_price"])),
+            )
+            for row in result.mappings().all()
+        )
+
+    async def record_signal_stratum(
+        self,
+        *,
+        task_id: UUID,
+        lease_token: UUID,
+        entry_event_id: str,
+        config_version_id: UUID,
+        volatility_bucket: str,
+        liquidity_bucket: str,
+        btc_regime: str,
+        volatility_window_start_at: datetime,
+        liquidity_window_start_at: datetime,
+        btc_regime_window_start_at: datetime,
+        evidence_json: str,
+    ) -> None:
+        await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.record_cross_fit_prediction_signal_stratum(
+                    :task_id, :lease_token, :entry_event_id, :config_version_id,
+                    :volatility_bucket, :liquidity_bucket, :btc_regime,
+                    :volatility_window_start_at, :liquidity_window_start_at,
+                    :btc_regime_window_start_at, CAST(:evidence_json AS jsonb)
+                )
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "entry_event_id": entry_event_id,
+                "config_version_id": config_version_id,
+                "volatility_bucket": volatility_bucket,
+                "liquidity_bucket": liquidity_bucket,
+                "btc_regime": btc_regime,
+                "volatility_window_start_at": volatility_window_start_at,
+                "liquidity_window_start_at": liquidity_window_start_at,
+                "btc_regime_window_start_at": btc_regime_window_start_at,
+                "evidence_json": evidence_json,
+            },
         )
 
     async def complete(

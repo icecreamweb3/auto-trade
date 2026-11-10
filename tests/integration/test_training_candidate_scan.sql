@@ -255,17 +255,17 @@ BEGIN
     END IF;
     IF strpos(
         pg_get_functiondef(
-            'strategy_training.finalize_training_random_baseline_coverage(uuid,uuid)'::regprocedure
+            'strategy_training.finalize_standard_training_random_baseline_coverage(uuid,uuid)'::regprocedure
         ),
         'NOT outcome.is_complete'
     ) = 0 OR strpos(
         pg_get_functiondef(
-            'strategy_training.finalize_training_random_baseline_coverage(uuid,uuid)'::regprocedure
+            'strategy_training.finalize_standard_training_random_baseline_coverage(uuid,uuid)'::regprocedure
         ),
         'ENTRY_OUTCOME_'
     ) = 0 OR strpos(
         pg_get_functiondef(
-            'strategy_training.finalize_training_random_baseline_coverage(uuid,uuid)'::regprocedure
+            'strategy_training.finalize_standard_training_random_baseline_coverage(uuid,uuid)'::regprocedure
         ),
         'by_exclusion_reason'
     ) = 0 THEN

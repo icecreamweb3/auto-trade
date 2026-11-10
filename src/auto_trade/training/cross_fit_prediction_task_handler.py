@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -20,6 +21,7 @@ from auto_trade.training.model_a_candidate_scan_task_handler import (
 from auto_trade.training.model_a_pipeline import ModelAPipelineError, adapt_model_a_signal
 from auto_trade.training.model_a_repository import DatabaseModelAFeatureStore
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
+from auto_trade.training.random_baseline_strata import compute_stratum, parse_strata_config
 
 
 class CrossFitPredictionError(ModelAPipelineError):
@@ -56,9 +58,29 @@ class CrossFitPredictionTaskHandler:
             return context.existing_batch_hash
         parameters = build_candidate_strategy_parameters(context)
         persisted_ids: list[str] = []
-        for instrument in await self._store.load_instruments(
+        instruments = await self._store.load_instruments(
             lease.task_id, lease.lease_token
-        ):
+        )
+        if not instruments:
+            return await self._store.complete(
+                lease.task_id, lease.lease_token, ()
+            )
+        random_baseline = await self._store.load_random_baseline_config(
+            lease.task_id, lease.lease_token
+        )
+        if random_baseline.reference_dataset_version_id != context.dataset_version_id:
+            raise CrossFitPredictionError(
+                "Cross-fit prediction requires a same-dataset frozen baseline reference"
+            )
+        strata_config = parse_strata_config(
+            random_baseline.config_version_id, random_baseline.config
+        )
+        benchmark_bars = await self._store.load_benchmark_bars(
+            lease.task_id, lease.lease_token
+        )
+        if not benchmark_bars:
+            raise CrossFitPredictionError("random-baseline benchmark history is empty")
+        for instrument in instruments:
             bars = await self._store.load_bars(
                 lease.task_id, lease.lease_token, instrument.instrument_id
             )
@@ -107,12 +129,41 @@ class CrossFitPredictionTaskHandler:
                     entry_price=entry_bar.open_price,
                     factor_names=parameters.required_factors,
                 )
-                persisted_ids.append(
+                entry_event_id = (
                     await self._feature_store.record_cross_fit_prediction_signal(
-                        adapted,
-                        task_id=lease.task_id,
-                        lease_token=lease.lease_token,
+                        adapted, task_id=lease.task_id, lease_token=lease.lease_token
                     )
+                )
+                persisted_ids.append(entry_event_id)
+                stratum = compute_stratum(
+                    observed_at=signal.open_time,
+                    instrument_bars=bars,
+                    benchmark_bars=benchmark_bars,
+                    interval_seconds=context.interval_seconds,
+                    config=strata_config,
+                )
+                evidence = dict(stratum.evidence)
+                evidence.update(
+                    {
+                        "frame_kind": "CROSS_FIT_MATCHED_SIGNAL",
+                        "trigger_reason": signal.trigger_reason,
+                        "trigger_score": str(signal.score),
+                    }
+                )
+                await self._store.record_signal_stratum(
+                    task_id=lease.task_id,
+                    lease_token=lease.lease_token,
+                    entry_event_id=entry_event_id,
+                    config_version_id=strata_config.config_version_id,
+                    volatility_bucket=stratum.volatility_bucket,
+                    liquidity_bucket=stratum.liquidity_bucket,
+                    btc_regime=stratum.btc_regime,
+                    volatility_window_start_at=stratum.volatility_window_start_at,
+                    liquidity_window_start_at=stratum.liquidity_window_start_at,
+                    btc_regime_window_start_at=stratum.btc_regime_window_start_at,
+                    evidence_json=json.dumps(
+                        evidence, sort_keys=True, separators=(",", ":"), default=str
+                    ),
                 )
                 if len(persisted_ids) > context.maximum_signal_count:
                     raise CrossFitPredictionError(

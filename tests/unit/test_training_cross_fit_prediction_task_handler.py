@@ -13,6 +13,8 @@ from auto_trade.training.cross_fit_prediction_task_handler import (
 from auto_trade.training.model_a_candidate_scan_repository import (
     CandidateScanContext,
     PoolEvaluation,
+    RandomBaselineConfig,
+    ScanInstrument,
 )
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease
 
@@ -86,6 +88,25 @@ async def test_prediction_retry_returns_frozen_batch_without_rescanning() -> Non
 
     assert await handler(_lease()) == "c" * 64
     handler._store.load_instruments.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_prediction_rejects_a_different_baseline_reference_dataset() -> None:
+    context = _context()
+    handler = CrossFitPredictionTaskHandler(AsyncMock())
+    handler._store.load_context = AsyncMock(return_value=context)  # type: ignore[method-assign]
+    handler._store.load_instruments = AsyncMock(  # type: ignore[method-assign]
+        return_value=(ScanInstrument(1, "BTCUSDT"),)
+    )
+    handler._store.load_random_baseline_config = AsyncMock(  # type: ignore[method-assign]
+        return_value=RandomBaselineConfig(uuid4(), {}, uuid4())
+    )
+    handler._store.load_benchmark_bars = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(CrossFitPredictionError, match="same-dataset"):
+        await handler(_lease())
+
+    handler._store.load_benchmark_bars.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
