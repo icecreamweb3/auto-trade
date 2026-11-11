@@ -36,6 +36,9 @@ from auto_trade.training.model_a_l0_task_handler import ModelAL0AggregationTaskH
 from auto_trade.training.model_b_candidate_preparation_task_handler import (
     ModelBCandidatePreparationTaskHandler,
 )
+from auto_trade.training.model_b_formal_search_finalization_task_handler import (
+    ModelBFormalSearchFinalizationTaskHandler,
+)
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayTaskHandler
 from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialTaskHandler
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
@@ -95,6 +98,10 @@ def build_handler_registry(
         registry.register(
             "MODEL_B_PREPARE_CANDIDATE",
             ModelBCandidatePreparationTaskHandler(connection),
+        )
+        registry.register(
+            "MODEL_B_FINALIZE_FORMAL",
+            ModelBFormalSearchFinalizationTaskHandler(connection),
         )
         registry.register(
             "PORTFOLIO_EVALUATION", PortfolioEvaluationTaskHandler(connection)

@@ -19,6 +19,9 @@ from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.model_b_candidate_preparation_task_handler import (
     ModelBCandidatePreparationError,
 )
+from auto_trade.training.model_b_formal_search_finalization_task_handler import (
+    ModelBFormalSearchFinalizationError,
+)
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
 from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialError
 from auto_trade.training.orchestrator import TaskLease, TaskState
@@ -83,6 +86,8 @@ def failure_code(error: BaseException) -> str:
         return "MODEL_B_REPLAY_REJECTED"
     if isinstance(error, ModelBCandidatePreparationError):
         return "MODEL_B_CANDIDATE_PREPARATION_REJECTED"
+    if isinstance(error, ModelBFormalSearchFinalizationError):
+        return "MODEL_B_FORMAL_FINALIZATION_REJECTED"
     if isinstance(error, PortfolioEvaluationError):
         return "PORTFOLIO_EVALUATION_REJECTED"
     if isinstance(error, OptimizerTrialError):

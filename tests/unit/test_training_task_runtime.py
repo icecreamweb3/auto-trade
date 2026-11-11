@@ -10,6 +10,9 @@ from auto_trade.training.archive_verify_task_handler import ArchiveVerifyError
 from auto_trade.training.cross_fit_gate_task_handler import CrossFitGateError
 from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
+from auto_trade.training.model_b_formal_search_finalization_task_handler import (
+    ModelBFormalSearchFinalizationError,
+)
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
 from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialError
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
@@ -149,6 +152,10 @@ def test_failure_codes_do_not_include_exception_text() -> None:
     assert (
         failure_code(OptimizerTrialError("objective detail"))
         == "OPTIMIZER_TRIAL_REJECTED"
+    )
+    assert (
+        failure_code(ModelBFormalSearchFinalizationError("comparison detail"))
+        == "MODEL_B_FORMAL_FINALIZATION_REJECTED"
     )
 
 
