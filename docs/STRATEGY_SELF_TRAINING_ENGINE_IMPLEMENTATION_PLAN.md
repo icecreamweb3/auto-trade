@@ -112,6 +112,8 @@ Model B 嵌套搜索补充（2026-11-11）：迁移 `091_training_cross_fit_mode
 
 Model B 独立折外评价补充（2026-11-11）：迁移 `092_training_cross_fit_model_b_fold_evaluation.sql` 在同折 TPE 与随机对照均成功后，由编排器自动创建独立、不可晋级的折外评价 experiment/iteration。候选只能从该折 TRAIN-only TPE 目标中按固定排序选出；随机搜索仅作审计对照，不能供应终选候选。评价迭代复制已编译的不可变策略，并且只为冻结的 `FOLD_OUT` 事件创建 episode 与 `MODEL_B_REPLAY` 任务；创建前再次核对 090 的事件计数快照。091 的初始化仍保持显式管理动作，部署 092 不会自动启动新实验。折外回放完成后的 evaluator 汇总、下一有效折推进以及最终 Q-036/正式 Model B 启动仍需后续切片。
 
+Model B 折证据闭环补充（2026-11-11）：迁移 `093_training_cross_fit_model_b_fold_finalization.sql` 新增 `CROSS_FIT_MODEL_B_FINALIZE_FOLD` evaluator 租约任务。只有独立评价迭代的全部 `MODEL_B_REPLAY` 任务成功且 episode 全部 `DECIDED`，才允许从原始回放结果重算正常与成本压力指标、封存折证据并关闭评价 experiment/iteration；orchestrator 随后只按 090 冻结的 `ELIGIBLE` 顺序创建下一折搜索。任一回放失败不会被当成可汇总结果，也不会跳过到后续折。全部有效折结束后的总 gate evaluator 投递及 PASS 后全新正式 Model B 启动仍为后续切片。
+
 阶梯搜索补充（2026-11-11）：第一阶段不开放八个相互独立的阶梯参数，而是在固定四阶形状上新增 `trigger_scale=0.8–1.2` 与 `shared_close_fraction=0.10–0.30`。`trigger_scale` 同步缩放止盈触发、锁盈值、最高水位启动值和允许回撤，避免破坏模板内部的风险递进关系；每档均按当时剩余仓位使用同一个 `shared_close_fraction`。候选必须最终保留至少 30% 仓位，因此高平仓比例可能形成无效组合；无效性只由冻结参数决定，记为失败并消耗优化预算，不读取结果指标。候选编译器固化原始参数、有效退出配置及各自内容哈希后再交给 TRAIN 回放，TPE 与随机对照使用相同编译和拒绝规则。迁移 `085_training_model_b_search_ladder_parameters.sql` 以追加方式移除旧版配置类型白名单约束，不回改已部署的 `083` 迁移。当前 Q-030 每折 20 次 TPE 预算下保持这两个新增自由度；若未来开放各档独立间距和仓位，须先新建并审批更高预算的 `CROSS_FIT_PROTOCOL`。
 
 Q-036 运行补充（2026-11-11）：迁移 `086_training_cross_fit_q036_runtime.sql` 新增临时模型 B 闸门运行及逐事件成本压力证据，只有证据完整覆盖冻结候选语料且临时 TPE/随机运行均成功时，才允许投递 `CROSS_FIT_EVALUATE_GATE`。Evaluator 使用同一 UTC 日参考集计算模型 A BCa 区间和模型 B 2 倍成本压力 BCa 区间，数据库再次按锁定协议计算 intersection-union 判定；缺少模型 B 证据、参考日集合变化或数据库判定不一致均安全失败。PASS 后只晋级不可变正式语料，不复用临时优化器运行。候选策略持久化和通用回放编排已由 `087`—`088` 接入；逐外层折嵌套运行、折外成本压力证据汇总和 PASS 后正式运行自动创建仍是 M6 阻断项。

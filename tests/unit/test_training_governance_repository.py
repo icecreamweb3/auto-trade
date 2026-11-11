@@ -66,7 +66,11 @@ async def test_enqueue_accepts_cross_fit_finalization_tasks_for_evaluator() -> N
     connection.execute.return_value = result
     store = DatabaseOrchestratorStore(connection)
 
-    for task_type in ("CROSS_FIT_FINALIZE_FOLD", "CROSS_FIT_FINALIZE_CORPUS"):
+    for task_type in (
+        "CROSS_FIT_FINALIZE_FOLD",
+        "CROSS_FIT_FINALIZE_CORPUS",
+        "CROSS_FIT_MODEL_B_FINALIZE_FOLD",
+    ):
         arguments = enqueue_arguments({"payload_version": 1})
         arguments["task_type"] = task_type
         arguments["executor_kind"] = ExecutorKind.EVALUATOR

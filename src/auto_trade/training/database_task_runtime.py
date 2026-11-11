@@ -15,6 +15,9 @@ from auto_trade.training.cross_fit_fold_finalization_task_handler import (
     CrossFitFoldFinalizationTaskHandler,
 )
 from auto_trade.training.cross_fit_gate_task_handler import CrossFitGateTaskHandler
+from auto_trade.training.cross_fit_model_b_fold_finalization_task_handler import (
+    CrossFitModelBFoldFinalizationTaskHandler,
+)
 from auto_trade.training.cross_fit_prediction_task_handler import (
     CrossFitPredictionTaskHandler,
 )
@@ -64,6 +67,10 @@ def build_handler_registry(
         registry.register(
             "CROSS_FIT_FINALIZE_FOLD",
             CrossFitFoldFinalizationTaskHandler(connection),
+        )
+        registry.register(
+            "CROSS_FIT_MODEL_B_FINALIZE_FOLD",
+            CrossFitModelBFoldFinalizationTaskHandler(connection),
         )
         registry.register(
             "CROSS_FIT_EVALUATE_GATE", CrossFitGateTaskHandler(connection)
