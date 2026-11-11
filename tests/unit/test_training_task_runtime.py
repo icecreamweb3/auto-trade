@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from auto_trade.training.archive_verify_task_handler import ArchiveVerifyError
+from auto_trade.training.cross_fit_gate_task_handler import CrossFitGateError
 from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
@@ -132,6 +133,7 @@ def test_failure_codes_do_not_include_exception_text() -> None:
     assert failure_code(ArchiveVerifyError("secret path")) == "ARCHIVE_VERIFY_REJECTED"
     assert failure_code(TaskHandlerError("payload secret")) == "UNSUPPORTED_TASK_TYPE"
     assert failure_code(RuntimeError("payload secret")) == "HANDLER_FAILED"
+    assert failure_code(CrossFitGateError("metric detail")) == "CROSS_FIT_GATE_REJECTED"
     assert (
         failure_code(ModelAPipelineError("future label detail"))
         == "MODEL_A_EVALUATION_REJECTED"

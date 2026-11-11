@@ -293,3 +293,27 @@ class DatabasePortfolioEvaluationStore:
             _optional_decimal(row["peak_occupied_capital"]),
             None if row["result_hash"] is None else str(row["result_hash"]),
         )
+
+    async def finalize_candidate_objective_if_applicable(
+        self, task_id: UUID, lease_token: UUID, iteration_id: UUID
+    ) -> str | None:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM strategy_training.training_model_b_compiled_candidate_policies
+                    WHERE model_b_iteration_id = :iteration_id
+                ) THEN strategy_training.finalize_training_model_b_candidate_objective(
+                    :task_id, :lease_token
+                ) ELSE NULL END
+                """
+            ),
+            {
+                "task_id": task_id,
+                "lease_token": lease_token,
+                "iteration_id": iteration_id,
+            },
+        )
+        value: object = result.scalar_one()
+        return None if value is None else str(value)

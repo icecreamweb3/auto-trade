@@ -53,6 +53,29 @@ class GoNoGoResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelBGateMetric:
+    prediction_day: date
+    symbol: str
+    net_expectancy: float
+    stressed_net_expectancy: float
+
+
+@dataclass(frozen=True, slots=True)
+class Q036GateResult:
+    decision: GateDecision
+    model_a: GoNoGoResult
+    model_b_net_expectancy: float
+    model_b_stressed_ci_lower_bound: float
+    model_b_stressed_ci_upper_bound: float
+    effective_days: int
+    effective_folds: int
+    bootstrap_replicates: int
+    seed: int
+    confidence_level: float
+    bootstrap_method: str = "BCA_UTC_DAY_CLUSTER"
+
+
+@dataclass(frozen=True, slots=True)
 class ModelBSearchResult:
     outcomes: tuple[TrialOutcome, ...]
     best_trial_number: int | None
@@ -247,4 +270,107 @@ def evaluate_cross_fit_gate(
     return GoNoGoResult(
         decision, tpe_mean, random_mean, excess, p_value, days, folds,
         bootstrap_replicates, seed, ci_lower, ci_upper, confidence_level,
+    )
+
+
+def evaluate_q036_gate(
+    model_a_metrics: Iterable[FoldMetric],
+    model_b_metrics: Iterable[ModelBGateMetric],
+    *,
+    alpha: float,
+    minimum_effective_days: int,
+    minimum_effective_folds: int,
+    model_a_point_threshold: float,
+    model_a_ci_lower_threshold: float,
+    model_b_point_threshold: float,
+    bootstrap_replicates: int = 5000,
+    seed: int = 0,
+    confidence_level: float = 0.95,
+) -> Q036GateResult:
+    """Evaluate the locked Q-036 intersection-union gate.
+
+    Model A and Model B must use the same fixed UTC-day reference set. Model B
+    point estimates and stressed intervals give every UTC day equal weight, so
+    signal-dense days cannot dominate the gate.
+    """
+    model_a_rows = tuple(model_a_metrics)
+    model_b_rows = tuple(model_b_metrics)
+    if not model_b_rows:
+        raise ValueError("Q-036 requires temporary Model-B replay evidence")
+    if any(
+        not math.isfinite(row.net_expectancy)
+        or not math.isfinite(row.stressed_net_expectancy)
+        for row in model_b_rows
+    ):
+        raise ValueError("Model-B gate metrics must be finite")
+    if (
+        model_a_point_threshold <= 0
+        or model_a_ci_lower_threshold <= 0
+        or model_b_point_threshold <= 0
+    ):
+        raise ValueError("Q-036 thresholds must be positive")
+
+    model_a = evaluate_cross_fit_gate(
+        model_a_rows,
+        alpha=alpha,
+        minimum_effective_days=minimum_effective_days,
+        minimum_effective_folds=minimum_effective_folds,
+        bootstrap_replicates=bootstrap_replicates,
+        seed=seed,
+        confidence_level=confidence_level,
+    )
+    model_a_days = {row.prediction_day for row in model_a_rows}
+    model_b_days = {row.prediction_day for row in model_b_rows}
+    if model_b_days != model_a_days:
+        raise ValueError("Model-B evidence must use the fixed Model-A reference UTC-day set")
+
+    daily_rows: dict[date, list[ModelBGateMetric]] = defaultdict(list)
+    for row in model_b_rows:
+        daily_rows[row.prediction_day].append(row)
+    ordered_days = tuple(sorted(daily_rows))
+    daily_net = tuple(
+        _mean(row.net_expectancy for row in daily_rows[day]) for day in ordered_days
+    )
+    daily_stressed = tuple(
+        _mean(row.stressed_net_expectancy for row in daily_rows[day])
+        for day in ordered_days
+    )
+    rng = random.Random(seed)
+    stressed_bootstrap = tuple(
+        _mean(daily_stressed[rng.randrange(len(daily_stressed))] for _ in daily_stressed)
+        for _ in range(bootstrap_replicates)
+    )
+    stressed_ci_lower, stressed_ci_upper = _bca_interval(
+        daily_stressed,
+        stressed_bootstrap,
+        confidence_level=confidence_level,
+    )
+    net_expectancy = _mean(daily_net)
+
+    if (
+        model_a.effective_days < minimum_effective_days
+        or model_a.effective_folds < minimum_effective_folds
+    ):
+        decision = GateDecision.INSUFFICIENT_POWER
+    elif (
+        model_a.p_value <= alpha
+        and model_a.excess_mean >= model_a_point_threshold
+        and model_a.ci_lower_bound >= model_a_ci_lower_threshold
+        and net_expectancy >= model_b_point_threshold
+        and stressed_ci_lower > 0
+    ):
+        decision = GateDecision.PASS
+    else:
+        decision = GateDecision.FAIL
+    return Q036GateResult(
+        decision=decision,
+        model_a=model_a,
+        model_b_net_expectancy=net_expectancy,
+        model_b_stressed_ci_lower_bound=stressed_ci_lower,
+        model_b_stressed_ci_upper_bound=stressed_ci_upper,
+        effective_days=model_a.effective_days,
+        effective_folds=model_a.effective_folds,
+        bootstrap_replicates=bootstrap_replicates,
+        seed=seed,
+        confidence_level=confidence_level,
     )

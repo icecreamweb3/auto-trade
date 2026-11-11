@@ -14,6 +14,7 @@ from auto_trade.training.cross_fit_corpus_finalization_task_handler import (
 from auto_trade.training.cross_fit_fold_finalization_task_handler import (
     CrossFitFoldFinalizationTaskHandler,
 )
+from auto_trade.training.cross_fit_gate_task_handler import CrossFitGateTaskHandler
 from auto_trade.training.cross_fit_prediction_task_handler import (
     CrossFitPredictionTaskHandler,
 )
@@ -26,6 +27,9 @@ from auto_trade.training.model_a_evaluation_task_handler import (
     ModelAEvaluationTaskHandler,
 )
 from auto_trade.training.model_a_l0_task_handler import ModelAL0AggregationTaskHandler
+from auto_trade.training.model_b_candidate_preparation_task_handler import (
+    ModelBCandidatePreparationTaskHandler,
+)
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayTaskHandler
 from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialTaskHandler
 from auto_trade.training.orchestrator import ExecutorKind, TaskLease, TaskState
@@ -62,6 +66,9 @@ def build_handler_registry(
             CrossFitFoldFinalizationTaskHandler(connection),
         )
         registry.register(
+            "CROSS_FIT_EVALUATE_GATE", CrossFitGateTaskHandler(connection)
+        )
+        registry.register(
             "MODEL_A_EVALUATION",
             ModelAEvaluationTaskHandler(
                 connection,
@@ -70,6 +77,10 @@ def build_handler_registry(
         )
         registry.register(
             "MODEL_A_L0_AGGREGATION", ModelAL0AggregationTaskHandler(connection)
+        )
+        registry.register(
+            "MODEL_B_PREPARE_CANDIDATE",
+            ModelBCandidatePreparationTaskHandler(connection),
         )
         registry.register(
             "PORTFOLIO_EVALUATION", PortfolioEvaluationTaskHandler(connection)

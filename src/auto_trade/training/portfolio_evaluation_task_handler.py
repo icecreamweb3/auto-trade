@@ -270,4 +270,9 @@ class PortfolioEvaluationTaskHandler:
             )
         else:
             _assert_portfolio_matches(existing_run, portfolio_result)
+        await self._store.finalize_candidate_objective_if_applicable(
+            lease.task_id,
+            lease.lease_token,
+            context.model_b_iteration_id,
+        )
         return portfolio_result.result_hash

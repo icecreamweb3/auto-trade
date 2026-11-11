@@ -9,12 +9,16 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from auto_trade.training.archive_verify_task_handler import ArchiveVerifyError
+from auto_trade.training.cross_fit_gate_task_handler import CrossFitGateError
 from auto_trade.training.dataset_builder import DatasetBuildError
 from auto_trade.training.model_a_candidate_scan_task_handler import (
     ModelACandidateScanError,
 )
 from auto_trade.training.model_a_l0_task_handler import ModelAL0AggregationError
 from auto_trade.training.model_a_pipeline import ModelAPipelineError
+from auto_trade.training.model_b_candidate_preparation_task_handler import (
+    ModelBCandidatePreparationError,
+)
 from auto_trade.training.model_b_replay_task_handler import ModelBReplayError
 from auto_trade.training.optimizer_trial_task_handler import OptimizerTrialError
 from auto_trade.training.orchestrator import TaskLease, TaskState
@@ -67,6 +71,8 @@ def failure_code(error: BaseException) -> str:
         return "ARCHIVE_VERIFY_REJECTED"
     if isinstance(error, DatasetBuildError):
         return "DATASET_BUILD_REJECTED"
+    if isinstance(error, CrossFitGateError):
+        return "CROSS_FIT_GATE_REJECTED"
     if isinstance(error, ModelACandidateScanError):
         return "MODEL_A_CANDIDATE_SCAN_REJECTED"
     if isinstance(error, ModelAL0AggregationError):
@@ -75,6 +81,8 @@ def failure_code(error: BaseException) -> str:
         return "MODEL_A_EVALUATION_REJECTED"
     if isinstance(error, ModelBReplayError):
         return "MODEL_B_REPLAY_REJECTED"
+    if isinstance(error, ModelBCandidatePreparationError):
+        return "MODEL_B_CANDIDATE_PREPARATION_REJECTED"
     if isinstance(error, PortfolioEvaluationError):
         return "PORTFOLIO_EVALUATION_REJECTED"
     if isinstance(error, OptimizerTrialError):
