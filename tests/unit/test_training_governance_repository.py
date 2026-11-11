@@ -70,6 +70,7 @@ async def test_enqueue_accepts_cross_fit_finalization_tasks_for_evaluator() -> N
         "CROSS_FIT_FINALIZE_FOLD",
         "CROSS_FIT_FINALIZE_CORPUS",
         "CROSS_FIT_MODEL_B_FINALIZE_FOLD",
+        "CROSS_FIT_MODEL_B_FINALIZE_GATE",
     ):
         arguments = enqueue_arguments({"payload_version": 1})
         arguments["task_type"] = task_type

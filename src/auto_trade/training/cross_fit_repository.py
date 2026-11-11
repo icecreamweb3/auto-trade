@@ -108,6 +108,21 @@ class DatabaseCrossFitStore:
         )
         return str(result.scalar_one())
 
+    async def finalize_model_b_gate(
+        self, task_id: UUID, lease_token: UUID
+    ) -> str:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT strategy_training.finalize_cross_fit_model_b_gate_task(
+                    :task_id, :lease_token
+                )
+                """
+            ),
+            {"task_id": task_id, "lease_token": lease_token},
+        )
+        return str(result.scalar_one())
+
     async def register_optimizer_scope(self, scope: CrossFitOptimizerScope) -> None:
         await self._connection.execute(
             text(
