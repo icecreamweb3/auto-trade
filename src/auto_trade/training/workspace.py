@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
@@ -11,6 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from auto_trade.accounts.models import CurrentUser
 from auto_trade.accounts.router import AuthenticatedUser
+
+logger = logging.getLogger(__name__)
 
 
 class WorkspaceExperiment(BaseModel):
@@ -239,10 +242,12 @@ async def _workspace_payload(request: Request) -> TrainingWorkspace:
                 await connection.execute(
                     text(
                         """
-                        SELECT iteration_id::text, state AS status, failure_code, ended_at
+                        SELECT iteration_id::text, state AS status,
+                               rejection_code AS failure_code,
+                               completed_at AS ended_at
                         FROM strategy_training.training_iterations
                         WHERE state IN ('FAILED', 'REJECTED', 'CANCELLED')
-                        ORDER BY ended_at DESC NULLS LAST
+                        ORDER BY completed_at DESC NULLS LAST
                         LIMIT 100
                         """
                     )
@@ -268,6 +273,7 @@ async def _workspace_payload(request: Request) -> TrainingWorkspace:
                 )
             ).mappings().one()
     except SQLAlchemyError as error:
+        logger.exception("training workspace query failed")
         raise HTTPException(status_code=503, detail="training workspace unavailable") from error
 
     grouped_bindings: dict[str, list[Mapping[str, object]]] = {}

@@ -1,3 +1,4 @@
+import inspect
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -7,7 +8,11 @@ from fastapi import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
 from auto_trade.accounts.models import AccountSummary, CurrentUser, UserRole
-from auto_trade.training.workspace import _parameter_profile, require_training_researcher
+from auto_trade.training.workspace import (
+    _parameter_profile,
+    _workspace_payload,
+    require_training_researcher,
+)
 
 
 def _user(role: UserRole = UserRole.ADMIN) -> CurrentUser:
@@ -112,3 +117,18 @@ def test_parameter_profile_exposes_frozen_factors_and_search_rules() -> None:
     assert profile.strategy_parameters == {"average_days": 7}
     assert "signal_score_threshold" in profile.search_parameters
     assert profile.experiment_id == "experiment-1"
+
+
+def test_workspace_failure_query_uses_training_iteration_contract() -> None:
+    source = inspect.getsource(_workspace_payload)
+
+    assert "rejection_code AS failure_code" in source
+    assert "completed_at AS ended_at" in source
+    assert "ORDER BY completed_at DESC NULLS LAST" in source
+    assert "state AS status, failure_code, ended_at" not in source
+
+
+def test_workspace_query_failure_is_logged_before_generic_503() -> None:
+    source = inspect.getsource(_workspace_payload)
+
+    assert 'logger.exception("training workspace query failed")' in source
