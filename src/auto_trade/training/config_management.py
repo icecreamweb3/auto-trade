@@ -128,12 +128,12 @@ MODEL_B_DRAFT_TEMPLATES: dict[str, dict[str, Any]] = {
         "interval_seconds": 300,
         "hard_max_holding_seconds": 86400,
         "policy_templates": {
-            "FOUR_STAGE_20_REMAINING_V1": {
-                "partial_trigger_profit_percents": [10.0, 15.0, 25.0, 35.0],
-                "partial_close_fraction": 0.20,
-                "stop_locked_profit_percents": [1.0, 5.0, 15.0, 25.0],
-                "high_water_trailing_activation_percent": 25.0,
-                "high_water_max_drawdown_percent": 10.0,
+            "FOUR_STAGE_SCALED_REMAINING_V1": {
+                "base_partial_trigger_profit_percents": [10.0, 15.0, 25.0, 35.0],
+                "base_stop_locked_profit_percents": [1.0, 5.0, 15.0, 25.0],
+                "base_high_water_trailing_activation_percent": 25.0,
+                "base_high_water_max_drawdown_percent": 10.0,
+                "minimum_remaining_fraction": 0.30,
             }
         },
         "parameters": {
@@ -149,7 +149,19 @@ MODEL_B_DRAFT_TEMPLATES: dict[str, dict[str, Any]] = {
             },
             "exit_policy_template": {
                 "kind": "categorical",
-                "choices": ["FOUR_STAGE_20_REMAINING_V1"],
+                "choices": ["FOUR_STAGE_SCALED_REMAINING_V1"],
+            },
+            "trigger_scale": {
+                "kind": "numeric",
+                "minimum": 0.8,
+                "maximum": 1.2,
+                "integer": False,
+            },
+            "shared_close_fraction": {
+                "kind": "numeric",
+                "minimum": 0.10,
+                "maximum": 0.30,
+                "integer": False,
             },
         },
     },
@@ -213,10 +225,12 @@ def _validate_model_b_parameter_rules(payload: dict[str, Any], errors: list[str]
         "max_holding_seconds",
         "initial_stop_loss_percent",
         "exit_policy_template",
+        "trigger_scale",
+        "shared_close_fraction",
     }
     parameters = payload.get("parameters")
     if not isinstance(parameters, dict) or set(parameters) != expected:
-        errors.append("parameters 必须精确包含三个模型 B V2 搜索参数")
+        errors.append("parameters 必须精确包含五个模型 B V2 搜索参数")
         return
     for name, raw_rule in parameters.items():
         if not isinstance(raw_rule, dict):
@@ -226,7 +240,11 @@ def _validate_model_b_parameter_rules(payload: dict[str, Any], errors: list[str]
         if name in {"max_holding_seconds", "exit_policy_template"} and kind != "categorical":
             errors.append(f"{name} 必须使用 categorical choices")
             continue
-        if name == "initial_stop_loss_percent" and kind != "numeric":
+        if name in {
+            "initial_stop_loss_percent",
+            "trigger_scale",
+            "shared_close_fraction",
+        } and kind != "numeric":
             errors.append(f"{name} 必须使用 numeric 范围")
             continue
         if kind == "numeric":
@@ -261,6 +279,45 @@ def _validate_model_b_parameter_rules(payload: dict[str, Any], errors: list[str]
                     errors.append("exit_policy_template choices 必须引用已声明模板")
         else:
             errors.append(f"{name}.kind 必须为 numeric 或 categorical")
+
+    expected_numeric_bounds = {
+        "initial_stop_loss_percent": (2.0, 10.0),
+        "trigger_scale": (0.8, 1.2),
+        "shared_close_fraction": (0.10, 0.30),
+    }
+    for name, (minimum, maximum) in expected_numeric_bounds.items():
+        rule = parameters.get(name)
+        if isinstance(rule, dict) and (
+            rule.get("minimum") != minimum
+            or rule.get("maximum") != maximum
+            or rule.get("integer") is not False
+        ):
+            errors.append(f"{name} 必须使用已审批范围 {minimum}-{maximum}")
+    templates = payload.get("policy_templates")
+    expected_template = {
+        "FOUR_STAGE_SCALED_REMAINING_V1": {
+            "base_partial_trigger_profit_percents": [10.0, 15.0, 25.0, 35.0],
+            "base_stop_locked_profit_percents": [1.0, 5.0, 15.0, 25.0],
+            "base_high_water_trailing_activation_percent": 25.0,
+            "base_high_water_max_drawdown_percent": 10.0,
+            "minimum_remaining_fraction": 0.30,
+        }
+    }
+    if templates != expected_template:
+        errors.append("policy_templates 必须使用已审批的四阶缩放模板")
+    holding_rule = parameters.get("max_holding_seconds")
+    if not isinstance(holding_rule, dict) or holding_rule.get("choices") != [
+        21600,
+        43200,
+        64800,
+        86400,
+    ]:
+        errors.append("max_holding_seconds 必须使用已审批的 6h/12h/18h/24h 选项")
+    template_rule = parameters.get("exit_policy_template")
+    if not isinstance(template_rule, dict) or template_rule.get("choices") != [
+        "FOUR_STAGE_SCALED_REMAINING_V1"
+    ]:
+        errors.append("exit_policy_template 必须绑定已审批的四阶缩放模板")
 
 
 def _strictly_increasing(values: list[Any]) -> bool:

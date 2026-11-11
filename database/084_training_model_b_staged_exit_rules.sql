@@ -48,14 +48,15 @@ BEGIN
                 USING ERRCODE = '23514';
         END IF;
         IF NEW.config_json -> 'policy_templates' IS DISTINCT FROM
-           '{"FOUR_STAGE_20_REMAINING_V1":{"partial_trigger_profit_percents":[10.0,15.0,25.0,35.0],"partial_close_fraction":0.20,"stop_locked_profit_percents":[1.0,5.0,15.0,25.0],"high_water_trailing_activation_percent":25.0,"high_water_max_drawdown_percent":10.0}}'::jsonb THEN
+           '{"FOUR_STAGE_SCALED_REMAINING_V1":{"base_partial_trigger_profit_percents":[10.0,15.0,25.0,35.0],"base_stop_locked_profit_percents":[1.0,5.0,15.0,25.0],"base_high_water_trailing_activation_percent":25.0,"base_high_water_max_drawdown_percent":10.0,"minimum_remaining_fraction":0.30}}'::jsonb THEN
             RAISE EXCEPTION 'MODEL_B_SEARCH_SPACE V2 template is not approved'
                 USING ERRCODE = '23514';
         END IF;
         SELECT array_agg(key ORDER BY key) INTO parameter_names
         FROM jsonb_object_keys(NEW.config_json -> 'parameters') AS parameter(key);
         IF parameter_names IS DISTINCT FROM ARRAY[
-            'exit_policy_template', 'initial_stop_loss_percent', 'max_holding_seconds'
+            'exit_policy_template', 'initial_stop_loss_percent', 'max_holding_seconds',
+            'shared_close_fraction', 'trigger_scale'
         ]::text[] THEN
             RAISE EXCEPTION 'MODEL_B_SEARCH_SPACE V2 parameters are not governed'
                 USING ERRCODE = '23514';
@@ -63,6 +64,8 @@ BEGIN
         IF NEW.config_json #>> '{parameters,max_holding_seconds,kind}' <> 'categorical'
            OR NEW.config_json #>> '{parameters,exit_policy_template,kind}' <> 'categorical'
            OR NEW.config_json #>> '{parameters,initial_stop_loss_percent,kind}' <> 'numeric'
+           OR NEW.config_json #>> '{parameters,trigger_scale,kind}' <> 'numeric'
+           OR NEW.config_json #>> '{parameters,shared_close_fraction,kind}' <> 'numeric'
            OR jsonb_typeof(NEW.config_json #> '{parameters,max_holding_seconds,choices}')
               IS DISTINCT FROM 'array'
            OR jsonb_typeof(NEW.config_json #> '{parameters,exit_policy_template,choices}')
@@ -71,8 +74,30 @@ BEGIN
               IS DISTINCT FROM 'number'
            OR jsonb_typeof(NEW.config_json #> '{parameters,initial_stop_loss_percent,maximum}')
               IS DISTINCT FROM 'number'
+           OR jsonb_typeof(NEW.config_json #> '{parameters,trigger_scale,minimum}')
+              IS DISTINCT FROM 'number'
+           OR jsonb_typeof(NEW.config_json #> '{parameters,trigger_scale,maximum}')
+              IS DISTINCT FROM 'number'
+           OR jsonb_typeof(NEW.config_json #> '{parameters,shared_close_fraction,minimum}')
+              IS DISTINCT FROM 'number'
+           OR jsonb_typeof(NEW.config_json #> '{parameters,shared_close_fraction,maximum}')
+              IS DISTINCT FROM 'number'
+           OR NEW.config_json #> '{parameters,initial_stop_loss_percent,integer}'
+              IS DISTINCT FROM 'false'::jsonb
+           OR NEW.config_json #> '{parameters,trigger_scale,integer}'
+              IS DISTINCT FROM 'false'::jsonb
+           OR NEW.config_json #> '{parameters,shared_close_fraction,integer}'
+              IS DISTINCT FROM 'false'::jsonb
            OR (NEW.config_json #>> '{parameters,initial_stop_loss_percent,minimum}')::numeric <> 2
            OR (NEW.config_json #>> '{parameters,initial_stop_loss_percent,maximum}')::numeric <> 10
+           OR (NEW.config_json #>> '{parameters,trigger_scale,minimum}')::numeric <> 0.8
+           OR (NEW.config_json #>> '{parameters,trigger_scale,maximum}')::numeric <> 1.2
+           OR (NEW.config_json #>> '{parameters,shared_close_fraction,minimum}')::numeric <> 0.10
+           OR (NEW.config_json #>> '{parameters,shared_close_fraction,maximum}')::numeric <> 0.30
+           OR NEW.config_json #> '{parameters,max_holding_seconds,choices}'
+              IS DISTINCT FROM '[21600,43200,64800,86400]'::jsonb
+           OR NEW.config_json #> '{parameters,exit_policy_template,choices}'
+              IS DISTINCT FROM '["FOUR_STAGE_SCALED_REMAINING_V1"]'::jsonb
            OR EXISTS (
                 SELECT 1
                 FROM jsonb_array_elements_text(

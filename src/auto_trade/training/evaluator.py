@@ -11,10 +11,12 @@ from statistics import NormalDist
 
 from auto_trade.training.contracts import EntrySource
 from auto_trade.training.optimizer import (
+    CandidateValidation,
     GovernedOptimizerAdapter,
     ParameterRule,
     TrialOutcome,
     TrialSink,
+    validate_candidate,
 )
 
 
@@ -68,6 +70,9 @@ def run_model_b_search(
     source: EntrySource,
     gate: GoNoGoResult,
     temporary_only: bool,
+    candidate_validator: Callable[
+        [Mapping[str, object], Mapping[str, ParameterRule]], CandidateValidation
+    ] | None = None,
 ) -> ModelBSearchResult:
     """Run nested gate training or formal Model-B TRAIN search.
 
@@ -86,6 +91,7 @@ def run_model_b_search(
     elif gate.decision is not GateDecision.PASS:
         raise ValueError("formal Model-B search requires a passing Cross-fit gate")
     adapter = GovernedOptimizerAdapter(sink)
+    validator = candidate_validator or validate_candidate
     outcomes: list[TrialOutcome] = []
     for trial_number, candidate in enumerate(candidates):
         outcomes.append(
@@ -94,6 +100,7 @@ def run_model_b_search(
                 candidate=candidate,
                 search_space=search_space,
                 evaluate_train=evaluate_train,
+                candidate_validator=validator,
             )
         )
     completed = [outcome for outcome in outcomes if outcome.train_objective is not None]

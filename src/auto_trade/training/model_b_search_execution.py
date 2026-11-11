@@ -16,7 +16,12 @@ from auto_trade.training.evaluator import (
     ModelBSearchResult,
     run_model_b_search,
 )
-from auto_trade.training.optimizer import ParameterRule, TrialSink
+from auto_trade.training.model_b_candidate_policy import (
+    CompiledModelBCandidate,
+    compile_model_b_candidate_policy,
+    validate_model_b_policy_candidate,
+)
+from auto_trade.training.optimizer import CandidateValidation, ParameterRule, TrialSink
 
 REQUIRED_DECISIONS = frozenset({"Q-019", "Q-029", "Q-030", "Q-036", "Q-039"})
 _FORBIDDEN_SAFE_INPUT_FIELDS = frozenset(
@@ -144,8 +149,10 @@ def execute_formal_search(
     plan: FormalSearchPlan,
     gate: GoNoGoResult,
     search_space: Mapping[str, ParameterRule],
-    evaluate_tpe_train: Callable[[Mapping[str, object]], float],
-    evaluate_random_train: Callable[[Mapping[str, object]], float],
+    search_space_config: Mapping[str, object],
+    exit_rule_version_id: UUID,
+    evaluate_tpe_train: Callable[[CompiledModelBCandidate], float],
+    evaluate_random_train: Callable[[CompiledModelBCandidate], float],
     tpe_sink: TrialSink,
     random_sink: TrialSink,
 ) -> FormalSearchExecution:
@@ -156,23 +163,45 @@ def execute_formal_search(
     """
     if gate.decision is not GateDecision.PASS:
         raise ModelBFormalSearchError("formal execution requires Cross-fit PASS")
+
+    def validator(
+        candidate: Mapping[str, object], rules: Mapping[str, ParameterRule]
+    ) -> CandidateValidation:
+        return validate_model_b_policy_candidate(candidate, rules, search_space_config)
+
+    def compile_and_evaluate(
+        evaluate: Callable[[CompiledModelBCandidate], float],
+    ) -> Callable[[Mapping[str, object]], float]:
+        def compiled(candidate: Mapping[str, object]) -> float:
+            return evaluate(
+                compile_model_b_candidate_policy(
+                    exit_rule_version_id=exit_rule_version_id,
+                    search_space_config=search_space_config,
+                    candidate=candidate,
+                )
+            )
+
+        return compiled
+
     tpe_result = run_model_b_search(
         candidates=plan.tpe.proposals,
         search_space=search_space,
-        evaluate_train=evaluate_tpe_train,
+        evaluate_train=compile_and_evaluate(evaluate_tpe_train),
         sink=tpe_sink,
         source=EntrySource.CROSS_FIT_MODEL_A,
         gate=gate,
         temporary_only=False,
+        candidate_validator=validator,
     )
     raw_random_result = run_model_b_search(
         candidates=plan.random.proposals,
         search_space=search_space,
-        evaluate_train=evaluate_random_train,
+        evaluate_train=compile_and_evaluate(evaluate_random_train),
         sink=random_sink,
         source=EntrySource.CROSS_FIT_MODEL_A,
         gate=gate,
         temporary_only=False,
+        candidate_validator=validator,
     )
     # RANDOM is a governed same-budget comparator, never a registration candidate.
     random_result = ModelBSearchResult(

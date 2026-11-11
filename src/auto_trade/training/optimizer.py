@@ -145,8 +145,11 @@ class GovernedOptimizerAdapter:
         candidate: Mapping[str, object],
         search_space: Mapping[str, ParameterRule],
         evaluate_train: Callable[[Mapping[str, object]], float],
+        candidate_validator: Callable[
+            [Mapping[str, object], Mapping[str, ParameterRule]], CandidateValidation
+        ] = validate_candidate,
     ) -> TrialOutcome:
-        validation = validate_candidate(candidate, search_space)
+        validation = candidate_validator(candidate, search_space)
         if validation.status is CandidateStatus.REJECTED:
             self._sink.tell(trial_number, None, TrialState.FAIL)
             return TrialOutcome(

@@ -252,7 +252,7 @@ def test_model_b_search_space_rejects_model_a_or_over_24h_rules() -> None:
         },
     )
     assert "model_family 必须为 RULE_BASED_EXIT_V2" in model_a_errors
-    assert "parameters 必须精确包含三个模型 B V2 搜索参数" in model_a_errors
+    assert "parameters 必须精确包含五个模型 B V2 搜索参数" in model_a_errors
 
     payload = dict(MODEL_B_DRAFT_TEMPLATES["MODEL_B_SEARCH_SPACE"])
     payload["parameters"] = dict(payload["parameters"])
@@ -263,6 +263,17 @@ def test_model_b_search_space_rejects_model_a_or_over_24h_rules() -> None:
     assert "max_holding_seconds choices 必须按 5m 对齐且不超过 24h" in validate_config_payload(
         "MODEL_B_SEARCH_SPACE", payload
     )
+
+
+def test_model_b_search_space_locks_scaled_ladder_boundaries() -> None:
+    payload = deepcopy(MODEL_B_DRAFT_TEMPLATES["MODEL_B_SEARCH_SPACE"])
+    payload["parameters"]["trigger_scale"]["maximum"] = 1.5
+    payload["parameters"]["shared_close_fraction"]["minimum"] = 0.05
+
+    errors = validate_config_payload("MODEL_B_SEARCH_SPACE", payload)
+
+    assert "trigger_scale 必须使用已审批范围 0.8-1.2" in errors
+    assert "shared_close_fraction 必须使用已审批范围 0.1-0.3" in errors
 
 
 def test_v2_exit_rules_reject_non_monotone_or_full_position_levels() -> None:

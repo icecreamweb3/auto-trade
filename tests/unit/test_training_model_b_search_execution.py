@@ -16,7 +16,42 @@ from auto_trade.training.model_b_search_execution import (
     execute_formal_search,
     safe_input_payload,
 )
-from auto_trade.training.optimizer import NumericParameter
+from auto_trade.training.optimizer import CategoricalParameter, NumericParameter, TrialState
+
+
+def _model_b_search_config():
+    return {
+        "model_family": "RULE_BASED_EXIT_V2",
+        "policy_templates": {
+            "FOUR_STAGE_SCALED_REMAINING_V1": {
+                "base_partial_trigger_profit_percents": [10, 15, 25, 35],
+                "base_stop_locked_profit_percents": [1, 5, 15, 25],
+                "base_high_water_trailing_activation_percent": 25,
+                "base_high_water_max_drawdown_percent": 10,
+                "minimum_remaining_fraction": 0.30,
+            }
+        },
+    }
+
+
+def _model_b_candidate(close_fraction=0.2):
+    return {
+        "exit_policy_template": "FOUR_STAGE_SCALED_REMAINING_V1",
+        "initial_stop_loss_percent": 5.0,
+        "max_holding_seconds": 86400,
+        "shared_close_fraction": close_fraction,
+        "trigger_scale": 1.1,
+    }
+
+
+def _model_b_rules():
+    return {
+        "exit_policy_template": CategoricalParameter(("FOUR_STAGE_SCALED_REMAINING_V1",)),
+        "initial_stop_loss_percent": NumericParameter(2.0, 10.0),
+        "max_holding_seconds": CategoricalParameter((21600, 43200, 64800, 86400)),
+        "shared_close_fraction": NumericParameter(0.1, 0.3),
+        "trigger_scale": NumericParameter(0.8, 1.2),
+    }
 
 
 class _Sink:
@@ -105,22 +140,70 @@ def test_temporary_and_formal_sources_are_strictly_disjoint() -> None:
 
 def test_formal_execution_is_train_only_and_random_comparator_is_not_promotable() -> None:
     gate = _passing_gate()
-    plan = build_formal_search_plan(_prerequisites(gate=gate), [_input()])
+    search_space_id = uuid4()
+    plan = build_formal_search_plan(
+        _prerequisites(
+            gate=gate,
+            tpe=OptimizerRunSpec(
+                search_space_id, "TPE", 1, search_space_id, (_model_b_candidate(),)
+            ),
+            random=OptimizerRunSpec(
+                uuid4(), "RANDOM", 1, search_space_id, (_model_b_candidate(0.25),)
+            ),
+        ),
+        [_input()],
+    )
     seen = []
 
-    def evaluate(candidate):
-        seen.append(dict(candidate))
-        return candidate["stop"]
+    def evaluate(compiled):
+        seen.append(compiled)
+        return float(compiled.policy.stop_loss_percent)
 
     result = execute_formal_search(
         plan=plan,
         gate=gate,
-        search_space={"stop": NumericParameter(0.01, 0.05)},
+        search_space=_model_b_rules(),
+        search_space_config=_model_b_search_config(),
+        exit_rule_version_id=uuid4(),
         evaluate_tpe_train=evaluate,
         evaluate_random_train=evaluate,
         tpe_sink=_Sink(),
         random_sink=_Sink(),
     )
-    assert seen == [{"stop": 0.02}, {"stop": 0.03}]
+    assert len(seen) == 2
+    assert seen[0].policy.partial_take_profit_levels[0].trigger_profit_percent == 11
+    assert seen[1].remaining_position_fraction >= 0.30
     assert result.tpe_result.promotable
     assert not result.random_result.promotable
+
+
+def test_formal_execution_rejects_candidate_below_remaining_position_floor() -> None:
+    gate = _passing_gate()
+    search_space_id = uuid4()
+    invalid = _model_b_candidate(0.30)
+    plan = build_formal_search_plan(
+        _prerequisites(
+            gate=gate,
+            tpe=OptimizerRunSpec(uuid4(), "TPE", 1, search_space_id, (invalid,)),
+            random=OptimizerRunSpec(uuid4(), "RANDOM", 1, search_space_id, (invalid,)),
+        ),
+        [_input()],
+    )
+    tpe_sink = _Sink()
+    result = execute_formal_search(
+        plan=plan,
+        gate=gate,
+        search_space=_model_b_rules(),
+        search_space_config=_model_b_search_config(),
+        exit_rule_version_id=uuid4(),
+        evaluate_tpe_train=lambda _compiled: 1.0,
+        evaluate_random_train=lambda _compiled: 1.0,
+        tpe_sink=tpe_sink,
+        random_sink=_Sink(),
+    )
+
+    assert result.tpe_result.outcomes[0].state is TrialState.FAIL
+    assert result.tpe_result.outcomes[0].rejection_codes == (
+        "MINIMUM_REMAINING_FRACTION_VIOLATED",
+    )
+    assert tpe_sink.calls == [(0, None, TrialState.FAIL)]

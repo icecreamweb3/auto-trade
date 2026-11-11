@@ -15,6 +15,12 @@ BEGIN
     ) THEN
         RAISE EXCEPTION '084 staged Model-B exit migration is missing';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM core.schema_migrations
+        WHERE version = '085_training_model_b_search_ladder_parameters'
+    ) THEN
+        RAISE EXCEPTION '085 Model-B ladder search migration is missing';
+    END IF;
 
     SELECT pg_get_constraintdef(oid)
     INTO STRICT constraint_source
@@ -30,6 +36,8 @@ BEGIN
     ) INTO guard_source;
     IF position('RULE_BASED_EXIT_V2' IN guard_source) = 0
        OR position('hard_max_holding_seconds' IN guard_source) = 0
+       OR position('shared_close_fraction' IN guard_source) = 0
+       OR position('trigger_scale' IN guard_source) = 0
        OR position('REMAINING_POSITION' IN guard_source) = 0
        OR position('NEXT_BAR' IN guard_source) = 0 THEN
         RAISE EXCEPTION 'Model-B READY guard omits a governed V2 staged-exit boundary';
@@ -59,6 +67,45 @@ VALUES (
     '84000000-0000-0000-0000-000000000001',
     'model-b-v2@example.test', 'not-a-real-hash', 'model-b-v2', 'ADMIN'
 );
+
+DO $$
+DECLARE
+    config_id uuid;
+    config jsonb := '{
+      "model_family":"RULE_BASED_EXIT_V2",
+      "interval_seconds":300,
+      "hard_max_holding_seconds":86400,
+      "policy_templates":{"FOUR_STAGE_SCALED_REMAINING_V1":{
+        "base_partial_trigger_profit_percents":[10.0,15.0,25.0,35.0],
+        "base_stop_locked_profit_percents":[1.0,5.0,15.0,25.0],
+        "base_high_water_trailing_activation_percent":25.0,
+        "base_high_water_max_drawdown_percent":10.0,
+        "minimum_remaining_fraction":0.30
+      }},
+      "parameters":{
+        "max_holding_seconds":{"kind":"categorical","choices":[21600,43200,64800,86400]},
+        "initial_stop_loss_percent":{"kind":"numeric","minimum":2.0,"maximum":10.0,"integer":false},
+        "exit_policy_template":{"kind":"categorical","choices":["FOUR_STAGE_SCALED_REMAINING_V1"]},
+        "trigger_scale":{"kind":"numeric","minimum":0.8,"maximum":1.2,"integer":false},
+        "shared_close_fraction":{"kind":"numeric","minimum":0.10,"maximum":0.30,"integer":false}
+      }
+    }'::jsonb;
+BEGIN
+    INSERT INTO strategy_training.training_config_versions (
+        config_type, semver, schema_version, config_json, content_hash,
+        created_by_user_id
+    ) VALUES (
+        'MODEL_B_SEARCH_SPACE', '84.1.0', 2, config,
+        encode(digest(config::text, 'sha256'), 'hex'),
+        '84000000-0000-0000-0000-000000000001'
+    ) RETURNING config_version_id INTO config_id;
+    UPDATE strategy_training.training_config_versions
+    SET status = 'READY',
+        ready_by_user_id = '84000000-0000-0000-0000-000000000001',
+        ready_at = clock_timestamp()
+    WHERE config_version_id = config_id;
+END
+$$;
 
 DO $$
 DECLARE
