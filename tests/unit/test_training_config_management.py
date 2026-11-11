@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -9,10 +10,12 @@ from auto_trade.accounts.models import AccountSummary, CurrentUser, UserRole
 from auto_trade.training.config_management import (
     INITIAL_MODEL_A_CONFIG_TYPES,
     INITIAL_MODEL_B_CONFIG_TYPES,
+    MODEL_B_DRAFT_SCHEMA_VERSIONS,
     MODEL_B_DRAFT_TEMPLATES,
     ConfigVersion,
     _build_ready_export,
     _database_conflict,
+    _is_model_b_ready,
     _row_to_version,
     require_config_reader,
     validate_config_payload,
@@ -81,6 +84,38 @@ def test_initial_model_b_inventory_has_separate_exit_search_and_shared_costs() -
         "MODEL_B_SAMPLE_MIX",
         "PORTFOLIO_RULES",
     }
+    assert MODEL_B_DRAFT_SCHEMA_VERSIONS["EXIT_RULES"] == 2
+    assert MODEL_B_DRAFT_SCHEMA_VERSIONS["MODEL_B_SEARCH_SPACE"] == 2
+
+
+def test_model_b_readiness_rejects_legacy_exit_schema() -> None:
+    ready = ConfigVersion(
+        config_version_id=uuid4(),
+        config_type="EXIT_RULES",
+        label="模型 B 退出边界",
+        semver="0.2.0",
+        schema_version=2,
+        config_json=deepcopy(MODEL_B_DRAFT_TEMPLATES["EXIT_RULES"]),
+        content_hash="a" * 64,
+        parent_version_id=None,
+        status="READY",
+        created_by="researcher@example.test",
+        ready_by="admin@example.test",
+        retired_by=None,
+        created_at=datetime.now(UTC),
+        ready_at=datetime.now(UTC),
+        retired_at=None,
+        validation_errors=(),
+    )
+    legacy = ready.model_copy(
+        update={
+            "schema_version": 1,
+            "config_json": {"model_family": "RULE_BASED_EXIT_V1"},
+        }
+    )
+
+    assert _is_model_b_ready(ready) is True
+    assert _is_model_b_ready(legacy) is False
 
 
 def test_factor_registry_and_search_space_validation() -> None:
@@ -120,9 +155,8 @@ def test_ticker_pool_rejects_top_n_above_current_ranking_contract() -> None:
 
     assert validate_config_payload("TICKER_POOL_RULES", payload) == ()
     payload["top_n"] = 100
-    assert (
-        "top_n 必须是 1 到 50 的整数 (当前排名契约上限为 50)"
-        in validate_config_payload("TICKER_POOL_RULES", payload)
+    assert "top_n 必须是 1 到 50 的整数 (当前排名契约上限为 50)" in validate_config_payload(
+        "TICKER_POOL_RULES", payload
     )
 
 
@@ -145,7 +179,7 @@ def test_eligible_pool_requires_explicit_kline_status_inference_threshold() -> N
 def test_duplicate_config_semver_has_actionable_conflict_message() -> None:
     error = MagicMock()
     error.orig = Exception(
-        'duplicate key value violates unique constraint '
+        "duplicate key value violates unique constraint "
         '"training_config_versions_config_type_semver_key"'
     )
 
@@ -217,8 +251,8 @@ def test_model_b_search_space_rejects_model_a_or_over_24h_rules() -> None:
             "parameters": {"cooldown_bars": [1, 12]},
         },
     )
-    assert "model_family 必须为 RULE_BASED_EXIT_V1" in model_a_errors
-    assert "parameters 必须精确包含五个模型 B 退出参数" in model_a_errors
+    assert "model_family 必须为 RULE_BASED_EXIT_V2" in model_a_errors
+    assert "parameters 必须精确包含三个模型 B V2 搜索参数" in model_a_errors
 
     payload = dict(MODEL_B_DRAFT_TEMPLATES["MODEL_B_SEARCH_SPACE"])
     payload["parameters"] = dict(payload["parameters"])
@@ -226,10 +260,22 @@ def test_model_b_search_space_rejects_model_a_or_over_24h_rules() -> None:
         "kind": "categorical",
         "choices": [86700],
     }
-    assert (
-        "max_holding_seconds choices 必须按 5m 对齐且不超过 24h"
-        in validate_config_payload("MODEL_B_SEARCH_SPACE", payload)
+    assert "max_holding_seconds choices 必须按 5m 对齐且不超过 24h" in validate_config_payload(
+        "MODEL_B_SEARCH_SPACE", payload
     )
+
+
+def test_v2_exit_rules_reject_non_monotone_or_full_position_levels() -> None:
+    payload = deepcopy(MODEL_B_DRAFT_TEMPLATES["EXIT_RULES"])
+    payload["partial_take_profit"]["levels"][1]["trigger_profit_percent"] = 9
+    payload["partial_take_profit"]["levels"][0]["close_fraction"] = 1
+    payload["stop_schedule"]["levels"][2]["locked_profit_percent"] = 4
+
+    errors = validate_config_payload("EXIT_RULES", payload)
+
+    assert "部分止盈触发收益必须严格递增" in errors
+    assert "每档 close_fraction 必须在 0 和 1 之间" in errors
+    assert "锁定收益必须非负、不可回退且低于对应触发收益" in errors
 
 
 def test_database_row_is_converted_without_duplicate_config_json_argument() -> None:

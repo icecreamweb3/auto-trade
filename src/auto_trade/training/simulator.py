@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -30,6 +31,7 @@ class ExitReason(StrEnum):
 
 class ExitAction(StrEnum):
     HOLD = "HOLD"
+    REDUCE = "REDUCE"
     MOVE_STOP = "MOVE_STOP"
     EXIT = "EXIT"
 
@@ -132,6 +134,30 @@ class SlippageModel:
 
 
 @dataclass(frozen=True, slots=True)
+class PartialTakeProfitLevel:
+    trigger_profit_percent: Decimal
+    close_fraction: Decimal
+
+    def __post_init__(self) -> None:
+        _positive(self.trigger_profit_percent, "trigger_profit_percent")
+        _positive(self.close_fraction, "close_fraction")
+        if self.close_fraction >= 1:
+            raise SimulationContractError("partial close_fraction must be below one")
+
+
+@dataclass(frozen=True, slots=True)
+class StopScheduleLevel:
+    trigger_profit_percent: Decimal
+    locked_profit_percent: Decimal
+
+    def __post_init__(self) -> None:
+        _positive(self.trigger_profit_percent, "trigger_profit_percent")
+        _non_negative(self.locked_profit_percent, "locked_profit_percent")
+        if self.locked_profit_percent >= self.trigger_profit_percent:
+            raise SimulationContractError("locked profit must remain below its trigger")
+
+
+@dataclass(frozen=True, slots=True)
 class FixedExitPolicy:
     version_id: UUID
     stop_loss_percent: Decimal
@@ -140,20 +166,145 @@ class FixedExitPolicy:
     trailing_distance_percent: Decimal
     max_holding: timedelta
     conflict_policy: IntrabarConflictPolicy
+    model_family: str = "RULE_BASED_EXIT_V1"
+    partial_take_profit_levels: tuple[PartialTakeProfitLevel, ...] = ()
+    stop_schedule_levels: tuple[StopScheduleLevel, ...] = ()
+    high_water_trailing_activation_percent: Decimal = Decimal(0)
+    high_water_max_drawdown_percent: Decimal = Decimal(0)
+    return_basis: str = "ENTRY_FILL_PRICE_PERCENT"
+    partial_fraction_basis: str = "REMAINING_POSITION"
+    rule_activation_timing: str = "NEXT_BAR"
 
     def __post_init__(self) -> None:
         _positive(self.stop_loss_percent, "stop_loss_percent")
-        _positive(self.take_profit_percent, "take_profit_percent")
         _non_negative(self.trailing_activation_percent, "trailing_activation_percent")
         _non_negative(self.trailing_distance_percent, "trailing_distance_percent")
-        if bool(self.trailing_activation_percent) != bool(self.trailing_distance_percent):
-            raise SimulationContractError(
-                "trailing activation and distance must both be zero or positive"
-            )
         if self.max_holding <= timedelta(0):
             raise SimulationContractError("max_holding must be positive")
         if self.conflict_policy is not IntrabarConflictPolicy.WORST_CASE:
             raise SimulationContractError("5m prototype requires WORST_CASE conflicts")
+        if self.model_family == "RULE_BASED_EXIT_V1":
+            _positive(self.take_profit_percent, "take_profit_percent")
+            if bool(self.trailing_activation_percent) != bool(self.trailing_distance_percent):
+                raise SimulationContractError(
+                    "trailing activation and distance must both be zero or positive"
+                )
+            if self.partial_take_profit_levels or self.stop_schedule_levels:
+                raise SimulationContractError("V1 policy cannot contain V2 schedules")
+            return
+        if self.model_family != "RULE_BASED_EXIT_V2":
+            raise SimulationContractError("unsupported rule-based exit model family")
+        if (
+            self.take_profit_percent != 0
+            or self.trailing_activation_percent != 0
+            or self.trailing_distance_percent != 0
+        ):
+            raise SimulationContractError("V2 policy cannot mix V1 exit parameters")
+        if self.return_basis != "ENTRY_FILL_PRICE_PERCENT":
+            raise SimulationContractError("V2 return basis must use the entry fill price")
+        if self.partial_fraction_basis != "REMAINING_POSITION":
+            raise SimulationContractError("V2 partial exits must use remaining position")
+        if self.rule_activation_timing != "NEXT_BAR":
+            raise SimulationContractError("V2 stop changes must activate on the next bar")
+        if not self.partial_take_profit_levels or not self.stop_schedule_levels:
+            raise SimulationContractError("V2 requires partial-profit and stop schedules")
+        partial_triggers = tuple(
+            level.trigger_profit_percent for level in self.partial_take_profit_levels
+        )
+        stop_triggers = tuple(level.trigger_profit_percent for level in self.stop_schedule_levels)
+        if partial_triggers != tuple(sorted(set(partial_triggers))):
+            raise SimulationContractError("partial-profit triggers must strictly increase")
+        if stop_triggers != tuple(sorted(set(stop_triggers))):
+            raise SimulationContractError("stop-schedule triggers must strictly increase")
+        locked = tuple(level.locked_profit_percent for level in self.stop_schedule_levels)
+        if locked != tuple(sorted(locked)):
+            raise SimulationContractError("locked profits cannot move backward")
+        _positive(
+            self.high_water_trailing_activation_percent,
+            "high_water_trailing_activation_percent",
+        )
+        _positive(self.high_water_max_drawdown_percent, "high_water_max_drawdown_percent")
+        if self.high_water_max_drawdown_percent >= self.high_water_trailing_activation_percent:
+            raise SimulationContractError("high-water drawdown must be below activation")
+
+
+def fixed_exit_policy_from_config(
+    version_id: UUID,
+    config: Mapping[str, object],
+) -> FixedExitPolicy:
+    """Parse a frozen governed config without rewriting legacy V1 evidence."""
+
+    def decimal(field: str, source: Mapping[str, object] = config) -> Decimal:
+        value = source.get(field)
+        if isinstance(value, bool) or value is None:
+            raise SimulationContractError(f"trusted EXIT_RULES is missing {field}")
+        try:
+            return Decimal(str(value))
+        except (ValueError, ArithmeticError) as error:
+            raise SimulationContractError(f"trusted EXIT_RULES has invalid {field}") from error
+
+    try:
+        conflict = IntrabarConflictPolicy(str(config["intrabar_conflict_policy"]))
+        max_holding = timedelta(seconds=int(decimal("max_holding_seconds")))
+    except (KeyError, ValueError, OverflowError) as error:
+        raise SimulationContractError("trusted EXIT_RULES has invalid boundaries") from error
+    family = str(config.get("model_family", "RULE_BASED_EXIT_V1"))
+    if family == "RULE_BASED_EXIT_V1":
+        return FixedExitPolicy(
+            version_id,
+            decimal("stop_loss_percent"),
+            decimal("take_profit_percent"),
+            decimal("trailing_activation_percent"),
+            decimal("trailing_distance_percent"),
+            max_holding,
+            conflict,
+        )
+    partial = config.get("partial_take_profit")
+    stop_schedule = config.get("stop_schedule")
+    if not isinstance(partial, Mapping) or not isinstance(stop_schedule, Mapping):
+        raise SimulationContractError("V2 EXIT_RULES schedules must be objects")
+    raw_partial_levels = partial.get("levels")
+    raw_stop_levels = stop_schedule.get("levels")
+    if not isinstance(raw_partial_levels, list) or not isinstance(raw_stop_levels, list):
+        raise SimulationContractError("V2 EXIT_RULES levels must be arrays")
+    try:
+        partial_levels = tuple(
+            PartialTakeProfitLevel(
+                decimal("trigger_profit_percent", level),
+                decimal("close_fraction", level),
+            )
+            for level in raw_partial_levels
+            if isinstance(level, Mapping)
+        )
+        stop_levels = tuple(
+            StopScheduleLevel(
+                decimal("trigger_profit_percent", level),
+                decimal("locked_profit_percent", level),
+            )
+            for level in raw_stop_levels
+            if isinstance(level, Mapping)
+        )
+    except SimulationContractError:
+        raise
+    if len(partial_levels) != len(raw_partial_levels) or len(stop_levels) != len(raw_stop_levels):
+        raise SimulationContractError("V2 EXIT_RULES level entries must be objects")
+    return FixedExitPolicy(
+        version_id,
+        decimal("initial_stop_loss_percent"),
+        Decimal(0),
+        Decimal(0),
+        Decimal(0),
+        max_holding,
+        conflict,
+        family,
+        partial_levels,
+        stop_levels,
+        decimal("high_water_trailing_activation_percent", stop_schedule),
+        decimal("high_water_max_drawdown_percent", stop_schedule),
+        str(config.get("return_basis", "")),
+        str(partial.get("fraction_basis", "")),
+        str(config.get("rule_activation_timing", "")),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,7 +335,7 @@ class SimulationBar:
         _finite(self.funding_rate, "funding_rate")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class ExitDecision:
     sequence_no: int
     decision_time: datetime
@@ -195,6 +346,58 @@ class ExitDecision:
     reference_price: Decimal | None
     fill_price: Decimal | None
     slippage_basis_points: Decimal | None
+    fills: tuple[ExitFill, ...] = ()
+    remaining_quantity_after: Decimal | None = None
+
+    def __repr__(self) -> str:
+        fields = (
+            f"sequence_no={self.sequence_no!r}, decision_time={self.decision_time!r}, "
+            f"action={self.action!r}, reason={self.reason!r}, "
+            f"stop_price_before={self.stop_price_before!r}, "
+            f"stop_price_after={self.stop_price_after!r}, "
+            f"reference_price={self.reference_price!r}, fill_price={self.fill_price!r}, "
+            f"slippage_basis_points={self.slippage_basis_points!r}"
+        )
+        if self.fills or self.remaining_quantity_after is not None:
+            fields += (
+                f", fills={self.fills!r}, "
+                f"remaining_quantity_after={self.remaining_quantity_after!r}"
+            )
+        return f"ExitDecision({fields})"
+
+
+@dataclass(frozen=True, slots=True)
+class ExitFill:
+    fill_time: datetime
+    reference_price: Decimal
+    fill_price: Decimal
+    quantity: Decimal
+    fee: Decimal
+    slippage_cost: Decimal
+    reason: str
+
+
+def exit_decision_position_state(direction: Direction, decision: ExitDecision) -> dict[str, object]:
+    state: dict[str, object] = {
+        "direction": direction.value,
+        "stop_after": decision.stop_price_after,
+        "stop_before": decision.stop_price_before,
+    }
+    if decision.remaining_quantity_after is not None:
+        state["remaining_quantity_after"] = decision.remaining_quantity_after
+        state["fills"] = [
+            {
+                "fee": fill.fee,
+                "fill_price": fill.fill_price,
+                "fill_time": fill.fill_time,
+                "quantity": fill.quantity,
+                "reason": fill.reason,
+                "reference_price": fill.reference_price,
+                "slippage_cost": fill.slippage_cost,
+            }
+            for fill in decision.fills
+        ]
+    return state
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +422,7 @@ class FixedExitResult:
     slippage_total: Decimal
     net_pnl: Decimal
     decisions: tuple[ExitDecision, ...]
+    exit_fills: tuple[ExitFill, ...]
     result_hash: str
 
 
@@ -340,10 +544,13 @@ class FixedExitReplay:
         self.holding_end = self.entry_time + policy.max_holding
         self.entry_fill: Decimal | None = None
         self.quantity: Decimal | None = None
+        self.remaining_quantity: Decimal | None = None
         self.stop: Decimal | None = None
         self.hard_stop: Decimal | None = None
         self.target: Decimal | None = None
         self.funding_total = Decimal(0)
+        self.exit_fills: list[ExitFill] = []
+        self._next_partial_level = 0
         self.decisions: list[ExitDecision] = []
         self.result: FixedExitResult | None = None
         self._last_close_time: datetime | None = None
@@ -366,34 +573,43 @@ class FixedExitReplay:
                 entering=True,
             )
             self.quantity = self.notional / self.entry_fill
+            self.remaining_quantity = self.quantity
             self.stop = _initial_stop(
                 self.entry_fill, self.direction, self.policy.stop_loss_percent
             )
             self.hard_stop = self.stop
-            self.target = _target(self.entry_fill, self.direction, self.policy.take_profit_percent)
+            if self.policy.model_family == "RULE_BASED_EXIT_V1":
+                self.target = _target(
+                    self.entry_fill, self.direction, self.policy.take_profit_percent
+                )
         elif bar.open_time != self._last_close_time:
             raise SimulationContractError("simulation bars must be contiguous and ordered")
         if bar.open_time >= self.holding_end:
             raise SimulationContractError("bar starts after the maximum holding boundary")
         assert self.quantity is not None
+        assert self.remaining_quantity is not None
         assert self.stop is not None
         assert self.hard_stop is not None
-        assert self.target is not None
         assert self.entry_fill is not None
         funding_direction = Decimal(1) if self.direction is Direction.LONG else Decimal(-1)
-        self.funding_total += self.quantity * bar.close_price * bar.funding_rate * funding_direction
+        self.funding_total += (
+            self.remaining_quantity * bar.close_price * bar.funding_rate * funding_direction
+        )
         stop_hit = (
             bar.low_price <= self.stop
             if self.direction is Direction.LONG
             else bar.high_price >= self.stop
         )
-        target_hit = (
-            bar.high_price >= self.target
-            if self.direction is Direction.LONG
-            else bar.low_price <= self.target
-        )
+        target_hit = False
+        if self.target is not None:
+            target_hit = (
+                bar.high_price >= self.target
+                if self.direction is Direction.LONG
+                else bar.low_price <= self.target
+            )
         exit_reference: Decimal | None = None
         exit_reason: ExitReason | None = None
+        decision_fills: list[ExitFill] = []
         if stop_hit:
             exit_reference = (
                 min(bar.open_price, self.stop)
@@ -404,20 +620,35 @@ class FixedExitReplay:
                 ExitReason.STOP_LOSS if self.stop == self.hard_stop else ExitReason.TRAILING_STOP
             )
         elif target_hit:
+            assert self.target is not None
             exit_reference = self.target
             exit_reason = ExitReason.TAKE_PROFIT
-        elif bar.close_time >= self.holding_end:
+        elif self.policy.model_family == "RULE_BASED_EXIT_V2":
+            decision_fills.extend(self._apply_partial_take_profits(bar))
+        if exit_reason is None and bar.close_time >= self.holding_end:
             exit_reference = bar.close_price
             exit_reason = ExitReason.MAX_HOLDING
         sequence = len(self.decisions) + 1
         if exit_reason is not None:
             assert exit_reference is not None
+            assert self.remaining_quantity > 0
             exit_bps = self.slippage_model.basis_points(
-                notional=self.quantity * exit_reference,
+                notional=self.remaining_quantity * exit_reference,
                 available_quote_notional=bar.available_quote_notional,
                 volatility_percent=bar.volatility_percent,
             )
             exit_fill = _adverse_fill(exit_reference, self.direction, exit_bps, entering=False)
+            terminal_fill = self._exit_fill(
+                min(bar.close_time, self.holding_end),
+                exit_reference,
+                exit_fill,
+                self.remaining_quantity,
+                exit_bps,
+                exit_reason.value,
+            )
+            decision_fills.append(terminal_fill)
+            self.exit_fills.extend(decision_fills)
+            self.remaining_quantity = Decimal(0)
             decision = ExitDecision(
                 sequence,
                 min(bar.close_time, self.holding_end),
@@ -428,10 +659,101 @@ class FixedExitReplay:
                 exit_reference,
                 exit_fill,
                 exit_bps,
+                tuple(decision_fills) if self.policy.model_family == "RULE_BASED_EXIT_V2" else (),
+                self.remaining_quantity
+                if self.policy.model_family == "RULE_BASED_EXIT_V2"
+                else None,
             )
             self.decisions.append(decision)
             self.result = self._build_result(decision, exit_reason)
         else:
+            new_stop = self._next_stop(bar)
+            if decision_fills:
+                self.exit_fills.extend(decision_fills)
+                action = ExitAction.REDUCE
+                reason = (
+                    "PARTIAL_TAKE_PROFIT_AND_STOP_SCHEDULE"
+                    if new_stop != self.stop
+                    else "PARTIAL_TAKE_PROFIT"
+                )
+                reference_price = self._weighted_fill_value(decision_fills, "reference_price")
+                fill_price = self._weighted_fill_value(decision_fills, "fill_price")
+                slip_bps = sum(
+                    (
+                        fill.slippage_cost
+                        / (fill.quantity * fill.reference_price)
+                        * Decimal(10_000)
+                        * fill.quantity
+                        for fill in decision_fills
+                    ),
+                    start=Decimal(0),
+                ) / sum((fill.quantity for fill in decision_fills), start=Decimal(0))
+            else:
+                action = ExitAction.MOVE_STOP if new_stop != self.stop else ExitAction.HOLD
+                reason = "TRAILING_RULE" if action is ExitAction.MOVE_STOP else "NO_EXIT_TRIGGER"
+                reference_price = None
+                fill_price = None
+                slip_bps = None
+            decision = ExitDecision(
+                sequence,
+                bar.close_time,
+                action,
+                reason,
+                self.stop,
+                new_stop,
+                reference_price,
+                fill_price,
+                slip_bps,
+                tuple(decision_fills) if self.policy.model_family == "RULE_BASED_EXIT_V2" else (),
+                self.remaining_quantity
+                if self.policy.model_family == "RULE_BASED_EXIT_V2"
+                else None,
+            )
+            self.decisions.append(decision)
+            self.stop = new_stop
+        self._last_close_time = bar.close_time
+        return decision
+
+    def _apply_partial_take_profits(self, bar: SimulationBar) -> list[ExitFill]:
+        assert self.entry_fill is not None
+        assert self.remaining_quantity is not None
+        fills: list[ExitFill] = []
+        levels = self.policy.partial_take_profit_levels
+        while self._next_partial_level < len(levels):
+            level = levels[self._next_partial_level]
+            reference = _target(self.entry_fill, self.direction, level.trigger_profit_percent)
+            crossed = (
+                bar.high_price >= reference
+                if self.direction is Direction.LONG
+                else bar.low_price <= reference
+            )
+            if not crossed:
+                break
+            quantity = self.remaining_quantity * level.close_fraction
+            bps = self.slippage_model.basis_points(
+                notional=quantity * reference,
+                available_quote_notional=bar.available_quote_notional,
+                volatility_percent=bar.volatility_percent,
+            )
+            fill_price = _adverse_fill(reference, self.direction, bps, entering=False)
+            fills.append(
+                self._exit_fill(
+                    bar.close_time,
+                    reference,
+                    fill_price,
+                    quantity,
+                    bps,
+                    f"PARTIAL_TAKE_PROFIT_{self._next_partial_level + 1}",
+                )
+            )
+            self.remaining_quantity -= quantity
+            self._next_partial_level += 1
+        return fills
+
+    def _next_stop(self, bar: SimulationBar) -> Decimal:
+        assert self.entry_fill is not None
+        assert self.stop is not None
+        if self.policy.model_family == "RULE_BASED_EXIT_V1":
             new_stop = self.stop
             if self.policy.trailing_activation_percent > 0:
                 activation = _target(
@@ -449,22 +771,58 @@ class FixedExitReplay:
                         self.stop,
                         bar.low_price * (Decimal(1) + self.policy.trailing_distance_percent / 100),
                     )
-            action = ExitAction.MOVE_STOP if new_stop != self.stop else ExitAction.HOLD
-            decision = ExitDecision(
-                sequence,
-                bar.close_time,
-                action,
-                "TRAILING_RULE" if action is ExitAction.MOVE_STOP else "NO_EXIT_TRIGGER",
-                self.stop,
-                new_stop,
-                None,
-                None,
-                None,
+            return new_stop
+        favorable_price = bar.high_price if self.direction is Direction.LONG else bar.low_price
+        favorable_profit = (
+            (favorable_price - self.entry_fill) / self.entry_fill * 100
+            if self.direction is Direction.LONG
+            else (self.entry_fill - favorable_price) / self.entry_fill * 100
+        )
+        locked_profit: Decimal | None = None
+        for level in self.policy.stop_schedule_levels:
+            if favorable_profit >= level.trigger_profit_percent:
+                locked_profit = level.locked_profit_percent
+        if favorable_profit >= self.policy.high_water_trailing_activation_percent:
+            high_water_lock = favorable_profit - self.policy.high_water_max_drawdown_percent
+            locked_profit = max(locked_profit or Decimal(0), high_water_lock)
+        if locked_profit is None:
+            return self.stop
+        scheduled_stop = _target(self.entry_fill, self.direction, locked_profit)
+        return (
+            max(self.stop, scheduled_stop)
+            if self.direction is Direction.LONG
+            else min(self.stop, scheduled_stop)
+        )
+
+    def _exit_fill(
+        self,
+        fill_time: datetime,
+        reference_price: Decimal,
+        fill_price: Decimal,
+        quantity: Decimal,
+        slippage_basis_points: Decimal,
+        reason: str,
+    ) -> ExitFill:
+        return ExitFill(
+            fill_time,
+            reference_price,
+            fill_price,
+            quantity,
+            quantity * fill_price * self.fee_model.exit_taker_rate,
+            quantity * abs(fill_price - reference_price),
+            reason,
+        )
+
+    @staticmethod
+    def _weighted_fill_value(fills: list[ExitFill], field: str) -> Decimal:
+        quantity = sum((fill.quantity for fill in fills), start=Decimal(0))
+        return (
+            sum(
+                (getattr(fill, field) * fill.quantity for fill in fills),
+                start=Decimal(0),
             )
-            self.decisions.append(decision)
-            self.stop = new_stop
-        self._last_close_time = bar.close_time
-        return decision
+            / quantity
+        )
 
     def _build_result(
         self, exit_decision: ExitDecision, exit_reason: ExitReason
@@ -476,14 +834,20 @@ class FixedExitReplay:
         exit_fill = exit_decision.fill_price
         exit_reference = exit_decision.reference_price
         entry_fee = self.notional * self.fee_model.entry_taker_rate
-        exit_fee = self.quantity * exit_fill * self.fee_model.exit_taker_rate
-        gross_pnl = (
-            self.quantity * (exit_fill - self.entry_fill)
-            if self.direction is Direction.LONG
-            else self.quantity * (self.entry_fill - exit_fill)
+        exit_fee = sum((fill.fee for fill in self.exit_fills), start=Decimal(0))
+        gross_pnl = sum(
+            (
+                (
+                    fill.quantity * (fill.fill_price - self.entry_fill)
+                    if self.direction is Direction.LONG
+                    else fill.quantity * (self.entry_fill - fill.fill_price)
+                )
+                for fill in self.exit_fills
+            ),
+            start=Decimal(0),
         )
         entry_slippage = self.quantity * abs(self.entry_fill - self.entry_reference_price)
-        exit_slippage = self.quantity * abs(exit_fill - exit_reference)
+        exit_slippage = sum((fill.slippage_cost for fill in self.exit_fills), start=Decimal(0))
         slippage_total = entry_slippage + exit_slippage
         net_pnl = gross_pnl - entry_fee - exit_fee - self.funding_total
         payload = {
@@ -498,6 +862,8 @@ class FixedExitReplay:
             "policy_version_id": self.policy.version_id,
             "slippage_model_version_id": self.slippage_model.version_id,
         }
+        if self.policy.model_family == "RULE_BASED_EXIT_V2":
+            payload["exit_fills"] = self.exit_fills
         return FixedExitResult(
             self.entry_event_id,
             self.direction,
@@ -519,6 +885,7 @@ class FixedExitReplay:
             slippage_total,
             net_pnl,
             tuple(self.decisions),
+            tuple(self.exit_fills),
             _canonical_hash(payload),
         )
 

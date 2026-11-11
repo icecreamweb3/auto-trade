@@ -4807,6 +4807,7 @@ interface TrainingConfigInventory {
   model_b_missing_ready_types: string[];
   model_b_ready_complete: boolean;
   draft_templates: Record<string, Record<string, unknown>>;
+  draft_schema_versions: Record<string, number>;
   can_edit: boolean;
   can_approve: boolean;
   versions: TrainingConfigVersion[];
@@ -4902,7 +4903,11 @@ function TrainingConfigManager() {
     const draftTemplate = selectedType ? inventory?.draft_templates[selectedType] : undefined;
     setEditing(true);
     setSemver(version?.semver ?? nextTrainingConfigSemver(versions));
-    setSchemaVersion(baseVersion?.schema_version ?? 1);
+    setSchemaVersion(
+      baseVersion?.schema_version
+      ?? (selectedType ? inventory?.draft_schema_versions[selectedType] : undefined)
+      ?? 1,
+    );
     setParentId(version?.parent_version_id ?? baseVersion?.config_version_id ?? "");
     setJsonText(`${JSON.stringify(baseVersion?.config_json ?? draftTemplate ?? {}, null, 2)}\n`);
     setReason("");

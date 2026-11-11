@@ -97,33 +97,59 @@ CONFIG_LABELS = {
 
 MODEL_B_DRAFT_TEMPLATES: dict[str, dict[str, Any]] = {
     "EXIT_RULES": {
-        "stop_loss_percent": 2.0,
-        "take_profit_percent": 3.0,
-        "trailing_activation_percent": 0.0,
-        "trailing_distance_percent": 0.0,
+        "model_family": "RULE_BASED_EXIT_V2",
+        "return_basis": "ENTRY_FILL_PRICE_PERCENT",
+        "initial_stop_loss_percent": 5.0,
+        "partial_take_profit": {
+            "fraction_basis": "REMAINING_POSITION",
+            "levels": [
+                {"trigger_profit_percent": 10.0, "close_fraction": 0.20},
+                {"trigger_profit_percent": 15.0, "close_fraction": 0.20},
+                {"trigger_profit_percent": 25.0, "close_fraction": 0.20},
+                {"trigger_profit_percent": 35.0, "close_fraction": 0.20},
+            ],
+        },
+        "stop_schedule": {
+            "levels": [
+                {"trigger_profit_percent": 10.0, "locked_profit_percent": 1.0},
+                {"trigger_profit_percent": 15.0, "locked_profit_percent": 5.0},
+                {"trigger_profit_percent": 25.0, "locked_profit_percent": 15.0},
+                {"trigger_profit_percent": 35.0, "locked_profit_percent": 25.0},
+            ],
+            "high_water_trailing_activation_percent": 25.0,
+            "high_water_max_drawdown_percent": 10.0,
+        },
         "max_holding_seconds": 86400,
         "intrabar_conflict_policy": "WORST_CASE",
+        "rule_activation_timing": "NEXT_BAR",
     },
     "MODEL_B_SEARCH_SPACE": {
-        "model_family": "RULE_BASED_EXIT_V1",
+        "model_family": "RULE_BASED_EXIT_V2",
         "interval_seconds": 300,
         "hard_max_holding_seconds": 86400,
+        "policy_templates": {
+            "FOUR_STAGE_20_REMAINING_V1": {
+                "partial_trigger_profit_percents": [10.0, 15.0, 25.0, 35.0],
+                "partial_close_fraction": 0.20,
+                "stop_locked_profit_percents": [1.0, 5.0, 15.0, 25.0],
+                "high_water_trailing_activation_percent": 25.0,
+                "high_water_max_drawdown_percent": 10.0,
+            }
+        },
         "parameters": {
             "max_holding_seconds": {
                 "kind": "categorical",
                 "choices": [21600, 43200, 64800, 86400],
             },
-            "stop_loss_percent": {
-                "kind": "numeric", "minimum": 0.5, "maximum": 5.0, "integer": False,
+            "initial_stop_loss_percent": {
+                "kind": "numeric",
+                "minimum": 2.0,
+                "maximum": 10.0,
+                "integer": False,
             },
-            "take_profit_percent": {
-                "kind": "numeric", "minimum": 1.0, "maximum": 12.0, "integer": False,
-            },
-            "trailing_activation_percent": {
-                "kind": "numeric", "minimum": 0.5, "maximum": 6.0, "integer": False,
-            },
-            "trailing_distance_percent": {
-                "kind": "numeric", "minimum": 0.25, "maximum": 3.0, "integer": False,
+            "exit_policy_template": {
+                "kind": "categorical",
+                "choices": ["FOUR_STAGE_20_REMAINING_V1"],
             },
         },
     },
@@ -153,6 +179,11 @@ MODEL_B_DRAFT_TEMPLATES: dict[str, dict[str, Any]] = {
     },
 }
 
+MODEL_B_DRAFT_SCHEMA_VERSIONS: dict[str, int] = {
+    config_type: 2 if config_type in {"EXIT_RULES", "MODEL_B_SEARCH_SPACE"} else 1
+    for config_type in MODEL_B_DRAFT_TEMPLATES
+}
+
 
 def _is_number(value: Any) -> TypeGuard[int | float | Decimal]:
     return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
@@ -180,24 +211,22 @@ def _number_at_least(
 def _validate_model_b_parameter_rules(payload: dict[str, Any], errors: list[str]) -> None:
     expected = {
         "max_holding_seconds",
-        "stop_loss_percent",
-        "take_profit_percent",
-        "trailing_activation_percent",
-        "trailing_distance_percent",
+        "initial_stop_loss_percent",
+        "exit_policy_template",
     }
     parameters = payload.get("parameters")
     if not isinstance(parameters, dict) or set(parameters) != expected:
-        errors.append("parameters 必须精确包含五个模型 B 退出参数")
+        errors.append("parameters 必须精确包含三个模型 B V2 搜索参数")
         return
     for name, raw_rule in parameters.items():
         if not isinstance(raw_rule, dict):
             errors.append(f"{name} 参数规则必须是对象")
             continue
         kind = raw_rule.get("kind")
-        if name == "max_holding_seconds" and kind != "categorical":
-            errors.append("max_holding_seconds 必须使用 categorical choices")
+        if name in {"max_holding_seconds", "exit_policy_template"} and kind != "categorical":
+            errors.append(f"{name} 必须使用 categorical choices")
             continue
-        if name != "max_holding_seconds" and kind != "numeric":
+        if name == "initial_stop_loss_percent" and kind != "numeric":
             errors.append(f"{name} 必须使用 numeric 范围")
             continue
         if kind == "numeric":
@@ -224,8 +253,102 @@ def _validate_model_b_parameter_rules(payload: dict[str, Any], errors: list[str]
                 for value in choices
             ):
                 errors.append("max_holding_seconds choices 必须按 5m 对齐且不超过 24h")
+            if name == "exit_policy_template":
+                templates = payload.get("policy_templates")
+                if not isinstance(templates, dict) or any(
+                    not isinstance(value, str) or value not in templates for value in choices
+                ):
+                    errors.append("exit_policy_template choices 必须引用已声明模板")
         else:
             errors.append(f"{name}.kind 必须为 numeric 或 categorical")
+
+
+def _strictly_increasing(values: list[Any]) -> bool:
+    return bool(values) and all(
+        _is_number(value) and (index == 0 or value > values[index - 1])
+        for index, value in enumerate(values)
+    )
+
+
+def _validate_v2_exit_rules(payload: dict[str, Any], errors: list[str]) -> None:
+    expected = {
+        "model_family",
+        "return_basis",
+        "initial_stop_loss_percent",
+        "partial_take_profit",
+        "stop_schedule",
+        "max_holding_seconds",
+        "intrabar_conflict_policy",
+        "rule_activation_timing",
+    }
+    if set(payload) != expected:
+        errors.append("RULE_BASED_EXIT_V2 字段集合不符合治理契约")
+    if payload.get("return_basis") != "ENTRY_FILL_PRICE_PERCENT":
+        errors.append("return_basis 必须为 ENTRY_FILL_PRICE_PERCENT")
+    _number_at_least(payload, "initial_stop_loss_percent", 0, errors, strict=True)
+    partial = payload.get("partial_take_profit")
+    if not isinstance(partial, dict):
+        errors.append("partial_take_profit 必须是对象")
+    else:
+        if partial.get("fraction_basis") != "REMAINING_POSITION":
+            errors.append("fraction_basis 必须为 REMAINING_POSITION")
+        levels = partial.get("levels")
+        if not isinstance(levels, list) or len(levels) != 4:
+            errors.append("partial_take_profit.levels 必须包含四个阶梯")
+        else:
+            triggers = [
+                level.get("trigger_profit_percent") for level in levels if isinstance(level, dict)
+            ]
+            fractions = [level.get("close_fraction") for level in levels if isinstance(level, dict)]
+            if len(triggers) != len(levels) or not _strictly_increasing(triggers):
+                errors.append("部分止盈触发收益必须严格递增")
+            if len(fractions) != len(levels) or any(
+                not _is_number(value) or not 0 < value < 1 for value in fractions
+            ):
+                errors.append("每档 close_fraction 必须在 0 和 1 之间")
+    schedule = payload.get("stop_schedule")
+    if not isinstance(schedule, dict):
+        errors.append("stop_schedule 必须是对象")
+    else:
+        levels = schedule.get("levels")
+        if not isinstance(levels, list) or len(levels) != 4:
+            errors.append("stop_schedule.levels 必须包含四个阶梯")
+        else:
+            triggers = [
+                level.get("trigger_profit_percent") for level in levels if isinstance(level, dict)
+            ]
+            locked = [
+                level.get("locked_profit_percent") for level in levels if isinstance(level, dict)
+            ]
+            if len(triggers) != len(levels) or not _strictly_increasing(triggers):
+                errors.append("移动止损触发收益必须严格递增")
+            locked_valid = len(locked) == len(levels)
+            previous: int | float | Decimal | None = None
+            for index, value in enumerate(locked):
+                trigger = triggers[index] if index < len(triggers) else None
+                if (
+                    not _is_number(value)
+                    or not _is_number(trigger)
+                    or value < 0
+                    or value >= trigger
+                    or (previous is not None and value < previous)
+                ):
+                    locked_valid = False
+                    break
+                previous = value
+            if not locked_valid:
+                errors.append("锁定收益必须非负、不可回退且低于对应触发收益")
+        activation = schedule.get("high_water_trailing_activation_percent")
+        drawdown = schedule.get("high_water_max_drawdown_percent")
+        if (
+            not _is_number(activation)
+            or not _is_number(drawdown)
+            or drawdown <= 0
+            or activation <= drawdown
+        ):
+            errors.append("最高水位启动值必须大于正的最大回撤值")
+    if payload.get("rule_activation_timing") != "NEXT_BAR":
+        errors.append("rule_activation_timing 必须为 NEXT_BAR")
 
 
 def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[str, ...]:
@@ -259,8 +382,8 @@ def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[
         if not isinstance(payload.get("parameters"), dict) or not payload["parameters"]:
             errors.append("parameters 必须是非空 Optuna 参数对象")
     elif config_type == "MODEL_B_SEARCH_SPACE":
-        if payload.get("model_family") != "RULE_BASED_EXIT_V1":
-            errors.append("model_family 必须为 RULE_BASED_EXIT_V1")
+        if payload.get("model_family") != "RULE_BASED_EXIT_V2":
+            errors.append("model_family 必须为 RULE_BASED_EXIT_V2")
         if payload.get("interval_seconds") != 300:
             errors.append("interval_seconds 必须为 300")
         if payload.get("hard_max_holding_seconds") != 86400:
@@ -447,17 +570,10 @@ def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[
         ):
             _positive_integer(payload, key, errors)
     elif config_type == "EXIT_RULES":
-        for key in (
-            "stop_loss_percent",
-            "take_profit_percent",
-        ):
-            _number_at_least(payload, key, 0, errors, strict=True)
-        for key in ("trailing_activation_percent", "trailing_distance_percent"):
-            _number_at_least(payload, key, 0, errors)
-        activation = payload.get("trailing_activation_percent")
-        distance = payload.get("trailing_distance_percent")
-        if _is_number(activation) and _is_number(distance) and bool(activation) != bool(distance):
-            errors.append("移动止损启动阈值和距离必须同时为 0 或同时大于 0")
+        if payload.get("model_family") != "RULE_BASED_EXIT_V2":
+            errors.append("model_family 必须为 RULE_BASED_EXIT_V2")
+        else:
+            _validate_v2_exit_rules(payload, errors)
         holding = payload.get("max_holding_seconds")
         if (
             not isinstance(holding, int)
@@ -546,6 +662,7 @@ class ConfigInventory(BaseModel):
     model_b_missing_ready_types: tuple[str, ...]
     model_b_ready_complete: bool
     draft_templates: dict[str, dict[str, Any]]
+    draft_schema_versions: dict[str, int]
     can_edit: bool
     can_approve: bool
     versions: tuple[ConfigVersion, ...]
@@ -614,6 +731,17 @@ def _build_ready_export(
         "manifest_hash": manifest_hash,
         "configs": configs,
     }
+
+
+def _is_model_b_ready(version: ConfigVersion) -> bool:
+    if version.status != "READY":
+        return False
+    if version.config_type not in {"EXIT_RULES", "MODEL_B_SEARCH_SPACE"}:
+        return True
+    return (
+        version.schema_version == 2
+        and version.config_json.get("model_family") == "RULE_BASED_EXIT_V2"
+    )
 
 
 class ConfigDraftCreate(BaseModel):
@@ -750,8 +878,11 @@ async def list_configs(request: Request, user: ConfigReader) -> ConfigInventory:
     versions = tuple(_row_to_version(row) for row in rows)
     ready_types = {version.config_type for version in versions if version.status == "READY"}
     missing = tuple(item for item in INITIAL_MODEL_A_CONFIG_TYPES if item not in ready_types)
+    model_b_ready_types = {
+        version.config_type for version in versions if _is_model_b_ready(version)
+    }
     model_b_missing = tuple(
-        item for item in INITIAL_MODEL_B_CONFIG_TYPES if item not in ready_types
+        item for item in INITIAL_MODEL_B_CONFIG_TYPES if item not in model_b_ready_types
     )
     return ConfigInventory(
         required_types=INITIAL_MODEL_A_CONFIG_TYPES,
@@ -761,6 +892,7 @@ async def list_configs(request: Request, user: ConfigReader) -> ConfigInventory:
         model_b_missing_ready_types=model_b_missing,
         model_b_ready_complete=not model_b_missing,
         draft_templates=MODEL_B_DRAFT_TEMPLATES,
+        draft_schema_versions=MODEL_B_DRAFT_SCHEMA_VERSIONS,
         can_edit="TRAINING_RESEARCHER" in roles,
         can_approve="TRAINING_ADMIN" in roles,
         versions=versions,

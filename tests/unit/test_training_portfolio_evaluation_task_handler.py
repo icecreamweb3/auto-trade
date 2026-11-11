@@ -296,6 +296,4 @@ async def test_forged_decision_hash_is_rejected(monkeypatch) -> None:
 async def test_handler_requires_evaluator_executor(monkeypatch) -> None:
     install_stores(monkeypatch)
     with pytest.raises(PortfolioEvaluationError, match="EVALUATOR"):
-        await PortfolioEvaluationTaskHandler(MagicMock())(
-            lease(ExecutorKind.MODEL_B)
-        )
+        await PortfolioEvaluationTaskHandler(MagicMock())(lease(ExecutorKind.MODEL_B))

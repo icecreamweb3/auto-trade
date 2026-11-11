@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -28,9 +29,7 @@ def payload(*sample_ids: str) -> dict[str, object]:
     }
 
 
-def lease(
-    value: dict[str, object], kind: ExecutorKind = ExecutorKind.MODEL_B
-) -> TaskLease:
+def lease(value: dict[str, object], kind: ExecutorKind = ExecutorKind.MODEL_B) -> TaskLease:
     return TaskLease(
         uuid4(),
         kind,
@@ -128,6 +127,45 @@ async def test_running_episode_uses_only_trusted_context(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_running_episode_parses_governed_v2_staged_exit(monkeypatch) -> None:
+    staged = replace(
+        context(),
+        exit_rule_config={
+            "model_family": "RULE_BASED_EXIT_V2",
+            "return_basis": "ENTRY_FILL_PRICE_PERCENT",
+            "initial_stop_loss_percent": 5,
+            "partial_take_profit": {
+                "fraction_basis": "REMAINING_POSITION",
+                "levels": [
+                    {"trigger_profit_percent": trigger, "close_fraction": 0.2}
+                    for trigger in (10, 15, 25, 35)
+                ],
+            },
+            "stop_schedule": {
+                "levels": [
+                    {"trigger_profit_percent": trigger, "locked_profit_percent": locked}
+                    for trigger, locked in ((10, 1), (15, 5), (25, 15), (35, 25))
+                ],
+                "high_water_trailing_activation_percent": 25,
+                "high_water_max_drawdown_percent": 10,
+            },
+            "max_holding_seconds": 86400,
+            "intrabar_conflict_policy": "WORST_CASE",
+            "rule_activation_timing": "NEXT_BAR",
+        },
+    )
+    _, replay_service = install_stores(monkeypatch, staged)
+
+    await ModelBReplayTaskHandler(MagicMock())(lease(payload()))
+
+    policy = replay_service.replay.await_args.kwargs["policy"]
+    assert policy.model_family == "RULE_BASED_EXIT_V2"
+    assert policy.stop_loss_percent == Decimal("5")
+    assert len(policy.partial_take_profit_levels) == 4
+    assert policy.partial_take_profit_levels[0].close_fraction == Decimal("0.2")
+
+
+@pytest.mark.asyncio
 async def test_retry_reuses_committed_terminal_decision(monkeypatch) -> None:
     task_store, replay_service = install_stores(monkeypatch, context("DECIDED"))
 
@@ -142,6 +180,4 @@ async def test_retry_reuses_committed_terminal_decision(monkeypatch) -> None:
 async def test_handler_rejects_non_model_b_lease(monkeypatch) -> None:
     install_stores(monkeypatch, context())
     with pytest.raises(ModelBReplayError, match="MODEL_B executor"):
-        await ModelBReplayTaskHandler(MagicMock())(
-            lease(payload(), ExecutorKind.EVALUATOR)
-        )
+        await ModelBReplayTaskHandler(MagicMock())(lease(payload(), ExecutorKind.EVALUATOR))

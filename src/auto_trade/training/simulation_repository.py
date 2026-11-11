@@ -19,6 +19,7 @@ from auto_trade.training.simulator import (
     PortfolioDisposition,
     PortfolioResult,
     SimulationBar,
+    exit_decision_position_state,
 )
 
 
@@ -129,11 +130,7 @@ class DatabaseModelBWorkerStore:
         decision: ExitDecision,
         direction: Direction,
     ) -> None:
-        state = {
-            "direction": direction.value,
-            "stop_after": decision.stop_price_after,
-            "stop_before": decision.stop_price_before,
-        }
+        state = exit_decision_position_state(direction, decision)
         payload = {
             "action": decision.action.value,
             "decision_time": decision.decision_time,
@@ -371,30 +368,35 @@ class DatabaseSimulationEvaluatorStore:
             },
         )
         trade_id = cast(UUID, created.scalar_one())
-        fills = (
+        fills = [
             (
-                1,
                 "ENTRY",
                 trade.entry_time,
                 trade.entry_fill_price,
+                trade.quantity,
                 trade.entry_fee,
                 trade.entry_slippage,
-            ),
+            )
+        ]
+        fills.extend(
             (
-                2,
                 "EXIT",
-                trade.exit_time,
-                trade.exit_fill_price,
-                trade.exit_fee,
-                trade.exit_slippage,
-            ),
+                fill.fill_time,
+                fill.fill_price,
+                fill.quantity,
+                fill.fee,
+                fill.slippage_cost,
+            )
+            for fill in trade.exit_fills
         )
-        for sequence, side, fill_time, price, fee, slippage in fills:
+        for sequence, (side, fill_time, price, quantity, fee, slippage) in enumerate(
+            fills, start=1
+        ):
             payload = {
                 "fee": fee,
                 "fill_time": fill_time,
                 "price": price,
-                "quantity": trade.quantity,
+                "quantity": quantity,
                 "sequence": sequence,
                 "side": side,
                 "slippage": slippage,
@@ -415,7 +417,7 @@ class DatabaseSimulationEvaluatorStore:
                     "side": side,
                     "fill_time": fill_time,
                     "price": price,
-                    "quantity": trade.quantity,
+                    "quantity": quantity,
                     "fee": fee,
                     "slippage": slippage,
                     "fill_hash": _hash(payload),

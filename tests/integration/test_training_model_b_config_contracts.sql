@@ -7,12 +7,13 @@ DO $$
 DECLARE
     constraint_source text;
     guard_source text;
+    legacy_guard_source text;
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM core.schema_migrations
-        WHERE version = '083_training_model_b_config_contracts'
+        WHERE version = '084_training_model_b_staged_exit_rules'
     ) THEN
-        RAISE EXCEPTION '083 Model-B config contracts migration is missing';
+        RAISE EXCEPTION '084 staged Model-B exit migration is missing';
     END IF;
 
     SELECT pg_get_constraintdef(oid)
@@ -27,12 +28,20 @@ BEGIN
     SELECT pg_get_functiondef(
         'strategy_training.guard_training_model_b_config_ready()'::regprocedure
     ) INTO guard_source;
-    IF position('RULE_BASED_EXIT_V1' IN guard_source) = 0
+    IF position('RULE_BASED_EXIT_V2' IN guard_source) = 0
        OR position('hard_max_holding_seconds' IN guard_source) = 0
-       OR position('BCA_CLUSTER_BOOTSTRAP' IN guard_source) = 0
-       OR position('CROSS_FIT_MODEL_A' IN guard_source) = 0
-       OR position('ORACLE_ENTRY_BENCHMARK' IN guard_source) = 0 THEN
-        RAISE EXCEPTION 'Model-B READY guard omits a governed search/scoring/source boundary';
+       OR position('REMAINING_POSITION' IN guard_source) = 0
+       OR position('NEXT_BAR' IN guard_source) = 0 THEN
+        RAISE EXCEPTION 'Model-B READY guard omits a governed V2 staged-exit boundary';
+    END IF;
+
+    SELECT pg_get_functiondef(
+        'strategy_training.guard_training_model_b_config_ready_v1()'::regprocedure
+    ) INTO legacy_guard_source;
+    IF position('BCA_CLUSTER_BOOTSTRAP' IN legacy_guard_source) = 0
+       OR position('CROSS_FIT_MODEL_A' IN legacy_guard_source) = 0
+       OR position('ORACLE_ENTRY_BENCHMARK' IN legacy_guard_source) = 0 THEN
+        RAISE EXCEPTION 'legacy Model-B scoring/source guard was not preserved';
     END IF;
 
     IF has_function_privilege(
@@ -42,6 +51,72 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'training worker can execute the Model-B READY trigger directly';
     END IF;
+END
+$$;
+
+INSERT INTO core.app_users (user_id, email, password_hash, username, role)
+VALUES (
+    '84000000-0000-0000-0000-000000000001',
+    'model-b-v2@example.test', 'not-a-real-hash', 'model-b-v2', 'ADMIN'
+);
+
+DO $$
+DECLARE
+    config_id uuid;
+    invalid_id uuid;
+    config jsonb := '{
+      "model_family":"RULE_BASED_EXIT_V2",
+      "return_basis":"ENTRY_FILL_PRICE_PERCENT",
+      "initial_stop_loss_percent":5.0,
+      "partial_take_profit":{"fraction_basis":"REMAINING_POSITION","levels":[
+        {"trigger_profit_percent":10.0,"close_fraction":0.20},
+        {"trigger_profit_percent":15.0,"close_fraction":0.20},
+        {"trigger_profit_percent":25.0,"close_fraction":0.20},
+        {"trigger_profit_percent":35.0,"close_fraction":0.20}
+      ]},
+      "stop_schedule":{"levels":[
+        {"trigger_profit_percent":10.0,"locked_profit_percent":1.0},
+        {"trigger_profit_percent":15.0,"locked_profit_percent":5.0},
+        {"trigger_profit_percent":25.0,"locked_profit_percent":15.0},
+        {"trigger_profit_percent":35.0,"locked_profit_percent":25.0}
+      ],"high_water_trailing_activation_percent":25.0,
+         "high_water_max_drawdown_percent":10.0},
+      "max_holding_seconds":86400,
+      "intrabar_conflict_policy":"WORST_CASE",
+      "rule_activation_timing":"NEXT_BAR"
+    }'::jsonb;
+BEGIN
+    INSERT INTO strategy_training.training_config_versions (
+        config_type, semver, schema_version, config_json, content_hash,
+        created_by_user_id
+    ) VALUES (
+        'EXIT_RULES', '84.0.0', 2, config,
+        encode(digest(config::text, 'sha256'), 'hex'),
+        '84000000-0000-0000-0000-000000000001'
+    ) RETURNING config_version_id INTO config_id;
+    UPDATE strategy_training.training_config_versions
+    SET status = 'READY',
+        ready_by_user_id = '84000000-0000-0000-0000-000000000001',
+        ready_at = clock_timestamp()
+    WHERE config_version_id = config_id;
+
+    BEGIN
+        INSERT INTO strategy_training.training_config_versions (
+            config_type, semver, schema_version, config_json, content_hash,
+            created_by_user_id
+        ) VALUES (
+            'EXIT_RULES', '84.0.1', 1, config,
+            encode(digest(config::text, 'sha256'), 'hex'),
+            '84000000-0000-0000-0000-000000000001'
+        ) RETURNING config_version_id INTO invalid_id;
+        UPDATE strategy_training.training_config_versions
+        SET status = 'READY',
+            ready_by_user_id = '84000000-0000-0000-0000-000000000001',
+            ready_at = clock_timestamp()
+        WHERE config_version_id = invalid_id;
+        RAISE EXCEPTION 'Schema 1 accepted a V2 EXIT_RULES config';
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
 END
 $$;
 

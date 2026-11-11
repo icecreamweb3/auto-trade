@@ -13,12 +13,14 @@ from auto_trade.training.simulator import (
     FeeModel,
     FixedExitPolicy,
     IntrabarConflictPolicy,
+    PartialTakeProfitLevel,
     PortfolioCandidate,
     PortfolioRules,
     SignalDisposition,
     SimulationBar,
     SimulationContractError,
     SlippageModel,
+    StopScheduleLevel,
     simulate_fixed_exit,
     simulate_portfolio,
 )
@@ -77,6 +79,97 @@ def _slippage() -> SlippageModel:
         Decimal("0"),
         Decimal("10"),
     )
+
+
+def _v2_policy(**overrides: object) -> FixedExitPolicy:
+    values = {
+        "version_id": uuid4(),
+        "stop_loss_percent": Decimal("5"),
+        "take_profit_percent": Decimal(0),
+        "trailing_activation_percent": Decimal(0),
+        "trailing_distance_percent": Decimal(0),
+        "max_holding": timedelta(minutes=25),
+        "conflict_policy": IntrabarConflictPolicy.WORST_CASE,
+        "model_family": "RULE_BASED_EXIT_V2",
+        "partial_take_profit_levels": tuple(
+            PartialTakeProfitLevel(Decimal(trigger), Decimal("0.2"))
+            for trigger in ("10", "15", "25", "35")
+        ),
+        "stop_schedule_levels": tuple(
+            StopScheduleLevel(Decimal(trigger), Decimal(locked))
+            for trigger, locked in (("10", "1"), ("15", "5"), ("25", "15"), ("35", "25"))
+        ),
+        "high_water_trailing_activation_percent": Decimal("25"),
+        "high_water_max_drawdown_percent": Decimal("10"),
+        "return_basis": "ENTRY_FILL_PRICE_PERCENT",
+        "partial_fraction_basis": "REMAINING_POSITION",
+        "rule_activation_timing": "NEXT_BAR",
+    }
+    values.update(overrides)
+    return FixedExitPolicy(**values)  # type: ignore[arg-type]
+
+
+def test_v2_partial_exits_use_remaining_position_and_charge_each_fill() -> None:
+    result = simulate_fixed_exit(
+        entry_event_id="e" * 64,
+        direction=Direction.LONG,
+        entry_time=_time(0),
+        entry_reference_price=Decimal("100"),
+        notional=Decimal("1000"),
+        bars=(
+            _bar(0, high="111", low="99", close="110"),
+            _bar(5, open_price="110", high="116", low="109", close="115"),
+            _bar(10, open_price="115", high="126", low="114", close="125"),
+            _bar(15, open_price="125", high="136", low="124", close="135"),
+            _bar(20, open_price="135", high="136", low="124", close="125"),
+        ),
+        policy=_v2_policy(),
+        fee_model=_fees(),
+        slippage_model=_slippage(),
+    )
+    partials = [fill for fill in result.exit_fills if fill.reason.startswith("PARTIAL")]
+    assert len(partials) == 4
+    remaining_fraction = result.exit_fills[-1].quantity / result.quantity
+    assert remaining_fraction.quantize(Decimal("0.0001")) == Decimal("0.4096")
+    assert result.exit_fee == sum(fill.fee for fill in result.exit_fills)
+    assert result.decisions[0].action is ExitAction.REDUCE
+    assert result.decisions[0].stop_price_after > result.decisions[0].stop_price_before
+
+
+def test_v2_new_stop_is_only_effective_on_next_bar() -> None:
+    result = simulate_fixed_exit(
+        entry_event_id="f" * 64,
+        direction=Direction.LONG,
+        entry_time=_time(0),
+        entry_reference_price=Decimal("100"),
+        notional=Decimal("1000"),
+        bars=(
+            _bar(0, high="111", low="99", close="101"),
+            _bar(5, open_price="101", high="102", low="100", close="101"),
+        ),
+        policy=_v2_policy(max_holding=timedelta(minutes=10)),
+        fee_model=_fees(),
+        slippage_model=_slippage(),
+    )
+    assert result.decisions[0].action is ExitAction.REDUCE
+    assert result.exit_reason is ExitReason.TRAILING_STOP
+    assert result.exit_time == _time(10)
+
+
+def test_v2_same_bar_stop_wins_over_partial_profit() -> None:
+    result = simulate_fixed_exit(
+        entry_event_id="1" * 64,
+        direction=Direction.LONG,
+        entry_time=_time(0),
+        entry_reference_price=Decimal("100"),
+        notional=Decimal("1000"),
+        bars=(_bar(0, high="111", low="94", close="100"),),
+        policy=_v2_policy(),
+        fee_model=_fees(),
+        slippage_model=_slippage(),
+    )
+    assert result.exit_reason is ExitReason.STOP_LOSS
+    assert len(result.exit_fills) == 1
 
 
 def test_same_bar_stop_and_target_uses_conservative_stop() -> None:

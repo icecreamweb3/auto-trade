@@ -6,7 +6,6 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
 
@@ -22,9 +21,9 @@ from auto_trade.training.simulation_service import FixedExitReplayService
 from auto_trade.training.simulator import (
     FeeModel,
     FixedExitPolicy,
-    IntrabarConflictPolicy,
     SimulationContractError,
     SlippageModel,
+    fixed_exit_policy_from_config,
 )
 
 
@@ -45,12 +44,12 @@ def _sha256(payload: object) -> str:
 
 
 def _content_id(value: object) -> str:
-    if not isinstance(value, str) or len(value) != 64 or any(
-        character not in "0123456789abcdef" for character in value
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise ModelBReplayError(
-            "model_b_sample_ids must contain lowercase SHA-256 values"
-        )
+        raise ModelBReplayError("model_b_sample_ids must contain lowercase SHA-256 values")
     return value
 
 
@@ -61,9 +60,7 @@ def _decimal(config: Mapping[str, object], field: str) -> Decimal:
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError) as error:
-        raise ModelBReplayError(
-            f"trusted model-B config has invalid {field}"
-        ) from error
+        raise ModelBReplayError(f"trusted model-B config has invalid {field}") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,12 +74,8 @@ def parse_model_b_replay_payload(
     allowed = {"task_type", "payload_version", "model_b_sample_ids"}
     unexpected = sorted(set(payload) - allowed)
     if unexpected:
-        raise ModelBReplayError(
-            "unexpected MODEL_B_REPLAY fields: " + ", ".join(unexpected)
-        )
-    if payload.get("task_type") != "MODEL_B_REPLAY" or payload.get(
-        "payload_version"
-    ) != 1:
+        raise ModelBReplayError("unexpected MODEL_B_REPLAY fields: " + ", ".join(unexpected))
+    if payload.get("task_type") != "MODEL_B_REPLAY" or payload.get("payload_version") != 1:
         raise ModelBReplayError("MODEL_B_REPLAY requires payload_version 1")
     raw_ids = payload.get("model_b_sample_ids")
     if not isinstance(raw_ids, list) or not raw_ids:
@@ -94,22 +87,10 @@ def parse_model_b_replay_payload(
 
 
 def _policy(context: ModelBReplayContext) -> FixedExitPolicy:
-    config = context.exit_rule_config
     try:
-        conflict_policy = IntrabarConflictPolicy(str(config["intrabar_conflict_policy"]))
-    except (KeyError, ValueError) as error:
-        raise ModelBReplayError(
-            "trusted EXIT_RULES has invalid intrabar_conflict_policy"
-        ) from error
-    return FixedExitPolicy(
-        context.exit_rule_version_id,
-        _decimal(config, "stop_loss_percent"),
-        _decimal(config, "take_profit_percent"),
-        _decimal(config, "trailing_activation_percent"),
-        _decimal(config, "trailing_distance_percent"),
-        timedelta(seconds=int(_decimal(config, "max_holding_seconds"))),
-        conflict_policy,
-    )
+        return fixed_exit_policy_from_config(context.exit_rule_version_id, context.exit_rule_config)
+    except SimulationContractError as error:
+        raise ModelBReplayError(f"trusted EXIT_RULES is invalid: {error}") from error
 
 
 def _fee_model(context: ModelBReplayContext) -> FeeModel:
@@ -133,9 +114,7 @@ def _slippage_model(context: ModelBReplayContext) -> SlippageModel:
 class ModelBReplayTaskHandler:
     def __init__(self, connection: AsyncConnection) -> None:
         self._task_store = DatabaseModelBReplayTaskStore(connection)
-        self._replay_service = FixedExitReplayService(
-            DatabaseModelBWorkerStore(connection)
-        )
+        self._replay_service = FixedExitReplayService(DatabaseModelBWorkerStore(connection))
 
     async def __call__(self, lease: TaskLease) -> str:
         if lease.executor_kind is not ExecutorKind.MODEL_B:
