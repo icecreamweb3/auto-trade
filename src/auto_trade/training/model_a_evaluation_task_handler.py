@@ -214,7 +214,11 @@ class ModelAEvaluationTaskHandler:
                     )
                     if not candidate_outcome.is_complete:
                         raise ModelAPipelineError(
-                            "selected random-baseline candidate has an incomplete future path"
+                            "selected random-baseline candidate has an incomplete future "
+                            f"path candidate_id={candidate_id} "
+                            f"reason={candidate_outcome.incomplete_reason} "
+                            f"observed_bars={candidate_outcome.observed_bar_count} "
+                            f"expected_bars={candidate_outcome.expected_bar_count}"
                         )
                     await self._store.record_random_candidate_outcome(
                         lease.task_id,
