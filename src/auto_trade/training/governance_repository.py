@@ -214,6 +214,22 @@ class DatabaseOrchestratorStore:
             for row in result.mappings().all()
         )
 
+    async def advance_model_b_formal_searches(
+        self,
+    ) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT go_no_go_evaluation_id, action
+                FROM strategy_training.advance_training_model_b_formal_searches()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["go_no_go_evaluation_id"]), str(row["action"]))
+            for row in result.mappings().all()
+        )
+
 
 class DatabaseTaskWorkerStore:
     """Lease-token capability interface shared by isolated execution services."""

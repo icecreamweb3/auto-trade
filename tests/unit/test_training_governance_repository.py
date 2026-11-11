@@ -200,3 +200,25 @@ async def test_advance_round_zero_baselines_returns_only_ids_and_actions() -> No
     sql = str(connection.execute.await_args.args[0])
     assert "advance_training_model_b_round_zero_baselines" in sql
     assert "baseline_metrics" not in sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_advance_formal_model_b_searches_returns_only_ids_and_actions() -> None:
+    connection = AsyncMock()
+    result = MagicMock()
+    gate_id = uuid4()
+    result.mappings.return_value.all.return_value = [
+        {
+            "go_no_go_evaluation_id": gate_id,
+            "action": "FORMAL_SEARCH_INITIALIZED",
+        }
+    ]
+    connection.execute.return_value = result
+
+    actions = await DatabaseOrchestratorStore(
+        connection
+    ).advance_model_b_formal_searches()
+
+    assert actions == ((gate_id, "FORMAL_SEARCH_INITIALIZED"),)
+    sql = str(connection.execute.await_args.args[0])
+    assert "advance_training_model_b_formal_searches" in sql
