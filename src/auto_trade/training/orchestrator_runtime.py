@@ -24,6 +24,7 @@ class DatabaseOrchestratorRuntime:
             model_b_nested_actions = (
                 await store.advance_cross_fit_model_b_nested_searches()
             )
+            round_zero_actions = await store.advance_model_b_round_zero_baselines()
             return (
                 optimizer_actions
                 + scan_actions
@@ -31,4 +32,5 @@ class DatabaseOrchestratorRuntime:
                 + l0_actions
                 + cross_fit_actions
                 + model_b_nested_actions
+                + round_zero_actions
             )

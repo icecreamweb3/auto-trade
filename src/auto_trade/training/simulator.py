@@ -176,13 +176,27 @@ class FixedExitPolicy:
     rule_activation_timing: str = "NEXT_BAR"
 
     def __post_init__(self) -> None:
-        _positive(self.stop_loss_percent, "stop_loss_percent")
         _non_negative(self.trailing_activation_percent, "trailing_activation_percent")
         _non_negative(self.trailing_distance_percent, "trailing_distance_percent")
         if self.max_holding <= timedelta(0):
             raise SimulationContractError("max_holding must be positive")
         if self.conflict_policy is not IntrabarConflictPolicy.WORST_CASE:
             raise SimulationContractError("5m prototype requires WORST_CASE conflicts")
+        if self.model_family == "TIME_EXIT_V1":
+            if self.max_holding != timedelta(hours=24):
+                raise SimulationContractError("TIME_EXIT_V1 requires an exact 24h horizon")
+            if any(
+                value != 0
+                for value in (
+                    self.stop_loss_percent,
+                    self.take_profit_percent,
+                    self.trailing_activation_percent,
+                    self.trailing_distance_percent,
+                )
+            ) or self.partial_take_profit_levels or self.stop_schedule_levels:
+                raise SimulationContractError("TIME_EXIT_V1 cannot contain price exits")
+            return
+        _positive(self.stop_loss_percent, "stop_loss_percent")
         if self.model_family == "RULE_BASED_EXIT_V1":
             _positive(self.take_profit_percent, "take_profit_percent")
             if bool(self.trailing_activation_percent) != bool(self.trailing_distance_percent):
@@ -249,6 +263,23 @@ def fixed_exit_policy_from_config(
     except (KeyError, ValueError, OverflowError) as error:
         raise SimulationContractError("trusted EXIT_RULES has invalid boundaries") from error
     family = str(config.get("model_family", "RULE_BASED_EXIT_V1"))
+    if family == "TIME_EXIT_V1":
+        if set(config) != {
+            "model_family",
+            "max_holding_seconds",
+            "intrabar_conflict_policy",
+        }:
+            raise SimulationContractError("TIME_EXIT_V1 fields do not match its contract")
+        return FixedExitPolicy(
+            version_id,
+            Decimal(0),
+            Decimal(0),
+            Decimal(0),
+            Decimal(0),
+            max_holding,
+            conflict,
+            family,
+        )
     if family == "RULE_BASED_EXIT_V1":
         return FixedExitPolicy(
             version_id,
@@ -574,8 +605,12 @@ class FixedExitReplay:
             )
             self.quantity = self.notional / self.entry_fill
             self.remaining_quantity = self.quantity
-            self.stop = _initial_stop(
-                self.entry_fill, self.direction, self.policy.stop_loss_percent
+            self.stop = (
+                self.entry_fill
+                if self.policy.model_family == "TIME_EXIT_V1"
+                else _initial_stop(
+                    self.entry_fill, self.direction, self.policy.stop_loss_percent
+                )
             )
             self.hard_stop = self.stop
             if self.policy.model_family == "RULE_BASED_EXIT_V1":
@@ -595,7 +630,7 @@ class FixedExitReplay:
         self.funding_total += (
             self.remaining_quantity * bar.close_price * bar.funding_rate * funding_direction
         )
-        stop_hit = (
+        stop_hit = self.policy.model_family != "TIME_EXIT_V1" and (
             bar.low_price <= self.stop
             if self.direction is Direction.LONG
             else bar.high_price >= self.stop
@@ -753,6 +788,8 @@ class FixedExitReplay:
     def _next_stop(self, bar: SimulationBar) -> Decimal:
         assert self.entry_fill is not None
         assert self.stop is not None
+        if self.policy.model_family == "TIME_EXIT_V1":
+            return self.stop
         if self.policy.model_family == "RULE_BASED_EXIT_V1":
             new_stop = self.stop
             if self.policy.trailing_activation_percent > 0:

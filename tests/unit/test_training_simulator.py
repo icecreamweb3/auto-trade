@@ -21,6 +21,7 @@ from auto_trade.training.simulator import (
     SimulationContractError,
     SlippageModel,
     StopScheduleLevel,
+    fixed_exit_policy_from_config,
     simulate_fixed_exit,
     simulate_portfolio,
 )
@@ -107,6 +108,44 @@ def _v2_policy(**overrides: object) -> FixedExitPolicy:
     }
     values.update(overrides)
     return FixedExitPolicy(**values)  # type: ignore[arg-type]
+
+
+def test_time_exit_v1_ignores_price_path_and_exits_exactly_at_24h() -> None:
+    version_id = uuid4()
+    policy = fixed_exit_policy_from_config(
+        version_id,
+        {
+            "model_family": "TIME_EXIT_V1",
+            "max_holding_seconds": 86400,
+            "intrabar_conflict_policy": "WORST_CASE",
+        },
+    )
+    bars = tuple(
+        _bar(
+            minute,
+            open_price="100",
+            high="150",
+            low="50",
+            close="100",
+        )
+        for minute in range(0, 24 * 60, 5)
+    )
+
+    result = simulate_fixed_exit(
+        entry_event_id="0" * 64,
+        direction=Direction.LONG,
+        entry_time=_time(0),
+        entry_reference_price=Decimal("100"),
+        notional=Decimal("1000"),
+        bars=bars,
+        policy=policy,
+        fee_model=_fees(),
+        slippage_model=_slippage(),
+    )
+
+    assert result.exit_reason is ExitReason.MAX_HOLDING
+    assert result.exit_time == _time(24 * 60)
+    assert all(decision.action is ExitAction.HOLD for decision in result.decisions[:-1])
 
 
 def test_v2_partial_exits_use_remaining_position_and_charge_each_fill() -> None:

@@ -241,6 +241,7 @@ def install_stores(monkeypatch, *, retry: bool = False, forged: bool = False):
         )
     )
     store.finalize_candidate_objective_if_applicable = AsyncMock(return_value=None)
+    store.finalize_round_zero_baseline_if_applicable = AsyncMock(return_value=None)
     evaluator = MagicMock()
     evaluator.record_outcome = AsyncMock()
     evaluator.persist_portfolio = AsyncMock()

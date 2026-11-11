@@ -177,3 +177,26 @@ async def test_advance_model_b_nested_searches_returns_only_ids_and_actions() ->
     sql = str(connection.execute.await_args.args[0])
     assert "advance_cross_fit_model_b_nested_searches" in sql
     assert "objective" not in sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_advance_round_zero_baselines_returns_only_ids_and_actions() -> None:
+    evaluation_id = uuid4()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = [
+        {
+            "go_no_go_evaluation_id": evaluation_id,
+            "action": "ROUND_ZERO_PORTFOLIO_ENQUEUED",
+        }
+    ]
+    connection = AsyncMock()
+    connection.execute.return_value = result
+
+    actions = await DatabaseOrchestratorStore(
+        connection
+    ).advance_model_b_round_zero_baselines()
+
+    assert actions == ((evaluation_id, "ROUND_ZERO_PORTFOLIO_ENQUEUED"),)
+    sql = str(connection.execute.await_args.args[0])
+    assert "advance_training_model_b_round_zero_baselines" in sql
+    assert "baseline_metrics" not in sql.lower()

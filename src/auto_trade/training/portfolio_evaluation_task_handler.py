@@ -275,4 +275,9 @@ class PortfolioEvaluationTaskHandler:
             lease.lease_token,
             context.model_b_iteration_id,
         )
+        await self._store.finalize_round_zero_baseline_if_applicable(
+            lease.task_id,
+            lease.lease_token,
+            context.model_b_iteration_id,
+        )
         return portfolio_result.result_hash
