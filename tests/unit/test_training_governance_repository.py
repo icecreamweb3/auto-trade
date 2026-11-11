@@ -149,3 +149,26 @@ async def test_advance_cross_fit_returns_only_ids_and_state_actions() -> None:
     sql = str(connection.execute.await_args.args[0])
     assert "advance_training_cross_fit_executions" in sql
     assert "objective" not in sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_advance_model_b_nested_searches_returns_only_ids_and_actions() -> None:
+    execution_id = uuid4()
+    result = MagicMock()
+    result.mappings.return_value.all.return_value = [
+        {
+            "cross_fit_execution_id": execution_id,
+            "action": "FOLD_4_EVALUATION_CREATED",
+        }
+    ]
+    connection = AsyncMock()
+    connection.execute.return_value = result
+
+    actions = await DatabaseOrchestratorStore(
+        connection
+    ).advance_cross_fit_model_b_nested_searches()
+
+    assert actions == ((execution_id, "FOLD_4_EVALUATION_CREATED"),)
+    sql = str(connection.execute.await_args.args[0])
+    assert "advance_cross_fit_model_b_nested_searches" in sql
+    assert "objective" not in sql.lower()

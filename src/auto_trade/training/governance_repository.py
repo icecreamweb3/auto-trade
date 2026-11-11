@@ -180,6 +180,22 @@ class DatabaseOrchestratorStore:
             for row in result.mappings().all()
         )
 
+    async def advance_cross_fit_model_b_nested_searches(
+        self,
+    ) -> tuple[tuple[UUID, str], ...]:
+        result = await self._connection.execute(
+            text(
+                """
+                SELECT cross_fit_execution_id, action
+                FROM strategy_training.advance_cross_fit_model_b_nested_searches()
+                """
+            )
+        )
+        return tuple(
+            (cast(UUID, row["cross_fit_execution_id"]), str(row["action"]))
+            for row in result.mappings().all()
+        )
+
 
 class DatabaseTaskWorkerStore:
     """Lease-token capability interface shared by isolated execution services."""
