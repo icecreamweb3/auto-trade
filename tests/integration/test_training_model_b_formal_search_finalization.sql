@@ -41,8 +41,11 @@ BEGIN
 
     IF position('MODEL_B_FINALIZE_FORMAL' IN payload_source) = 0
        OR position('fixed_finalist_count' IN finalize_source) = 0
-       OR position('tpe_result_count <> tpe_record.trial_budget' IN finalize_source) = 0
-       OR position('random_result_count <> random_record.trial_budget' IN finalize_source) = 0
+       OR position('tpe_result_count <> stop_record.effective_trial_count'
+                   IN finalize_source) = 0
+       OR position('random_result_count <> stop_record.effective_trial_count'
+                   IN finalize_source) = 0
+       OR position('formal_stop_evidence_hash' IN finalize_source) = 0
        OR position('count(DISTINCT candidate_content_hash)' IN finalize_source) = 0
        OR position('DISTINCT ON (result.candidate_content_hash)' IN finalize_source) = 0
        OR position('finalist_manifest_hash' IN finalize_source) = 0
