@@ -16,6 +16,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from auto_trade.accounts.models import CurrentUser
 from auto_trade.accounts.router import AuthenticatedUser
+from auto_trade.training.cross_fit_execution import CrossFitExecutionError
+from auto_trade.training.cross_fit_protocol import parse_cross_fit_runtime_protocol
 
 CONFIG_TYPES = (
     "FACTOR_REGISTRY",
@@ -626,6 +628,11 @@ def validate_config_payload(config_type: str, payload: dict[str, Any]) -> tuple[
             "minimum_week_count",
         ):
             _positive_integer(payload, key, errors)
+    elif config_type == "CROSS_FIT_PROTOCOL":
+        try:
+            parse_cross_fit_runtime_protocol(payload)
+        except CrossFitExecutionError as error:
+            errors.append(f"Cross-fit 协议不符合运行契约: {error}")
     elif config_type == "EXIT_RULES":
         if payload.get("model_family") != "RULE_BASED_EXIT_V2":
             errors.append("model_family 必须为 RULE_BASED_EXIT_V2")

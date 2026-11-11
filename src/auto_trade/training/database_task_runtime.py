@@ -47,6 +47,8 @@ from auto_trade.training.portfolio_evaluation_task_handler import (
 )
 from auto_trade.training.task_handlers import TaskHandlerRegistry
 
+MODEL_A_EVALUATION_COMMIT_INTERVAL = 25
+
 
 def build_handler_registry(
     connection: AsyncConnection,
@@ -154,7 +156,7 @@ class DatabaseTaskRuntimeBackend:
                 registry = build_handler_registry(
                     connection,
                     self._executor_kind,
-                    evaluation_commit_interval=1,
+                    evaluation_commit_interval=MODEL_A_EVALUATION_COMMIT_INTERVAL,
                 )
                 return await registry.execute(lease)
         async with self._engine.begin() as connection:

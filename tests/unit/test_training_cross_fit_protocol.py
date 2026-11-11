@@ -59,6 +59,17 @@ def test_ready_011_protocol_parses_runtime_limits_and_locked_gates() -> None:
     assert protocol.model_b_required_stress_multiplier == Decimal("2.0")
 
 
+def test_ready_012_protocol_accepts_six_hour_optimizer_budget() -> None:
+    config = deepcopy(_config())
+    q030 = config["q030_cross_fit"]
+    assert isinstance(q030, dict)
+    q030["maximum_wall_clock_seconds_per_optimizer_per_fold"] = 21_600
+
+    protocol = parse_cross_fit_runtime_protocol(config)
+
+    assert protocol.wall_clock_seconds_per_optimizer_per_fold == 21_600
+
+
 @pytest.mark.parametrize(
     ("path", "message"),
     [
@@ -69,7 +80,9 @@ def test_ready_011_protocol_parses_runtime_limits_and_locked_gates() -> None:
         (("q030_cross_fit", "repeat_count_per_fold"), "repeat_count"),
     ],
 )
-def test_old_protocol_without_runtime_limits_fails_closed(path, message) -> None:
+def test_old_protocol_without_runtime_limits_fails_closed(
+    path: tuple[str, str], message: str
+) -> None:
     config = deepcopy(_config())
     section = config[path[0]]
     assert isinstance(section, dict)

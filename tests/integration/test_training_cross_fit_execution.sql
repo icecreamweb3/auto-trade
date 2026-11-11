@@ -99,4 +99,99 @@ BEGIN
 END
 $$;
 
+-- A READY protocol is part of an active execution's frozen contract.  The
+-- config can be retired only after every bound execution reaches a terminal
+-- state.  Replica mode is used only to create isolated FK fixtures; the guard
+-- itself is exercised with normal trigger execution.
+INSERT INTO core.app_users (user_id, email, password_hash)
+VALUES (
+    '54f00000-0000-0000-0000-000000000001',
+    'cross-fit-retirement-guard@example.test',
+    'not-a-real-hash'
+);
+
+SET LOCAL session_replication_role = replica;
+
+INSERT INTO strategy_training.training_config_versions (
+    config_version_id, config_type, semver, schema_version, config_json,
+    content_hash, status, created_by_user_id, ready_by_user_id, ready_at
+) VALUES (
+    '54f00000-0000-0000-0000-000000000106',
+    'CROSS_FIT_PROTOCOL', '106.0.0', 1,
+    '{"protocol":"integration-retirement-guard"}'::jsonb,
+    encode(digest(
+        '{"protocol":"integration-retirement-guard"}'::jsonb::text,
+        'sha256'
+    ), 'hex'),
+    'READY',
+    '54f00000-0000-0000-0000-000000000001',
+    '54f00000-0000-0000-0000-000000000001',
+    clock_timestamp()
+);
+
+INSERT INTO strategy_training.training_cross_fit_executions (
+    cross_fit_execution_id, experiment_id, dataset_version_id,
+    protocol_config_version_id, coverage_evidence_hash,
+    source_revision_watermark_hash, coverage_gate_status, state,
+    question_readiness, minimum_effective_folds, minimum_effective_days,
+    minimum_event_count
+) VALUES (
+    '54f00000-0000-0000-0000-000000000206',
+    '54f00000-0000-0000-0000-000000000306',
+    '54f00000-0000-0000-0000-000000000406',
+    '54f00000-0000-0000-0000-000000000106',
+    repeat('a', 64), repeat('b', 64), 'ACCEPTED', 'PLANNED',
+    '{}'::jsonb, 1, 1, 1
+);
+
+SET LOCAL session_replication_role = origin;
+
+DO $$
+BEGIN
+    BEGIN
+        UPDATE strategy_training.training_config_versions
+        SET status = 'RETIRED',
+            retired_by_user_id = '54f00000-0000-0000-0000-000000000001',
+            retired_at = clock_timestamp()
+        WHERE config_version_id = '54f00000-0000-0000-0000-000000000106';
+        RAISE EXCEPTION 'active Cross-fit protocol retirement was allowed';
+    EXCEPTION WHEN check_violation THEN
+        IF position(
+            'active Cross-fit execution still binds protocol config'
+            IN SQLERRM
+        ) = 0 THEN
+            RAISE;
+        END IF;
+    END;
+END
+$$;
+
+SET LOCAL session_replication_role = replica;
+
+UPDATE strategy_training.training_cross_fit_executions
+SET state = 'FAILED', completed_at = clock_timestamp(),
+    failure_code = 'INTEGRATION_TERMINAL'
+WHERE cross_fit_execution_id = '54f00000-0000-0000-0000-000000000206';
+
+SET LOCAL session_replication_role = origin;
+
+UPDATE strategy_training.training_config_versions
+SET status = 'RETIRED',
+    retired_by_user_id = '54f00000-0000-0000-0000-000000000001',
+    retired_at = clock_timestamp()
+WHERE config_version_id = '54f00000-0000-0000-0000-000000000106';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM strategy_training.training_config_versions
+        WHERE config_version_id = '54f00000-0000-0000-0000-000000000106'
+          AND status = 'RETIRED'
+    ) THEN
+        RAISE EXCEPTION 'terminal Cross-fit protocol retirement was blocked';
+    END IF;
+END
+$$;
+
 ROLLBACK;

@@ -13,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from auto_trade.training.model_a_evaluation_repository import (
     DatabaseModelAEvaluationStore,
+    RandomCandidateOutcomeContext,
 )
 from auto_trade.training.model_a_pipeline import (
+    EntryOutcome,
     ModelAPipelineError,
     calculate_entry_outcome,
     select_matched_random_baseline,
@@ -92,6 +94,13 @@ class ModelAEvaluationTaskHandler:
             raise ModelAPipelineError("MODEL_A_EVALUATION requires EVALUATOR executor")
         payload = parse_model_a_evaluation_payload(lease.payload)
         evidence: list[dict[str, object]] = []
+        # Frozen random-baseline candidates are immutable within one governed
+        # evaluation task.  The same candidate can be selected for many matched
+        # entries, so calculate its 24h path once while still recording the
+        # required per-entry audit relationship below.
+        random_candidate_outcome_cache: dict[
+            str, tuple[RandomCandidateOutcomeContext, EntryOutcome]
+        ] = {}
         for processed_count, entry_event_id in enumerate(payload.entry_event_ids, 1):
             context = await self._store.load_context(
                 lease.task_id, lease.lease_token, entry_event_id
@@ -186,32 +195,40 @@ class ModelAEvaluationTaskHandler:
                     random_seed=baseline_context.random_seed,
                 )
                 for candidate_id in selection.selected_candidate_ids:
-                    candidate_context = (
-                        await self._store.load_random_candidate_outcome_context(
-                            lease.task_id,
-                            lease.lease_token,
-                            entry_event_id,
-                            candidate_id,
+                    cached = random_candidate_outcome_cache.get(candidate_id)
+                    if cached is None:
+                        candidate_context = (
+                            await self._store.load_random_candidate_outcome_context(
+                                lease.task_id,
+                                lease.lease_token,
+                                entry_event_id,
+                                candidate_id,
+                            )
                         )
-                    )
-                    candidate_bars = (
-                        await self._store.load_random_candidate_outcome_bars(
-                            lease.task_id,
-                            lease.lease_token,
-                            entry_event_id,
-                            candidate_id,
+                        candidate_bars = (
+                            await self._store.load_random_candidate_outcome_bars(
+                                lease.task_id,
+                                lease.lease_token,
+                                entry_event_id,
+                                candidate_id,
+                            )
                         )
-                    )
-                    candidate_outcome = calculate_entry_outcome(
-                        entry_event_id=candidate_id,
-                        partition=candidate_context.partition,
-                        entry_time=candidate_context.entry_time,
-                        entry_price=candidate_context.entry_price,
-                        direction=candidate_context.direction,
-                        label_window_end_at=candidate_context.label_window_end_at,
-                        interval_seconds=candidate_context.interval_seconds,
-                        bars=candidate_bars,
-                    )
+                        candidate_outcome = calculate_entry_outcome(
+                            entry_event_id=candidate_id,
+                            partition=candidate_context.partition,
+                            entry_time=candidate_context.entry_time,
+                            entry_price=candidate_context.entry_price,
+                            direction=candidate_context.direction,
+                            label_window_end_at=candidate_context.label_window_end_at,
+                            interval_seconds=candidate_context.interval_seconds,
+                            bars=candidate_bars,
+                        )
+                        random_candidate_outcome_cache[candidate_id] = (
+                            candidate_context,
+                            candidate_outcome,
+                        )
+                    else:
+                        candidate_context, candidate_outcome = cached
                     if not candidate_outcome.is_complete:
                         raise ModelAPipelineError(
                             "selected random-baseline candidate has an incomplete future "

@@ -232,6 +232,17 @@ def test_scoring_model_a_requires_exact_weights_and_minimum_counts() -> None:
     assert "minimum_signal_count 必须是正整数" in errors
 
 
+def test_cross_fit_protocol_rejects_arbitrary_nonempty_json() -> None:
+    errors = validate_config_payload(
+        "CROSS_FIT_PROTOCOL",
+        {"protocol": "CROSS_FIT_PROTOCOL_V1"},
+    )
+
+    assert errors == (
+        "Cross-fit 协议不符合运行契约: question_readiness must be an object",
+    )
+
+
 @pytest.mark.parametrize(
     ("config_type", "payload"),
     tuple(MODEL_B_DRAFT_TEMPLATES.items()),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -156,8 +157,11 @@ def _contiguous_before[BarT: (FeatureBar, BenchmarkBar)](
     count: int,
     interval_seconds: int,
 ) -> tuple[BarT, ...]:
-    prior = tuple(bar for bar in bars if bar.open_time < observed_at)
-    selected = prior[-count:]
+    # Both governed bar readers return ascending ``open_time`` values.  Locate
+    # the window boundary in O(log n) instead of rebuilding the complete
+    # pre-observation prefix for every signal in a long candidate scan.
+    boundary = bisect_left(bars, observed_at, key=lambda bar: bar.open_time)
+    selected = tuple(bars[max(0, boundary - count) : boundary])
     if len(selected) != count:
         raise ModelAPipelineError("random-baseline stratum lacks pre-observation history")
     expected_step = interval_seconds

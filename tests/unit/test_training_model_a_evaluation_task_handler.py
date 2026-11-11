@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -156,6 +157,54 @@ async def test_fresh_complete_outcome_records_label_and_opportunity(monkeypatch)
     store.record_opportunity.assert_awaited_once()
     store.record_random_baseline.assert_awaited_once()
     store.record_random_candidate_outcome.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reused_random_candidate_path_is_calculated_once_per_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_entry_id = "b" * 64
+    first_context = context()
+    second_context = replace(first_context, entry_event_id=second_entry_id)
+    store = MagicMock()
+    store.load_context = AsyncMock(side_effect=(first_context, second_context))
+    store.load_existing_evidence = AsyncMock(
+        return_value=ExistingEntryEvidence("c" * 64, True, True, False, False)
+    )
+    store.load_random_baseline_context = AsyncMock(return_value=baseline_context())
+    store.load_random_baseline_candidates = AsyncMock(
+        return_value=baseline_candidates()
+    )
+    store.load_random_candidate_outcome_context = AsyncMock(
+        return_value=random_candidate_context()
+    )
+    store.load_random_candidate_outcome_bars = AsyncMock(
+        return_value=(
+            OutcomeBar(
+                context().label_window_end_at,
+                Decimal("103"),
+                Decimal("98"),
+                Decimal("102"),
+            ),
+        )
+    )
+    store.record_random_candidate_outcome = AsyncMock()
+    store.record_random_baseline = AsyncMock()
+    store.finalize_random_baseline_coverage = AsyncMock(return_value="READY")
+    monkeypatch.setattr(
+        "auto_trade.training.model_a_evaluation_task_handler.DatabaseModelAEvaluationStore",
+        lambda _connection: store,
+    )
+
+    result = await ModelAEvaluationTaskHandler(MagicMock())(
+        lease(payload(ENTRY_ID, second_entry_id))
+    )
+
+    assert len(result) == 64
+    store.load_random_candidate_outcome_context.assert_awaited_once()
+    store.load_random_candidate_outcome_bars.assert_awaited_once()
+    assert store.record_random_candidate_outcome.await_count == 2
+    assert store.record_random_baseline.await_count == 2
 
 
 @pytest.mark.asyncio
